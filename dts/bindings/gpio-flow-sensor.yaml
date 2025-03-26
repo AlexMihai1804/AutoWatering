@@ -1,0 +1,13 @@
+description: GPIO-based water flow sensor
+
+compatible: "gpio-flow-sensor"
+
+properties:
+  gpios:
+    type: phandle-array
+    required: true
+    description: GPIO pin for flow sensor
+
+  label:
+    type: string
+    description: Human-readable name

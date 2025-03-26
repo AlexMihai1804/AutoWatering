@@ -4,3 +4,7 @@
 
 # build
 /build*/
+.clang-format
+.vscode/compile_commands.json
+.vscode/settings.json
+.vscode/zephyr-ide.json

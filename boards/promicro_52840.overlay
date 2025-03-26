@@ -1,0 +1,56 @@
+#include <dt-bindings/gpio/gpio.h>
+
+/* Using a different compatible that works better for our use case */
+/ {
+    water_flow_sensor: water_flow_sensor {
+        compatible = "gpio-flow-sensor";
+        status = "okay";
+        gpios = <&gpio0 6 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+        label = "Water Flow Sensor";
+    };
+    
+    valves {
+        compatible = "gpio-valves";
+        status = "okay";
+        
+        valve1 {
+            gpios = <&gpio0 9 GPIO_ACTIVE_HIGH>;
+            label = "Valve 1";
+        };
+        
+        valve2 {
+            gpios = <&gpio0 10 GPIO_ACTIVE_HIGH>;
+            label = "Valve 2";
+        };
+        
+        valve3 {
+            gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
+            label = "Valve 3";
+        };
+        
+        valve4 {
+            gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;
+            label = "Valve 4";
+        };
+        
+        valve5 {
+            gpios = <&gpio1 15 GPIO_ACTIVE_HIGH>;
+            label = "Valve 5";
+        };
+        
+        valve6 {
+            gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+            label = "Valve 6";
+        };
+        
+        valve7 {
+            gpios = <&gpio0 29 GPIO_ACTIVE_HIGH>;
+            label = "Valve 7";
+        };
+        
+        valve8 {
+            gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;
+            label = "Valve 8";
+        };
+    };
+};

@@ -1,0 +1,15 @@
+description: GPIO-based water valves
+
+compatible: "gpio-valves"
+
+child-binding:
+  description: Child valve nodes
+  properties:
+    gpios:
+      type: phandle-array
+      required: true
+      description: GPIO pin for the valve relay
+
+    label:
+      type: string
+      description: Human-readable name for the valve
