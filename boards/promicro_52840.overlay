@@ -1,6 +1,5 @@
 #include <dt-bindings/gpio/gpio.h>
 
-/* Using a different compatible that works better for our use case */
 / {
     water_flow_sensor: water_flow_sensor {
         compatible = "gpio-flow-sensor";
