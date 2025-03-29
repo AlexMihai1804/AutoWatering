@@ -52,4 +52,43 @@
             label = "Valve 8";
         };
     };
+
+    aliases {
+        rtc0 = &ds3231;
+        watchdog0 = &wdt;
+    };
+
+    chosen {
+        zephyr,settings-partition = &settings_partition;
+    };
+};
+
+&i2c0 {
+    status = "okay";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+    
+    ds3231: ds3231@68 {
+        compatible = "maxim,ds3231";
+        reg = <0x68>;
+        isw-gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;
+        status = "okay";
+    };
+};
+
+&flash0 {
+    partitions {
+        compatible = "fixed-partitions";
+        #address-cells = <1>;
+        #size-cells = <1>;
+        
+        /* Define a settings partition */
+        settings_partition: partition@ff000 {
+            label = "settings-storage";
+            reg = <0xff000 0x1000>;
+        };
+    };
+};
+
+&wdt {
+    status = "okay";
 };

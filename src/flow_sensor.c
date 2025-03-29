@@ -57,6 +57,12 @@ static void flow_sensor_callback(const struct device *dev, struct gpio_callback 
  */
 void flow_sensor_init(void) {
     int ret;
+    static bool initialized = false;
+    
+    // Only initialize once
+    if (initialized) {
+        return;
+    }
     
     // Check if GPIO device is ready
     if (!device_is_ready(flow_sensor.port)) {
@@ -82,7 +88,8 @@ void flow_sensor_init(void) {
     gpio_init_callback(&flow_sensor_cb, flow_sensor_callback, BIT(flow_sensor.pin));
     gpio_add_callback(flow_sensor.port, &flow_sensor_cb);
     
-    printk("Flow sensor started\n");
+    initialized = true;
+    printk("Flow sensor started on pin %d\n", flow_sensor.pin);
 }
 
 /**

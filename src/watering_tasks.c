@@ -3,6 +3,7 @@
 #include "flow_sensor.h"
 #include "watering.h"
 #include "watering_internal.h"
+#include "rtc.h" // Add RTC header
 
 /**
  * @file watering_tasks.c
@@ -16,7 +17,7 @@
 K_MSGQ_DEFINE(watering_tasks_queue, sizeof(watering_task_t), 10, 4);
 
 /** Current state of task execution */
-struct watering_task_state_t watering_task_state = {NULL, 0};
+struct watering_task_state_t watering_task_state = {NULL, 0, false};
 
 /** Flow pulse count at task start */
 static uint32_t initial_pulse_count = 0;
@@ -64,46 +65,93 @@ static watering_task_t active_task_buffer;
 static uint8_t current_hour = 0;
 static uint8_t current_minute = 0;
 static uint8_t current_day_of_week = 0;
-static uint16_t days_since_start = 0;
+uint16_t days_since_start = 0;  // Changed from static to global
+
+/** Last read time to detect day changes */
+static uint8_t last_day = 0;
+
+/** RTC error count for tracking reliability */
+static uint8_t rtc_error_count = 0;
+#define MAX_RTC_ERRORS 5
+
+/** System time tracking for RTC fallback */
+static uint32_t last_time_update = 0;
+static uint32_t time_update_interval_ms = 60000; // 1 minute interval
 
 /**
  * @brief Initialize the task management system
  */
-void tasks_init(void) {
+watering_error_t tasks_init(void) {
     watering_task_state.current_active_task = NULL;
     watering_task_state.watering_start_time = 0;
+    watering_task_state.task_in_progress = false;
     current_task_state = TASK_STATE_IDLE;
     watering_tasks_running = false;
     exit_tasks = false;
+    rtc_error_count = 0;
+    
+    return WATERING_SUCCESS;
 }
 
 /**
  * @brief Add a watering task to the task queue
  * 
  * @param task Task to be added to the queue
- * @return 0 on success, -1 if queue is full
+ * @return WATERING_SUCCESS on success, error code on failure
  */
-int watering_add_task(watering_task_t *task) {
-    if (k_msgq_put(&watering_tasks_queue, task, K_NO_WAIT) != 0) {
-        printk("Error: Watering queue is full!\n");
-        return -1;
+watering_error_t watering_add_task(watering_task_t *task) {
+    if (task == NULL || task->channel == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
     }
-    return 0;
+    
+    // Validate watering mode parameters
+    if (task->channel->watering_event.watering_mode == WATERING_BY_VOLUME) {
+        if (task->by_volume.volume_liters == 0) {
+            return WATERING_ERROR_INVALID_PARAM;
+        }
+    }
+    
+    if (k_msgq_put(&watering_tasks_queue, task, K_NO_WAIT) != 0) {
+        LOG_ERROR("Watering queue is full", WATERING_ERROR_QUEUE_FULL);
+        return WATERING_ERROR_QUEUE_FULL;
+    }
+    
+    printk("Added watering task for channel %s\n", task->channel->name);
+    return WATERING_SUCCESS;
 }
 
 /**
  * @brief Process the next task in the queue
  * 
- * @return 1 if task was processed, 0 if no tasks, negative on error
+ * @return 1 if task was processed, 0 if no tasks, negative error code on failure
  */
 int watering_process_next_task(void) {
+    if (!system_initialized) {
+        return -WATERING_ERROR_NOT_INITIALIZED;
+    }
+    
+    if (system_status == WATERING_STATUS_FAULT) {
+        return -WATERING_ERROR_BUSY;
+    }
+    
     watering_task_t task;
     if (k_msgq_get(&watering_tasks_queue, &task, K_NO_WAIT) != 0) {
         return 0;  // No tasks in queue
     }
+    
+    if (task.channel == NULL) {
+        return -WATERING_ERROR_INVALID_PARAM;
+    }
+    
     uint8_t channel_id = task.channel - watering_channels;
     printk("Processing watering task for channel %d\n", channel_id + 1);
-    watering_channel_on(channel_id);
+    
+    watering_error_t ret = watering_channel_on(channel_id);
+    if (ret != WATERING_SUCCESS) {
+        LOG_ERROR("Failed to activate channel for task", ret);
+        return -ret;
+    }
+    
     return 1;
 }
 
@@ -111,28 +159,44 @@ int watering_process_next_task(void) {
  * @brief Start execution of a watering task
  * 
  * @param task Task to be executed
+ * @return WATERING_SUCCESS on success, error code on failure
  */
-void watering_start_task(watering_task_t *task) {
-    uint8_t channel_id = task->channel - watering_channels;
-    if (watering_channel_on(channel_id) != 0) {
-        printk("Error activating channel for task\n");
-        return;
+watering_error_t watering_start_task(watering_task_t *task) {
+    if (task == NULL || task->channel == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
     }
-    watering_task_state.watering_start_time = k_uptime_get_32();
+    
+    uint8_t channel_id = task->channel - watering_channels;
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_error_t ret = watering_channel_on(channel_id);
+    if (ret != WATERING_SUCCESS) {
+        LOG_ERROR("Error activating channel for task", ret);
+        return ret;
+    }
     
     k_mutex_lock(&watering_state_mutex, K_FOREVER);
+    
+    watering_task_state.watering_start_time = k_uptime_get_32();
+    watering_task_state.task_in_progress = true;
+    
     if (task->channel->watering_event.watering_mode == WATERING_BY_VOLUME) {
         reset_pulse_count();
         initial_pulse_count = 0;
-        printk("Started volumetric watering for channel %d: %d liters\n", channel_id + 1,
-               task->by_volume.volume_liters);
+        printk("Started volumetric watering for channel %d: %d liters\n", 
+               channel_id + 1, task->by_volume.volume_liters);
     } else {
-        printk("Started timed watering for channel %d: %d minutes\n", channel_id + 1,
-               task->channel->watering_event.watering.by_duration.duration_minutes);
+        printk("Started timed watering for channel %d: %d minutes\n", 
+               channel_id + 1, task->channel->watering_event.watering.by_duration.duration_minutes);
     }
+    
     watering_task_state.current_active_task = task;
     current_task_state = TASK_STATE_RUNNING;
+    
     k_mutex_unlock(&watering_state_mutex);
+    return WATERING_SUCCESS;
 }
 
 /**
@@ -141,35 +205,57 @@ void watering_start_task(watering_task_t *task) {
  * @return true if a task was stopped, false if no active task
  */
 bool watering_stop_current_task(void) {
+    k_mutex_lock(&watering_state_mutex, K_FOREVER);
+    
     if (watering_task_state.current_active_task == NULL) {
+        k_mutex_unlock(&watering_state_mutex);
         return false;  // No active task
     }
     
     uint8_t channel_id = watering_task_state.current_active_task->channel - watering_channels;
     watering_channel_off(channel_id);
+    
     uint32_t duration_ms = k_uptime_get_32() - watering_task_state.watering_start_time;
-    printk("Stopping watering for channel %d after %d seconds\n", channel_id + 1, duration_ms / 1000);
+    printk("Stopping watering for channel %d after %d seconds\n", 
+           channel_id + 1, duration_ms / 1000);
+    
     watering_task_state.current_active_task = NULL;
+    watering_task_state.task_in_progress = false;
     current_task_state = TASK_STATE_IDLE;
+    
+    k_mutex_unlock(&watering_state_mutex);
     return true;
 }
 
+/**
+ * @brief Check active tasks for completion or issues
+ * 
+ * @return 1 if tasks are active, 0 if idle, negative error code on failure
+ */
 int watering_check_tasks(void) {
-    check_flow_anomalies();
+    watering_error_t flow_check_result = check_flow_anomalies();
+    if (flow_check_result != WATERING_SUCCESS && flow_check_result != WATERING_ERROR_BUSY) {
+        return -flow_check_result;
+    }
+    
     k_mutex_lock(&watering_state_mutex, K_FOREVER);
+    
     if (system_status == WATERING_STATUS_FAULT) {
         k_mutex_unlock(&watering_state_mutex);
-        return 0;
+        return -WATERING_ERROR_BUSY;
     }
+    
     if (watering_task_state.current_active_task != NULL) {
         watering_event_t *event = &watering_task_state.current_active_task->channel->watering_event;
         uint8_t channel_id = watering_task_state.current_active_task->channel - watering_channels;
+        
         if (event->watering_mode == WATERING_BY_DURATION) {
             uint32_t elapsed_ms = k_uptime_get_32() - watering_task_state.watering_start_time;
             uint32_t duration_ms = (uint32_t) event->watering.by_duration.duration_minutes * 60 * 1000;
+            
             if (elapsed_ms >= duration_ms) {
-                printk("Watering duration reached for channel %d: %d minutes\n", channel_id + 1,
-                       event->watering.by_duration.duration_minutes);
+                printk("Watering duration reached for channel %d: %d minutes\n", 
+                       channel_id + 1, event->watering.by_duration.duration_minutes);
                 watering_stop_current_task();
                 current_task_state = TASK_STATE_COMPLETED;
             } else {
@@ -180,38 +266,51 @@ int watering_check_tasks(void) {
             uint32_t current_pulses = get_pulse_count();
             uint32_t total_pulses = initial_pulse_count + current_pulses;
             uint32_t required_pulses =
-                    (uint32_t) watering_task_state.current_active_task->by_volume.volume_liters * pulses_per_liter;
+                (uint32_t) watering_task_state.current_active_task->by_volume.volume_liters * pulses_per_liter;
+            
             if (total_pulses >= required_pulses) {
-                printk("Watering volume reached for channel %d: %d liters (pulses: %d/%d)\n", channel_id + 1,
-                       watering_task_state.current_active_task->by_volume.volume_liters, total_pulses, required_pulses);
+                printk("Watering volume reached for channel %d: %d liters (pulses: %d/%d)\n", 
+                       channel_id + 1, watering_task_state.current_active_task->by_volume.volume_liters, 
+                       total_pulses, required_pulses);
                 watering_stop_current_task();
                 current_task_state = TASK_STATE_COMPLETED;
             } else {
+                // Update initial pulse count BUT DON'T reset pulse counter to avoid missing pulses
                 initial_pulse_count += current_pulses;
-                reset_pulse_count();
+                reset_pulse_count();  // Reset for next reading
+                
                 float volume_dispensed = (float) total_pulses / pulses_per_liter;
                 float target_volume = watering_task_state.current_active_task->by_volume.volume_liters;
                 int progress_percent = (int) (volume_dispensed * 100 / target_volume);
+                
                 if (progress_percent % 10 == 0) {
-                    printk("Channel %d: Watering progress %d%% (%.1f / %d liters)\n", channel_id + 1, progress_percent,
-                           (double) volume_dispensed, watering_task_state.current_active_task->by_volume.volume_liters);
+                    printk("Channel %d: Watering progress %d%% (%.1f / %d liters)\n", 
+                           channel_id + 1, progress_percent, (double) volume_dispensed,
+                           watering_task_state.current_active_task->by_volume.volume_liters);
                 }
+                
                 k_mutex_unlock(&watering_state_mutex);
                 return 1;
             }
         }
     }
+    
     if (current_task_state != TASK_STATE_RUNNING) {
         if (system_status != WATERING_STATUS_OK && system_status != WATERING_STATUS_FAULT) {
             k_mutex_unlock(&watering_state_mutex);
             return 0;
         }
+        
         watering_task_t next_task;
         if (k_msgq_get(&watering_tasks_queue, &next_task, K_NO_WAIT) == 0) {
-            active_task_buffer = next_task;
+            // Make a local copy of the task for safety and store it in a persistent buffer
+            // to avoid race conditions where task data might be overwritten
+            memcpy(&active_task_buffer, &next_task, sizeof(watering_task_t));
             watering_task_state.current_active_task = &active_task_buffer;
-            watering_start_task(watering_task_state.current_active_task);
+            
+            // Start the task
             k_mutex_unlock(&watering_state_mutex);
+            watering_start_task(watering_task_state.current_active_task);
             return 1;
         }
 
@@ -219,35 +318,130 @@ int watering_check_tasks(void) {
             current_task_state = TASK_STATE_IDLE;
         }
     }
+    
     k_mutex_unlock(&watering_state_mutex);
     return (watering_task_state.current_active_task != NULL) ? 1 : 0;
 }
 
-void watering_cleanup_tasks(void) {
+/**
+ * @brief Clean up completed tasks and release resources
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_cleanup_tasks(void) {
+    k_mutex_lock(&watering_state_mutex, K_FOREVER);
+    
     if (current_task_state == TASK_STATE_COMPLETED && watering_task_state.current_active_task != NULL) {
         watering_task_state.current_active_task = NULL;
+        watering_task_state.task_in_progress = false;
         current_task_state = TASK_STATE_IDLE;
     }
+    
+    k_mutex_unlock(&watering_state_mutex);
+    return WATERING_SUCCESS;
 }
 
 /**
  * @brief Update the flow sensor calibration
  * 
  * @param new_pulses_per_liter New calibration value in pulses per liter
+ * @return WATERING_SUCCESS on success, error code on failure
  */
-void watering_set_flow_calibration(uint32_t new_pulses_per_liter) {
-    if (new_pulses_per_liter > 0) {
-        pulses_per_liter = new_pulses_per_liter;
-        printk("Flow sensor calibration updated: %d pulses per liter\n", pulses_per_liter);
+watering_error_t watering_set_flow_calibration(uint32_t new_pulses_per_liter) {
+    if (new_pulses_per_liter == 0) {
+        return WATERING_ERROR_INVALID_PARAM;
     }
+    
+    k_mutex_lock(&watering_state_mutex, K_FOREVER);
+    pulses_per_liter = new_pulses_per_liter;
+    k_mutex_unlock(&watering_state_mutex);
+    
+    printk("Flow sensor calibration updated: %d pulses per liter\n", new_pulses_per_liter);
+    return WATERING_SUCCESS;
 }
 
 /**
  * @brief Get the current flow sensor calibration
  * 
- * @return Current calibration value in pulses per liter
+ * @param pulses_per_liter_out Pointer to store the calibration value
+ * @return WATERING_SUCCESS on success, error code on failure
  */
-uint32_t watering_get_flow_calibration(void) { return pulses_per_liter; }
+watering_error_t watering_get_flow_calibration(uint32_t *pulses_per_liter_out) {
+    if (pulses_per_liter_out == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    k_mutex_lock(&watering_state_mutex, K_FOREVER);
+    *pulses_per_liter_out = pulses_per_liter;
+    k_mutex_unlock(&watering_state_mutex);
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Handle RTC failures
+ * 
+ * @return WATERING_SUCCESS if recovered, error code otherwise
+ */
+static watering_error_t handle_rtc_failure(void) {
+    rtc_error_count++;
+    printk("RTC error detected, count: %d/%d\n", rtc_error_count, MAX_RTC_ERRORS);
+    
+    if (rtc_error_count >= MAX_RTC_ERRORS) {
+        printk("Maximum RTC errors reached, entering RTC failure mode\n");
+        system_status = WATERING_STATUS_RTC_ERROR;
+        
+        // Try to initialize one final time with extended timeout
+        k_sleep(K_MSEC(100));
+        if (rtc_init() == 0 && rtc_is_available()) {
+            printk("Final RTC recovery attempt successful\n");
+            rtc_error_count = MAX_RTC_ERRORS - 1;
+            return WATERING_SUCCESS;
+        }
+        
+        return WATERING_ERROR_RTC_FAILURE;
+    }
+    
+    // Try to re-initialize RTC
+    if (rtc_init() == 0 && rtc_is_available()) {
+        printk("RTC recovery successful\n");
+        rtc_error_count = 0;
+        return WATERING_SUCCESS;
+    }
+    
+    return WATERING_ERROR_RTC_FAILURE;
+}
+
+/**
+ * @brief Update system time when RTC is not available
+ */
+static void update_system_time(void) {
+    uint32_t now = k_uptime_get_32();
+    
+    // Update time approximately every minute
+    if ((now - last_time_update) >= time_update_interval_ms) {
+        current_minute++;
+        if (current_minute >= 60) {
+            current_minute = 0;
+            current_hour++;
+            if (current_hour >= 24) {
+                current_hour = 0;
+                
+                // Update day of week (0=Sunday, 6=Saturday)
+                current_day_of_week = (current_day_of_week + 1) % 7;
+                
+                // Update the days counter and save it to persistent storage
+                days_since_start++;
+                watering_save_config();
+                
+                // Also update the last_day to detect day change even without RTC
+                last_day = (last_day % 31) + 1;
+                printk("Day changed (system time), days since start: %d\n", days_since_start);
+            }
+        }
+        last_time_update = now;
+    }
+}
 
 /**
  * @brief Thread function for watering task processing
@@ -258,11 +452,28 @@ static void watering_task_fn(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p3);
     
     printk("Watering processing task started\n");
+    
     while (!exit_tasks) {
         watering_check_tasks();
         watering_cleanup_tasks();
-        k_sleep(K_MSEC(500));
+        
+        // Sleep duration based on power mode
+        uint32_t sleep_time = 500;
+        switch (current_power_mode) {
+            case POWER_MODE_NORMAL:
+                sleep_time = 500;
+                break;
+            case POWER_MODE_ENERGY_SAVING:
+                sleep_time = 1000;
+                break;
+            case POWER_MODE_ULTRA_LOW_POWER:
+                sleep_time = 2000;
+                break;
+        }
+        
+        k_sleep(K_MSEC(sleep_time));
     }
+    
     printk("Watering processing task stopped\n");
 }
 
@@ -275,24 +486,124 @@ static void scheduler_task_fn(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p3);
     
     printk("Watering scheduler task started\n");
-    while (!exit_tasks) {
-        watering_scheduler_run();
-        k_sleep(K_SECONDS(60));
+    
+    // Initialize RTC access
+    int rtc_status = rtc_init();
+    if (rtc_status != 0) {
+        printk("ERROR: Failed to initialize RTC. Will use system time instead.\n");
+        system_status = WATERING_STATUS_RTC_ERROR;
+    } else {
+        printk("RTC initialized successfully\n");
     }
+    
+    // Initial time read
+    rtc_datetime_t now;
+    if (rtc_status == 0 && rtc_datetime_get(&now) == 0) {
+        current_hour = now.hour;
+        current_minute = now.minute;
+        current_day_of_week = now.day_of_week;
+        last_day = now.day;
+        printk("Current time from RTC: %02d:%02d, day %d\n", 
+               current_hour, current_minute, current_day_of_week);
+    } else {
+        // If RTC isn't available, use system time as fallback
+        printk("Using system time as fallback\n");
+        // Set simple values for initial running
+        current_hour = 12;
+        current_minute = 0;
+        current_day_of_week = 1;
+        last_day = 1;
+        
+        // Initialize the last update time
+        last_time_update = k_uptime_get_32();
+    }
+    
+    while (!exit_tasks) {
+        bool rtc_read_success = false;
+        
+        // Check if RTC is available and update time
+        if (rtc_status == 0) {
+            if (rtc_datetime_get(&now) == 0) {
+                current_hour = now.hour;
+                current_minute = now.minute;
+                current_day_of_week = now.day_of_week;
+                rtc_read_success = true;
+                
+                // Reset error count on successful read
+                if (rtc_error_count > 0) {
+                    rtc_error_count--;
+                }
+                
+                // Detect day change to increment days_since_start
+                if (now.day != last_day) {
+                    days_since_start++;
+                    last_day = now.day;
+                    // Save days_since_start immediately to prevent loss on power failure
+                    watering_save_config();
+                    printk("Day changed, days since start: %d\n", days_since_start);
+                }
+            } else {
+                // Handle RTC failure
+                handle_rtc_failure();
+            }
+        } else {
+            // RTC not available, use internal time tracking
+            update_system_time();
+            rtc_read_success = true; // We'll use our system time
+        }
+        
+        // Only run scheduler if we have valid time data
+        if (rtc_read_success) {
+            watering_scheduler_run();
+        }
+        
+        // Sleep duration based on power mode
+        uint32_t sleep_time = 60;
+        switch (current_power_mode) {
+            case POWER_MODE_NORMAL:
+                sleep_time = 60;
+                break;
+            case POWER_MODE_ENERGY_SAVING:
+                sleep_time = 120;
+                break;
+            case POWER_MODE_ULTRA_LOW_POWER:
+                sleep_time = 300;
+                break;
+        }
+        
+        k_sleep(K_SECONDS(sleep_time));
+    }
+    
     printk("Watering scheduler task stopped\n");
 }
 
 /**
  * @brief Run the watering scheduler to check for scheduled tasks
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
  */
-void watering_scheduler_run(void) {
-    printk("Running watering scheduler [time %02d:%02d, day %d]\n", current_hour, current_minute, current_day_of_week);
+watering_error_t watering_scheduler_run(void) {
+    printk("Running watering scheduler [time %02d:%02d, day %d]\n", 
+           current_hour, current_minute, current_day_of_week);
+    
+    if (system_status == WATERING_STATUS_FAULT || system_status == WATERING_STATUS_RTC_ERROR) {
+        return WATERING_ERROR_BUSY;
+    }
+    
+    // Validate time values
+    if (current_hour > 23 || current_minute > 59 || current_day_of_week > 6) {
+        LOG_ERROR("Invalid time values in scheduler", WATERING_ERROR_INVALID_PARAM);
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
         watering_channel_t *channel = &watering_channels[i];
         watering_event_t *event = &channel->watering_event;
+        
         if (!event->auto_enabled) {
             continue;
         }
+        
         bool should_run = false;
         if (event->start_time.hour == current_hour && event->start_time.minute == current_minute) {
             if (event->schedule_type == SCHEDULE_DAILY) {
@@ -300,55 +611,73 @@ void watering_scheduler_run(void) {
                     should_run = true;
                 }
             } else if (event->schedule_type == SCHEDULE_PERIODIC) {
-                if (days_since_start % event->schedule.periodic.interval_days == 0) {
+                if (event->schedule.periodic.interval_days > 0 && 
+                    days_since_start % event->schedule.periodic.interval_days == 0) {
                     should_run = true;
                 }
             }
         }
+        
         if (should_run) {
             watering_task_t new_task;
             new_task.channel = channel;
+            
             if (event->watering_mode == WATERING_BY_DURATION) {
                 new_task.by_time.start_time = k_uptime_get_32();
             } else {
                 new_task.by_volume.volume_liters = event->watering.by_volume.volume_liters;
             }
-            watering_add_task(&new_task);
-            channel->last_watering_time = k_uptime_get_32();
-            printk("Watering schedule added for channel %d\n", i + 1);
+            
+            watering_error_t result = watering_add_task(&new_task);
+            if (result == WATERING_SUCCESS) {
+                channel->last_watering_time = k_uptime_get_32();
+                printk("Watering schedule added for channel %d\n", i + 1);
+            } else {
+                printk("Failed to add scheduled task for channel %d: error %d\n", i + 1, result);
+            }
         }
     }
+    
+    return WATERING_SUCCESS;
 }
 
 /**
  * @brief Start the background tasks for watering operations
  * 
- * @return 0 on success, negative error code on failure
+ * @return WATERING_SUCCESS on success, error code on failure
  */
-int watering_start_tasks(void) {
+watering_error_t watering_start_tasks(void) {
+    if (!system_initialized) {
+        return WATERING_ERROR_NOT_INITIALIZED;
+    }
+    
     if (watering_tasks_running) {
         printk("Watering tasks already running\n");
-        return 0;
+        return WATERING_SUCCESS;
     }
+    
     exit_tasks = false;
     
     // Create watering task thread
     k_tid_t watering_tid =
-            k_thread_create(&watering_task_data, watering_task_stack, K_THREAD_STACK_SIZEOF(watering_task_stack),
-                            watering_task_fn, NULL, NULL, NULL, K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
+        k_thread_create(&watering_task_data, watering_task_stack, K_THREAD_STACK_SIZEOF(watering_task_stack),
+                        watering_task_fn, NULL, NULL, NULL, K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
 
     if (watering_tid == NULL) {
-        printk("Error creating watering processing task\n");
-        return -1;
+        LOG_ERROR("Error creating watering processing task", WATERING_ERROR_CONFIG);
+        return WATERING_ERROR_CONFIG;
     }
     
     // Create scheduler thread
     k_tid_t scheduler_tid =
-            k_thread_create(&scheduler_task_data, scheduler_task_stack, K_THREAD_STACK_SIZEOF(scheduler_task_stack),
-                            scheduler_task_fn, NULL, NULL, NULL, K_PRIO_PREEMPT(7), 0, K_NO_WAIT);
+        k_thread_create(&scheduler_task_data, scheduler_task_stack, K_THREAD_STACK_SIZEOF(scheduler_task_stack),
+                        scheduler_task_fn, NULL, NULL, NULL, K_PRIO_PREEMPT(7), 0, K_NO_WAIT);
     if (scheduler_tid == NULL) {
-        printk("Error creating scheduler task\n");
-        return -2;
+        LOG_ERROR("Error creating scheduler task", WATERING_ERROR_CONFIG);
+        // Cleanup the watering thread
+        exit_tasks = true;
+        k_thread_abort(watering_tid);
+        return WATERING_ERROR_CONFIG;
     }
     
     // Set thread names for debugging
@@ -356,19 +685,83 @@ int watering_start_tasks(void) {
     k_thread_name_set(scheduler_tid, "scheduler_task");
     watering_tasks_running = true;
     printk("Watering tasks successfully started\n");
-    return 0;
+    return WATERING_SUCCESS;
 }
 
 /**
  * @brief Stop all background watering tasks
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
  */
-void watering_stop_tasks(void) {
+watering_error_t watering_stop_tasks(void) {
     if (!watering_tasks_running) {
-        return;
+        return WATERING_SUCCESS;
     }
+    
     printk("Stopping watering tasks...\n");
     exit_tasks = true;
     k_sleep(K_SECONDS(1));
+    
+    // Ensure all channels are turned off
+    for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+        watering_channel_off(i);
+    }
+    
     watering_tasks_running = false;
     printk("Watering tasks stopped\n");
+    return WATERING_SUCCESS;
 }
+
+/**
+ * @brief Validate watering event configuration
+ * 
+ * @param event Pointer to watering event to validate
+ * @return WATERING_SUCCESS if valid, error code if invalid
+ */
+watering_error_t watering_validate_event_config(const watering_event_t *event) {
+    if (event == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Validate schedule type
+    if (event->schedule_type != SCHEDULE_DAILY && event->schedule_type != SCHEDULE_PERIODIC) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Validate watering mode
+    if (event->watering_mode != WATERING_BY_DURATION && event->watering_mode != WATERING_BY_VOLUME) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Validate schedule parameters
+    if (event->schedule_type == SCHEDULE_DAILY) {
+        // At least one day of week should be selected
+        if (event->schedule.daily.days_of_week == 0) {
+            return WATERING_ERROR_INVALID_PARAM;
+        }
+    } else {
+        // Periodic schedule should have interval > 0
+        if (event->schedule.periodic.interval_days == 0) {
+            return WATERING_ERROR_INVALID_PARAM;
+        }
+    }
+    
+    // Validate watering parameters
+    if (event->watering_mode == WATERING_BY_DURATION) {
+        if (event->watering.by_duration.duration_minutes == 0) {
+            return WATERING_ERROR_INVALID_PARAM;
+        }
+    } else {
+        if (event->watering.by_volume.volume_liters == 0) {
+            return WATERING_ERROR_INVALID_PARAM;
+        }
+    }
+    
+    // Validate start time
+    if (event->start_time.hour > 23 || event->start_time.minute > 59) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    return WATERING_SUCCESS;
+}
+
