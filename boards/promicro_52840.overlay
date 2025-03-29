@@ -68,10 +68,15 @@
     clock-frequency = <I2C_BITRATE_STANDARD>;
     
     ds3231: ds3231@68 {
-        compatible = "maxim,ds3231";
+        compatible = "maxim,ds3231-mfd";  /* Only specify the MFD compatible for parent */
         reg = <0x68>;
-        isw-gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;
         status = "okay";
+        
+        rtc {
+            compatible = "maxim,ds3231-rtc";
+            status = "okay";
+            isw-gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;
+        };
     };
 };
 

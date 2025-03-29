@@ -15,11 +15,8 @@
  * using Zephyr's RTC driver API to get and set accurate time information.
  */
 
-/* RTC device node in devicetree */
-#define RTC_NODE DT_ALIAS(rtc0)
-
-/* RTC device for DS3231 */
-static const struct device *rtc_dev = DEVICE_DT_GET(RTC_NODE);
+/* RTC device pointer for DS3231 */
+static const struct device *rtc_dev = NULL;
 
 /**
  * @brief Initialize the RTC device
@@ -31,13 +28,31 @@ int rtc_init(void) {
     
     // Only attempt to initialize once
     if (init_attempted) {
-        return (device_is_ready(rtc_dev)) ? 0 : -ENODEV;
+        return (rtc_dev && device_is_ready(rtc_dev)) ? 0 : -ENODEV;
     }
     
     init_attempted = true;
     
-    if (!device_is_ready(rtc_dev)) {
-        printk("DS3231 device not ready\n");
+    // Try to get the RTC device using the correct compatible string (maxim,ds3231-rtc)
+    rtc_dev = DEVICE_DT_GET_ONE(maxim_ds3231_rtc);
+    
+    // Try alternate methods if the first attempt fails
+    if (!rtc_dev || !device_is_ready(rtc_dev)) {
+        // Try by alias (requires rtc0 to point to the RTC child node)
+        rtc_dev = DEVICE_DT_GET_OR_NULL(DT_ALIAS(rtc0));
+    }
+    
+    // Try binding by name as last resort
+    if (!rtc_dev || !device_is_ready(rtc_dev)) {
+        rtc_dev = device_get_binding("DS3231");
+    }
+    
+    if (!rtc_dev || !device_is_ready(rtc_dev)) {
+        rtc_dev = device_get_binding("RTC_0");
+    }
+    
+    if (!rtc_dev || !device_is_ready(rtc_dev)) {
+        printk("DS3231 device not ready or not available\n");
         return -ENODEV;
     }
     
@@ -52,7 +67,6 @@ int rtc_init(void) {
  * @return 0 on success, negative error code on failure
  */
 int rtc_datetime_get(rtc_datetime_t *datetime) {
-    // Removed DT_NODE_EXISTS check to avoid compile-time device tree references
     if (!rtc_dev || !datetime) {
         return -EINVAL;
     }
@@ -123,7 +137,7 @@ int rtc_datetime_set(const rtc_datetime_t *datetime) {
  * @return true if RTC is responding, false otherwise
  */
 bool rtc_is_available(void) {
-    if (!device_is_ready(rtc_dev)) {
+    if (!rtc_dev || !device_is_ready(rtc_dev)) {
         return false;
     }
     

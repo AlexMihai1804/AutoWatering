@@ -76,7 +76,6 @@ static uint8_t rtc_error_count = 0;
 
 /** System time tracking for RTC fallback */
 static uint32_t last_time_update = 0;
-static uint32_t time_update_interval_ms = 60000; // 1 minute interval
 
 /**
  * @brief Initialize the task management system
@@ -418,27 +417,41 @@ static watering_error_t handle_rtc_failure(void) {
 static void update_system_time(void) {
     uint32_t now = k_uptime_get_32();
     
-    // Update time approximately every minute
-    if ((now - last_time_update) >= time_update_interval_ms) {
-        current_minute++;
-        if (current_minute >= 60) {
-            current_minute = 0;
-            current_hour++;
-            if (current_hour >= 24) {
-                current_hour = 0;
+    // Calculate actual elapsed time and update accordingly
+    if (now >= last_time_update) {  // Handle uint32_t overflow
+        uint32_t elapsed_ms = now - last_time_update;
+        uint32_t elapsed_minutes = elapsed_ms / 60000;  // Convert ms to minutes using the intended interval
+        
+        if (elapsed_minutes > 0) {
+            // Add the actual number of minutes that passed
+            current_minute += elapsed_minutes;
+            
+            // Handle minute overflow
+            while (current_minute >= 60) {
+                current_minute -= 60;
+                current_hour++;
                 
-                // Update day of week (0=Sunday, 6=Saturday)
-                current_day_of_week = (current_day_of_week + 1) % 7;
-                
-                // Update the days counter and save it to persistent storage
-                days_since_start++;
-                watering_save_config();
-                
-                // Also update the last_day to detect day change even without RTC
-                last_day = (last_day % 31) + 1;
-                printk("Day changed (system time), days since start: %d\n", days_since_start);
+                if (current_hour >= 24) {
+                    current_hour = 0;
+                    
+                    // Update day of week (0=Sunday, 6=Saturday)
+                    current_day_of_week = (current_day_of_week + 1) % 7;
+                    
+                    // Update the days counter
+                    days_since_start++;
+                    watering_save_config();
+                    
+                    // Update the last_day to detect day change
+                    last_day = (last_day % 31) + 1;
+                    printk("Day changed (system time), days since start: %d\n", days_since_start);
+                }
             }
+            
+            // Update only when we've processed the elapsed time
+            last_time_update = now - (elapsed_ms % 60000);
         }
+    } else {
+        // Handle timer overflow
         last_time_update = now;
     }
 }
@@ -612,7 +625,8 @@ watering_error_t watering_scheduler_run(void) {
                 }
             } else if (event->schedule_type == SCHEDULE_PERIODIC) {
                 if (event->schedule.periodic.interval_days > 0 && 
-                    days_since_start % event->schedule.periodic.interval_days == 0) {
+                    days_since_start > 0 &&  // Avoid triggering on first day
+                    (days_since_start % event->schedule.periodic.interval_days) == 0) {
                     should_run = true;
                 }
             }
@@ -764,4 +778,3 @@ watering_error_t watering_validate_event_config(const watering_event_t *event) {
     
     return WATERING_SUCCESS;
 }
-

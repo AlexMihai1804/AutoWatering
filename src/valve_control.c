@@ -25,6 +25,21 @@ static const struct gpio_dt_spec valve6 = GPIO_DT_SPEC_GET(DT_PATH(valves, valve
 static const struct gpio_dt_spec valve7 = GPIO_DT_SPEC_GET(DT_PATH(valves, valve7), gpios);
 static const struct gpio_dt_spec valve8 = GPIO_DT_SPEC_GET(DT_PATH(valves, valve8), gpios);
 
+/** Maximum number of valves that can be active simultaneously */
+#define MAX_SIMULTANEOUS_VALVES 3
+
+/** Counter for active valves */
+static int active_valves_count = 0;
+
+/**
+ * @brief Check if another valve can be safely activated
+ * 
+ * @return true if activation is safe, false if max valves reached
+ */
+static bool is_valve_activation_safe(void) {
+    return (active_valves_count < MAX_SIMULTANEOUS_VALVES);
+}
+
 /**
  * @brief Initialize all valve hardware
  * 
@@ -81,6 +96,12 @@ watering_error_t watering_channel_on(uint8_t channel_id) {
         return WATERING_ERROR_NOT_INITIALIZED;
     }
     
+    // Check if we can safely activate another valve
+    if (!is_valve_activation_safe()) {
+        printk("WARNING: Max valve activation limit reached, delaying activation of channel %d\n", channel_id + 1);
+        return WATERING_ERROR_BUSY;
+    }
+    
     watering_channel_t *channel = &watering_channels[channel_id];
     if (!device_is_ready(channel->valve.port)) {
         printk("ERROR: GPIO port %p for channel %d not ready\n", 
@@ -99,6 +120,7 @@ watering_error_t watering_channel_on(uint8_t channel_id) {
     
     if (ret == 0) {
         channel->is_active = true;
+        active_valves_count++;  // Increment count of active valves
         
         // If we were in idle state, transition to watering state
         if (system_state == WATERING_STATE_IDLE) {
@@ -135,7 +157,11 @@ watering_error_t watering_channel_off(uint8_t channel_id) {
     int ret = gpio_pin_set_dt(&channel->valve, 0);
     
     if (ret == 0) {
-        channel->is_active = false;
+        if (channel->is_active) {
+            // Only decrement if it was actually active
+            channel->is_active = false;
+            active_valves_count--;  // Decrement active valve count
+        }
         
         // Check if any channels are still active
         bool any_active = false;
