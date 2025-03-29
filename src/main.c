@@ -7,6 +7,7 @@
 #include "watering.h"
 #include "watering_internal.h"  // Add this include to access DEFAULT_PULSES_PER_LITER
 #include "rtc.h"
+#include "bt_irrigation_service.h"  // Add this include
 
 /**
  * @file main.c
@@ -125,6 +126,13 @@ static watering_error_t initialize_hardware(void) {
         }
     }
     
+    // Initialize Bluetooth communication
+    int bt_err = bt_irrigation_service_init();
+    if (bt_err != 0) {
+        printk("WARNING: Bluetooth initialization failed: %d\n", bt_err);
+        // Continue anyway as Bluetooth is optional
+    }
+    
     return WATERING_SUCCESS;
 }
 
@@ -192,29 +200,23 @@ static watering_error_t run_valve_test(void) {
  * @return WATERING_SUCCESS on success, error code on failure
  */
 static watering_error_t create_demo_task(void) {
-    watering_task_t test_task;
-    watering_channel_t *channel;
     watering_error_t err;
     
-    // Get first channel
-    err = watering_get_channel(0, &channel);
-    if (err != WATERING_SUCCESS) {
-        printk("Error getting channel: %d\n", err);
+    // Creează un task de volum pentru canalul 1 (2 litri)
+    err = watering_add_volume_task(0, 2);
+    if (err == WATERING_SUCCESS) {
+        printk("Demonstration volume task added for channel 1 (2 liters)\n");
+    } else {
+        printk("Error adding volume task: %d\n", err);
         return err;
     }
     
-    // Configure demo task
-    test_task.channel = channel;
-    test_task.channel->watering_event.watering_mode = WATERING_BY_VOLUME;
-    test_task.channel->watering_event.watering.by_volume.volume_liters = 2;
-    test_task.by_volume.volume_liters = 2;
-    
-    // Add task to queue
-    err = watering_add_task(&test_task);
+    // Creează un task de durată pentru canalul 2 (1 minut)
+    err = watering_add_duration_task(1, 1);
     if (err == WATERING_SUCCESS) {
-        printk("Demonstration task added for channel 1 (2 liters)\n");
+        printk("Demonstration duration task added for channel 2 (1 minute)\n");
     } else {
-        printk("Error adding demonstration task: %d\n", err);
+        printk("Error adding duration task: %d\n", err);
     }
     
     return err;
@@ -286,7 +288,14 @@ int main(void) {
             
             // Log current system state
             printk("Main thread: system status: %d, state: %d\n", status, state);
+            
+            // Update Bluetooth status
+            bt_irrigation_system_status_update(status);
         }
+        
+        // Update flow data over Bluetooth
+        uint32_t pulses = get_pulse_count();
+        bt_irrigation_flow_update(pulses);
         
         // Periodically save configuration
         uint32_t now = k_uptime_get_32();

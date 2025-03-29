@@ -313,4 +313,23 @@ watering_error_t watering_set_power_mode(power_mode_t mode);
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_get_power_mode(power_mode_t *mode);
+
+/**
+ * @brief Adaugă un task de irigare bazat pe durată pentru un canal specific
+ * 
+ * @param channel_id ID-ul canalului (index bazat pe 0)
+ * @param minutes Durata irigării în minute
+ * @return WATERING_SUCCESS pe succes, cod de eroare la eșec
+ */
+watering_error_t watering_add_duration_task(uint8_t channel_id, uint16_t minutes);
+
+/**
+ * @brief Adaugă un task de irigare bazat pe volum pentru un canal specific
+ * 
+ * @param channel_id ID-ul canalului (index bazat pe 0)
+ * @param liters Volumul de apă în litri
+ * @return WATERING_SUCCESS pe succes, cod de eroare la eșec
+ */
+watering_error_t watering_add_volume_task(uint8_t channel_id, uint16_t liters);
+
 #endif // WATERING_H

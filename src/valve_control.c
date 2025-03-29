@@ -26,7 +26,7 @@ static const struct gpio_dt_spec valve7 = GPIO_DT_SPEC_GET(DT_PATH(valves, valve
 static const struct gpio_dt_spec valve8 = GPIO_DT_SPEC_GET(DT_PATH(valves, valve8), gpios);
 
 /** Maximum number of valves that can be active simultaneously */
-#define MAX_SIMULTANEOUS_VALVES 3
+#define MAX_SIMULTANEOUS_VALVES 1
 
 /** Counter for active valves */
 static int active_valves_count = 0;

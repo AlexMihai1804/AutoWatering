@@ -18,6 +18,7 @@ target_sources(app PRIVATE
   src/rtc.c
   src/valve_control.c
   src/watering_log.c
+  src/bt_irrigation_service.c
 )
 
 # Ensure the include directories are available

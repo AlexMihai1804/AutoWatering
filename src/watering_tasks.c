@@ -247,11 +247,9 @@ int watering_check_tasks(void) {
     if (watering_task_state.current_active_task != NULL) {
         watering_event_t *event = &watering_task_state.current_active_task->channel->watering_event;
         uint8_t channel_id = watering_task_state.current_active_task->channel - watering_channels;
-        
         if (event->watering_mode == WATERING_BY_DURATION) {
             uint32_t elapsed_ms = k_uptime_get_32() - watering_task_state.watering_start_time;
             uint32_t duration_ms = (uint32_t) event->watering.by_duration.duration_minutes * 60 * 1000;
-            
             if (elapsed_ms >= duration_ms) {
                 printk("Watering duration reached for channel %d: %d minutes\n", 
                        channel_id + 1, event->watering.by_duration.duration_minutes);
@@ -259,14 +257,13 @@ int watering_check_tasks(void) {
                 current_task_state = TASK_STATE_COMPLETED;
             } else {
                 k_mutex_unlock(&watering_state_mutex);
-                return 1;
+                return 1;  // Task still in progress
             }
         } else if (event->watering_mode == WATERING_BY_VOLUME) {
             uint32_t current_pulses = get_pulse_count();
             uint32_t total_pulses = initial_pulse_count + current_pulses;
-            uint32_t required_pulses =
+            uint32_t required_pulses = 
                 (uint32_t) watering_task_state.current_active_task->by_volume.volume_liters * pulses_per_liter;
-            
             if (total_pulses >= required_pulses) {
                 printk("Watering volume reached for channel %d: %d liters (pulses: %d/%d)\n", 
                        channel_id + 1, watering_task_state.current_active_task->by_volume.volume_liters, 
@@ -277,17 +274,14 @@ int watering_check_tasks(void) {
                 // Update initial pulse count BUT DON'T reset pulse counter to avoid missing pulses
                 initial_pulse_count += current_pulses;
                 reset_pulse_count();  // Reset for next reading
-                
                 float volume_dispensed = (float) total_pulses / pulses_per_liter;
                 float target_volume = watering_task_state.current_active_task->by_volume.volume_liters;
                 int progress_percent = (int) (volume_dispensed * 100 / target_volume);
-                
                 if (progress_percent % 10 == 0) {
                     printk("Channel %d: Watering progress %d%% (%.1f / %d liters)\n", 
                            channel_id + 1, progress_percent, (double) volume_dispensed,
                            watering_task_state.current_active_task->by_volume.volume_liters);
                 }
-                
                 k_mutex_unlock(&watering_state_mutex);
                 return 1;
             }
@@ -300,10 +294,10 @@ int watering_check_tasks(void) {
             return 0;
         }
         
+        // Get next task from queue
         watering_task_t next_task;
         if (k_msgq_get(&watering_tasks_queue, &next_task, K_NO_WAIT) == 0) {
-            // Make a local copy of the task for safety and store it in a persistent buffer
-            // to avoid race conditions where task data might be overwritten
+            // Make a local copy of the task
             memcpy(&active_task_buffer, &next_task, sizeof(watering_task_t));
             watering_task_state.current_active_task = &active_task_buffer;
             
@@ -645,7 +639,7 @@ watering_error_t watering_scheduler_run(void) {
             watering_error_t result = watering_add_task(&new_task);
             if (result == WATERING_SUCCESS) {
                 channel->last_watering_time = k_uptime_get_32();
-                printk("Watering schedule added for channel %d\n", i + 1);
+                printk("Watering schedule added for channel %d (added to task queue)\n", i + 1);
             } else {
                 printk("Failed to add scheduled task for channel %d: error %d\n", i + 1, result);
             }
@@ -676,7 +670,6 @@ watering_error_t watering_start_tasks(void) {
     k_tid_t watering_tid =
         k_thread_create(&watering_task_data, watering_task_stack, K_THREAD_STACK_SIZEOF(watering_task_stack),
                         watering_task_fn, NULL, NULL, NULL, K_PRIO_PREEMPT(5), 0, K_NO_WAIT);
-
     if (watering_tid == NULL) {
         LOG_ERROR("Error creating watering processing task", WATERING_ERROR_CONFIG);
         return WATERING_ERROR_CONFIG;
@@ -777,4 +770,76 @@ watering_error_t watering_validate_event_config(const watering_event_t *event) {
     }
     
     return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Adaugă un task de irigare bazat pe durată pentru un canal specific
+ * 
+ * @param channel_id ID-ul canalului
+ * @param minutes Durata în minute
+ * @return WATERING_SUCCESS pe succes, cod de eroare la eșec
+ */
+watering_error_t watering_add_duration_task(uint8_t channel_id, uint16_t minutes) {
+    watering_task_t new_task;
+    watering_channel_t *channel;
+    watering_error_t err;
+    
+    // Validare parametri
+    if (channel_id >= WATERING_CHANNELS_COUNT || minutes == 0) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Obține referință la canal
+    err = watering_get_channel(channel_id, &channel);
+    if (err != WATERING_SUCCESS) {
+        printk("Eroare la obținerea canalului %d: %d\n", channel_id, err);
+        return err;
+    }
+    
+    // Configurează task-ul
+    new_task.channel = channel;
+    new_task.channel->watering_event.watering_mode = WATERING_BY_DURATION;
+    new_task.channel->watering_event.watering.by_duration.duration_minutes = minutes;
+    new_task.by_time.start_time = k_uptime_get_32();
+    
+    // Adaugă task-ul la coadă
+    printk("Se adaugă task de udare de %d minute pentru canalul %d\n", 
+           minutes, channel_id + 1);
+    return watering_add_task(&new_task);
+}
+
+/**
+ * @brief Adaugă un task de irigare bazat pe volum pentru un canal specific
+ * 
+ * @param channel_id ID-ul canalului
+ * @param liters Volumul în litri
+ * @return WATERING_SUCCESS pe succes, cod de eroare la eșec
+ */
+watering_error_t watering_add_volume_task(uint8_t channel_id, uint16_t liters) {
+    watering_task_t new_task;
+    watering_channel_t *channel;
+    watering_error_t err;
+    
+    // Validare parametri
+    if (channel_id >= WATERING_CHANNELS_COUNT || liters == 0) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Obține referință la canal
+    err = watering_get_channel(channel_id, &channel);
+    if (err != WATERING_SUCCESS) {
+        printk("Eroare la obținerea canalului %d: %d\n", channel_id, err);
+        return err;
+    }
+    
+    // Configurează task-ul
+    new_task.channel = channel;
+    new_task.channel->watering_event.watering_mode = WATERING_BY_VOLUME;
+    new_task.channel->watering_event.watering.by_volume.volume_liters = liters;
+    new_task.by_volume.volume_liters = liters;
+    
+    // Adaugă task-ul la coadă
+    printk("Se adaugă task de udare de %d litri pentru canalul %d\n", 
+           liters, channel_id + 1);
+    return watering_add_task(&new_task);
 }
