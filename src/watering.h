@@ -332,4 +332,20 @@ watering_error_t watering_add_duration_task(uint8_t channel_id, uint16_t minutes
  */
 watering_error_t watering_add_volume_task(uint8_t channel_id, uint16_t liters);
 
+/**
+ * @brief Anulează toate task-urile și curăță coada de așteptare
+ * 
+ * @return Numărul de task-uri anulate
+ */
+int watering_cancel_all_tasks(void);
+
+/**
+ * @brief Obține statusul cozii de așteptare
+ * 
+ * @param pending_count Pointer unde se va stoca numărul de task-uri în așteptare
+ * @param active Flag care indică dacă există un task activ
+ * @return 0 pe succes, cod de eroare pe eșec
+ */
+watering_error_t watering_get_queue_status(uint8_t *pending_count, bool *active);
+
 #endif // WATERING_H

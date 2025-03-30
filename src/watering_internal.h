@@ -154,4 +154,27 @@ watering_error_t valve_init(void);
  */
 watering_error_t valve_close_all(void);
 
+/**
+ * @brief Golește coada de task-uri în așteptare
+ * 
+ * @return Numărul de task-uri eliminate
+ */
+int watering_clear_task_queue(void);
+
+/**
+ * @brief Obține numărul de task-uri în așteptare
+ * 
+ * @return Numărul de task-uri în așteptare
+ */
+int watering_get_pending_tasks_count(void);
+
+/**
+ * @brief Obține informații despre task-urile în așteptare
+ * 
+ * @param tasks_info Buffer pentru informații despre task-uri
+ * @param max_tasks Dimensiunea maximă a buffer-ului
+ * @return Numărul de task-uri copiate în buffer
+ */
+int watering_get_pending_tasks_info(void *tasks_info, int max_tasks);
+
 #endif // WATERING_INTERNAL_H

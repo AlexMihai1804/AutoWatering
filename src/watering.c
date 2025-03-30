@@ -313,3 +313,44 @@ void cleanup_resources(void) {
     // Release any held resources
     printk("Resources cleaned up for shutdown\n");
 }
+
+/**
+ * @brief Anulează toate task-urile și curăță coada de așteptare
+ * 
+ * @return Numărul de task-uri anulate
+ */
+int watering_cancel_all_tasks(void) {
+    int removed = 0;
+    
+    // Mai întâi, oprim task-ul curent dacă există
+    if (watering_stop_current_task()) {
+        removed = 1;
+    }
+    
+    // Apoi, golim coada de task-uri în așteptare
+    removed += watering_clear_task_queue();
+    
+    return removed;
+}
+
+/**
+ * @brief Obține statusul cozii de așteptare
+ * 
+ * @param pending_count Pointer unde se va stoca numărul de task-uri în așteptare
+ * @param active Flag care indică dacă există un task activ
+ * @return WATERING_SUCCESS pe succes, cod de eroare pe eșec
+ */
+watering_error_t watering_get_queue_status(uint8_t *pending_count, bool *active) {
+    if (pending_count == NULL || active == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    k_mutex_lock(&system_state_mutex, K_FOREVER);
+    
+    *pending_count = watering_get_pending_tasks_count();
+    *active = (watering_task_state.current_active_task != NULL);
+    
+    k_mutex_unlock(&system_state_mutex);
+    
+    return WATERING_SUCCESS;
+}

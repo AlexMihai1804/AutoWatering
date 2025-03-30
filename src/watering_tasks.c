@@ -843,3 +843,71 @@ watering_error_t watering_add_volume_task(uint8_t channel_id, uint16_t liters) {
            liters, channel_id + 1);
     return watering_add_task(&new_task);
 }
+
+/**
+ * @brief Golește coada de task-uri în așteptare
+ * 
+ * @return Numărul de task-uri eliminate
+ */
+int watering_clear_task_queue(void) {
+    int count = 0;
+    watering_task_t dummy_task;
+    
+    // Lock pentru protecția cozii
+    k_mutex_lock(&watering_state_mutex, K_FOREVER);
+    
+    // Încercăm să golim coada extragând task-urile până când e goală
+    while (k_msgq_get(&watering_tasks_queue, &dummy_task, K_NO_WAIT) == 0) {
+        count++;
+    }
+    
+    // Dacă e necesar, putem reconstrui coada goală pentru a reseta complet starea
+    if (count > 0) {
+        k_msgq_purge(&watering_tasks_queue);
+    }
+    
+    printk("Au fost eliminate %d task-uri din coadă\n", count);
+    
+    k_mutex_unlock(&watering_state_mutex);
+    return count;
+}
+
+/**
+ * @brief Obține numărul de task-uri în așteptare
+ * 
+ * @return Numărul de task-uri în așteptare
+ */
+int watering_get_pending_tasks_count(void) {
+    // Folosind funcția Zephyr pentru a obține numărul de mesaje utilizate din coadă
+    return k_msgq_num_used_get(&watering_tasks_queue);
+}
+
+/**
+ * @brief Structură pentru informații despre un task în așteptare
+ * Folosită pentru stocarea informațiilor despre task-uri
+ */
+typedef struct {
+    uint8_t channel_id;
+    uint8_t task_type;   // 0=durată, 1=volum
+    uint16_t value;      // minute sau litri
+} watering_task_info_t;
+
+/**
+ * @brief Obține informații despre task-urile în așteptare
+ * 
+ * @param tasks_info Buffer pentru informații despre task-uri (watering_task_info_t[])
+ * @param max_tasks Dimensiunea maximă a buffer-ului
+ * @return Numărul de task-uri copiate în buffer
+ */
+int watering_get_pending_tasks_info(void *tasks_info, int max_tasks) {
+    // Această implementare este mai complexă deoarece nu putem itera printr-o coadă de mesaje
+    // fără a le elimina. O abordare alternativă ar fi să copiem coada într-un buffer temporar
+    // și să o reconstruim apoi.
+    
+    // Pentru simplitate, vom returna 0 și vom lăsa o implementare completă pentru viitor
+    // când structura de date pentru coadă poate fi modificată pentru a suporta iterare.
+    printk("Funcția watering_get_pending_tasks_info nu este încă implementată complet\n");
+    
+    // TODO: Implementare completă când structura cozii este modificată pentru a permite iterare
+    return 0;
+}

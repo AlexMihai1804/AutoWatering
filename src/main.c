@@ -269,6 +269,10 @@ int main(void) {
     uint32_t power_check_time = 0;
     power_mode_t current_mode = POWER_MODE_NORMAL;
     
+    // Actualizare periodică a stării cozii prin Bluetooth
+    uint32_t last_queue_update = k_uptime_get_32();
+    uint32_t queue_update_interval_ms = 5000; // 5 secunde
+    
     // Main monitoring loop
     while (1) {
         watering_status_t status;
@@ -319,6 +323,16 @@ int main(void) {
                 current_mode = POWER_MODE_NORMAL;
                 printk("Switched to normal power mode (demo)\n");
             }
+        }
+        
+        // Actualizăm periodic numărul de task-uri în coadă prin Bluetooth
+        if ((now - last_queue_update) > queue_update_interval_ms) {
+            uint8_t pending_tasks;
+            bool active_task;
+            if (watering_get_queue_status(&pending_tasks, &active_task) == WATERING_SUCCESS) {
+                bt_irrigation_queue_status_update(pending_tasks);
+            }
+            last_queue_update = now;
         }
         
         // Feed watchdog to prevent reset
