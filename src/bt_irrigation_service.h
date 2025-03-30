@@ -4,7 +4,7 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/gatt.h>
 #include "watering.h"
-#include "rtc.h"  // Adăugăm header-ul RTC pentru sincronizarea timpului
+#include "rtc.h"  // Add RTC header for time synchronization
 
 /**
  * @brief Initialize the Bluetooth irrigation service
@@ -70,54 +70,54 @@ int bt_irrigation_config_update(void);
 int bt_irrigation_statistics_update(uint8_t channel_id);
 
 /**
- * @brief Actualizează timpul RTC prin Bluetooth
+ * @brief Update RTC time via Bluetooth
  * 
- * @param datetime Structura cu noua dată și oră
- * @return 0 pe succes, cod de eroare negativ pe eșec
+ * @param datetime Structure with new date and time
+ * @return 0 on success, negative error code on failure
  */
 int bt_irrigation_rtc_update(rtc_datetime_t *datetime);
 
 /**
- * @brief Notifică clientul Bluetooth despre o alarmă
+ * @brief Notify Bluetooth client about an alarm
  * 
- * @param alarm_code Codul alarmei
- * @param alarm_data Date suplimentare despre alarmă
- * @return 0 pe succes, cod de eroare negativ pe eșec
+ * @param alarm_code Alarm code
+ * @param alarm_data Additional alarm data
+ * @return 0 on success, negative error code on failure
  */
 int bt_irrigation_alarm_notify(uint8_t alarm_code, uint16_t alarm_data);
 
 /**
- * @brief Începe o sesiune de calibrare a senzorului de debit
+ * @brief Start flow sensor calibration session
  * 
- * @param start 1 pentru a începe, 0 pentru a opri
- * @param volume_ml Volumul de apă în ml pentru calibrare (la oprire)
- * @return 0 pe succes, cod de eroare negativ pe eșec
+ * @param start 1 to start, 0 to stop
+ * @param volume_ml Water volume in ml for calibration (when stopping)
+ * @return 0 on success, negative error code on failure
  */
 int bt_irrigation_start_flow_calibration(uint8_t start, uint32_t volume_ml);
 
 /**
- * @brief Actualizează istoricul de irigare
+ * @brief Update irrigation history
  * 
- * @param channel_id ID-ul canalului
- * @param entry_index Index-ul intrării în istoric (0 = cea mai recentă)
- * @return 0 pe succes, cod de eroare negativ pe eșec
+ * @param channel_id Channel ID
+ * @param entry_index History entry index (0 = most recent)
+ * @return 0 on success, negative error code on failure
  */
 int bt_irrigation_history_update(uint8_t channel_id, uint8_t entry_index);
 
 /**
- * @brief Actualizează diagnosticele sistemului
+ * @brief Update system diagnostics
  * 
- * @return 0 pe succes, cod de eroare negativ pe eșec
+ * @return 0 on success, negative error code on failure
  */
 int bt_irrigation_diagnostics_update(void);
 
 /**
- * @brief Execută o comandă directă asupra unui canal
+ * @brief Execute a direct command on a channel
  * 
- * @param channel_id ID-ul canalului
- * @param command Codul comenzii (0=închide, 1=deschide, 2=puls)
- * @param param Parametru suplimentar (ex: durata pulsului în secunde)
- * @return 0 pe succes, cod de eroare negativ pe eșec
+ * @param channel_id Channel ID
+ * @param command Command code (0=close, 1=open, 2=pulse)
+ * @param param Additional parameter (e.g., pulse duration in seconds)
+ * @return 0 on success, negative error code on failure
  */
 int bt_irrigation_direct_command(uint8_t channel_id, uint8_t command, uint16_t param);
 

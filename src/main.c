@@ -202,7 +202,7 @@ static watering_error_t run_valve_test(void) {
 static watering_error_t create_demo_task(void) {
     watering_error_t err;
     
-    // Creează un task de volum pentru canalul 1 (2 litri)
+    // Create a volume task for channel 1 (2 liters)
     err = watering_add_volume_task(0, 2);
     if (err == WATERING_SUCCESS) {
         printk("Demonstration volume task added for channel 1 (2 liters)\n");
@@ -211,7 +211,7 @@ static watering_error_t create_demo_task(void) {
         return err;
     }
     
-    // Creează un task de durată pentru canalul 2 (1 minut)
+    // Create a duration task for channel 2 (1 minute)
     err = watering_add_duration_task(1, 1);
     if (err == WATERING_SUCCESS) {
         printk("Demonstration duration task added for channel 2 (1 minute)\n");
@@ -269,9 +269,9 @@ int main(void) {
     uint32_t power_check_time = 0;
     power_mode_t current_mode = POWER_MODE_NORMAL;
     
-    // Actualizare periodică a stării cozii prin Bluetooth
+    // Periodic queue status update via Bluetooth
     uint32_t last_queue_update = k_uptime_get_32();
-    uint32_t queue_update_interval_ms = 5000; // 5 secunde
+    uint32_t queue_update_interval_ms = 5000; // 5 seconds
     
     // Main monitoring loop
     while (1) {
@@ -325,7 +325,7 @@ int main(void) {
             }
         }
         
-        // Actualizăm periodic numărul de task-uri în coadă prin Bluetooth
+        // Periodically update the queue status via Bluetooth
         if ((now - last_queue_update) > queue_update_interval_ms) {
             uint8_t pending_tasks;
             bool active_task;

@@ -315,36 +315,36 @@ watering_error_t watering_set_power_mode(power_mode_t mode);
 watering_error_t watering_get_power_mode(power_mode_t *mode);
 
 /**
- * @brief Adaugă un task de irigare bazat pe durată pentru un canal specific
+ * @brief Add a duration-based watering task for a specific channel
  * 
- * @param channel_id ID-ul canalului (index bazat pe 0)
- * @param minutes Durata irigării în minute
- * @return WATERING_SUCCESS pe succes, cod de eroare la eșec
+ * @param channel_id Channel ID (0-based index)
+ * @param minutes Watering duration in minutes
+ * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_add_duration_task(uint8_t channel_id, uint16_t minutes);
 
 /**
- * @brief Adaugă un task de irigare bazat pe volum pentru un canal specific
+ * @brief Add a volume-based watering task for a specific channel
  * 
- * @param channel_id ID-ul canalului (index bazat pe 0)
- * @param liters Volumul de apă în litri
- * @return WATERING_SUCCESS pe succes, cod de eroare la eșec
+ * @param channel_id Channel ID (0-based index)
+ * @param liters Water volume in liters
+ * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_add_volume_task(uint8_t channel_id, uint16_t liters);
 
 /**
- * @brief Anulează toate task-urile și curăță coada de așteptare
+ * @brief Cancel all tasks and clear the task queue
  * 
- * @return Numărul de task-uri anulate
+ * @return Number of tasks canceled
  */
 int watering_cancel_all_tasks(void);
 
 /**
- * @brief Obține statusul cozii de așteptare
+ * @brief Get the status of the task queue
  * 
- * @param pending_count Pointer unde se va stoca numărul de task-uri în așteptare
- * @param active Flag care indică dacă există un task activ
- * @return 0 pe succes, cod de eroare pe eșec
+ * @param pending_count Pointer where the number of pending tasks will be stored
+ * @param active Flag indicating if there is an active task
+ * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_get_queue_status(uint8_t *pending_count, bool *active);
 

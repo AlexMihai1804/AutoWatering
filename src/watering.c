@@ -315,30 +315,30 @@ void cleanup_resources(void) {
 }
 
 /**
- * @brief Anulează toate task-urile și curăță coada de așteptare
+ * @brief Cancel all tasks and clear the task queue
  * 
- * @return Numărul de task-uri anulate
+ * @return Number of tasks canceled
  */
 int watering_cancel_all_tasks(void) {
     int removed = 0;
     
-    // Mai întâi, oprim task-ul curent dacă există
+    // First, stop the current task if it exists
     if (watering_stop_current_task()) {
         removed = 1;
     }
     
-    // Apoi, golim coada de task-uri în așteptare
+    // Then, clear the pending task queue
     removed += watering_clear_task_queue();
     
     return removed;
 }
 
 /**
- * @brief Obține statusul cozii de așteptare
+ * @brief Get the status of the task queue
  * 
- * @param pending_count Pointer unde se va stoca numărul de task-uri în așteptare
- * @param active Flag care indică dacă există un task activ
- * @return WATERING_SUCCESS pe succes, cod de eroare pe eșec
+ * @param pending_count Pointer where the number of pending tasks will be stored
+ * @param active Flag indicating if there is an active task
+ * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_get_queue_status(uint8_t *pending_count, bool *active) {
     if (pending_count == NULL || active == NULL) {

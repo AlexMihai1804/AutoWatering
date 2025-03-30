@@ -31,7 +31,7 @@
 #define BT_UUID_IRRIGATION_STATISTICS_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef8)
 
-/* Adăugăm noile UUID-uri pentru funcționalitățile extinse */
+/* Add new UUIDs for extended functionality */
 #define BT_UUID_IRRIGATION_RTC_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef9)
 #define BT_UUID_IRRIGATION_ALARM_VAL \
@@ -58,11 +58,11 @@ static struct bt_uuid_128 calibration_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIG
 static struct bt_uuid_128 history_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_HISTORY_VAL);
 static struct bt_uuid_128 diagnostics_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_DIAGNOSTICS_VAL);
 
-/* Valve control data structure - modificată pentru a crea task-uri */
+/* Task creation data structure */
 struct valve_control_data {
     uint8_t channel_id;
-    uint8_t task_type;  // 0=durată, 1=volum
-    uint16_t value;     // minute sau litri
+    uint8_t task_type;  // 0=duration, 1=volume
+    uint16_t value;     // minutes or liters
 } __packed;
 
 /* Channel configuration structure */
@@ -76,18 +76,18 @@ struct channel_config_data {
 /* Schedule configuration structure */
 struct schedule_config_data {
     uint8_t channel_id;
-    uint8_t schedule_type;       // 0=zilnic, 1=periodic
-    uint8_t days_mask;           // Zilele pentru programare zilnică sau interval zile pentru periodic
+    uint8_t schedule_type;       // 0=daily, 1=periodic
+    uint8_t days_mask;           // Days for daily schedule or interval days for periodic
     uint8_t hour;
     uint8_t minute;
-    uint8_t watering_mode;       // 0=durată, 1=volum
-    uint16_t value;              // Minute sau litri
+    uint8_t watering_mode;       // 0=duration, 1=volume
+    uint16_t value;              // Minutes or liters
 } __packed;
 
 /* System configuration structure */
 struct system_config_data {
     uint8_t power_mode;
-    uint32_t flow_calibration;   // Impulsuri per litru
+    uint32_t flow_calibration;   // Pulses per liter
     uint8_t max_active_valves;
 } __packed;
 
@@ -95,65 +95,65 @@ struct system_config_data {
 struct task_queue_data {
     uint8_t pending_tasks;
     uint8_t completed_tasks;
-    uint8_t current_channel;     // Canalul activ curent (0xFF dacă nu există)
-    uint8_t current_task_type;   // 0=durată, 1=volum
-    uint16_t current_value;      // Minute sau litri pentru task-ul curent
-    uint8_t command; /* Comandă pentru controlul cozii: 0=nimic, 1=anulează task curent, 2=golește coada */
-    uint8_t task_id_to_delete; /* ID-ul task-ului de șters (dacă se implementează) */
+    uint8_t current_channel;     // Currently active channel (0xFF if none)
+    uint8_t current_task_type;   // 0=duration, 1=volume
+    uint16_t current_value;      // Minutes or liters for current task
+    uint8_t command; /* Queue control command: 0=none, 1=cancel current, 2=clear queue */
+    uint8_t task_id_to_delete; /* Task ID to delete (if implemented) */
 } __packed;
 
 /* Statistics structure for a channel */
 struct statistics_data {
     uint8_t channel_id;
-    uint32_t total_volume;       // Volum total în ml
-    uint32_t last_volume;        // Ultimul volum în ml
-    uint32_t last_watering;      // Timestamp ultimă udare
-    uint16_t count;              // Număr total de udări
+    uint32_t total_volume;       // Total volume in ml
+    uint32_t last_volume;        // Last volume in ml
+    uint32_t last_watering;      // Last watering timestamp
+    uint16_t count;              // Total watering count
 } __packed;
 
-/* Structură pentru setarea/citirea RTC */
+/* Structure for setting/reading RTC */
 struct rtc_data {
-    uint8_t year;    /* Anul minus 2000 (0-99) */
-    uint8_t month;   /* Luna (1-12) */
-    uint8_t day;     /* Ziua (1-31) */
-    uint8_t hour;    /* Ora (0-23) */
-    uint8_t minute;  /* Minutul (0-59) */
-    uint8_t second;  /* Secunda (0-59) */
-    uint8_t day_of_week; /* Ziua săptămânii (0-6, 0=Duminică) */
+    uint8_t year;    /* Year minus 2000 (0-99) */
+    uint8_t month;   /* Month (1-12) */
+    uint8_t day;     /* Day (1-31) */
+    uint8_t hour;    /* Hour (0-23) */
+    uint8_t minute;  /* Minute (0-59) */
+    uint8_t second;  /* Second (0-59) */
+    uint8_t day_of_week; /* Day of week (0-6, 0=Sunday) */
 } __packed;
 
-/* Structură pentru alarme și notificări */
+/* Structure for alarms and notifications */
 struct alarm_data {
-    uint8_t alarm_code;   /* Codul alarmei */
-    uint16_t alarm_data;  /* Date suplimentare specifice alarmei */
-    uint32_t timestamp;   /* Timestamp când s-a produs alarma */
+    uint8_t alarm_code;   /* Alarm code */
+    uint16_t alarm_data;  /* Additional alarm-specific data */
+    uint32_t timestamp;   /* Timestamp when alarm occurred */
 } __packed;
 
-/* Structură pentru calibrarea senzorului de debit */
+/* Structure for flow sensor calibration */
 struct calibration_data {
-    uint8_t action;       /* 0=oprește, 1=începe, 2=în desfășurare, 3=calculat */
-    uint32_t pulses;      /* Număr de impulsuri contorizate */
-    uint32_t volume_ml;   /* Volum în ml (intrare sau calculat) */
-    uint32_t pulses_per_liter; /* Rezultatul calibrării */
+    uint8_t action;       /* 0=stop, 1=start, 2=in progress, 3=calculated */
+    uint32_t pulses;      /* Number of pulses counted */
+    uint32_t volume_ml;   /* Volume in ml (input or calculated) */
+    uint32_t pulses_per_liter; /* Calibration result */
 } __packed;
 
-/* Structură pentru istoricul irigării */
+/* Structure for irrigation history */
 struct history_data {
-    uint8_t channel_id;   /* Canal (0-7) */
-    uint8_t entry_index;  /* Indexul intrării (0=cea mai recentă) */
-    uint32_t timestamp;   /* Când a avut loc */
-    uint8_t mode;         /* 0=durată, 1=volum */
-    uint16_t duration;    /* Durata în secunde sau volum în ml */
-    uint8_t success;      /* 1=succes, 0=eșuat */
+    uint8_t channel_id;   /* Channel (0-7) */
+    uint8_t entry_index;  /* Entry index (0=most recent) */
+    uint32_t timestamp;   /* When it occurred */
+    uint8_t mode;         /* 0=duration, 1=volume */
+    uint16_t duration;    /* Duration in seconds or volume in ml */
+    uint8_t success;      /* 1=success, 0=failed */
 } __packed;
 
-/* Structură pentru diagnostice */
+/* Structure for diagnostics */
 struct diagnostics_data {
-    uint32_t uptime;      /* Timp de funcționare în minute */
-    uint8_t error_count;  /* Număr de erori */
-    uint8_t last_error;   /* Ultimul cod de eroare */
-    uint8_t valve_status; /* Biți pentru starea supapelor */
-    uint8_t battery_level; /* Nivel baterie în procente sau 0xFF dacă nu se aplică */
+    uint32_t uptime;      /* Uptime in minutes */
+    uint8_t error_count;  /* Number of errors */
+    uint8_t last_error;   /* Last error code */
+    uint8_t valve_status; /* Bits for valve status */
+    uint8_t battery_level; /* Battery level in percent or 0xFF if not applicable */
 } __packed;
 
 /* Characteristic value handles */
@@ -171,7 +171,7 @@ static uint8_t calibration_value[sizeof(struct calibration_data)];
 static uint8_t history_value[sizeof(struct history_data)];
 static uint8_t diagnostics_value[sizeof(struct diagnostics_data)];
 
-/* Variabile globale pentru calibrare */
+/* Global variables for calibration */
 static bool calibration_active = false;
 static uint32_t calibration_start_pulses = 0;
 
@@ -236,7 +236,7 @@ static void diagnostics_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
 BT_GATT_SERVICE_DEFINE(irrigation_svc,
     BT_GATT_PRIMARY_SERVICE(&irrigation_service_uuid),
     
-    /* Task Creation Characteristic (fostă Valve Control) */
+    /* Task Creation Characteristic (formerly Valve Control) */
     BT_GATT_CHARACTERISTIC(&valve_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
                          BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
@@ -370,7 +370,7 @@ static ssize_t read_valve(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                             sizeof(struct valve_control_data));
 }
 
-/* Valve characteristic write callback - modificat pentru a crea taskuri */
+/* Valve characteristic write callback - modified for task creation */
 static ssize_t write_valve(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                          const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
 {
@@ -391,21 +391,21 @@ static ssize_t write_valve(struct bt_conn *conn, const struct bt_gatt_attr *attr
         return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
     
-    printk("BT request: canal %d, tip task %d, valoare %d\n", 
+    printk("BT request: channel %d, task type %d, value %d\n", 
            channel_id, task_type, task_value);
     
-    /* Creează task-ul corespunzător */
+    /* Create the corresponding task */
     watering_error_t err;
-    if (task_type == 0) {  // Durată (minute)
+    if (task_type == 0) {  // Duration (minutes)
         err = watering_add_duration_task(channel_id, task_value);
         if (err == WATERING_SUCCESS) {
-            printk("Task de durată adăugat prin Bluetooth: canal %d, %d minute\n", 
+            printk("Duration task added via Bluetooth: channel %d, %d minutes\n", 
                   channel_id + 1, task_value);
         }
-    } else if (task_type == 1) {  // Volum (litri)
+    } else if (task_type == 1) {  // Volume (liters)
         err = watering_add_volume_task(channel_id, task_value);
         if (err == WATERING_SUCCESS) {
-            printk("Task de volum adăugat prin Bluetooth: canal %d, %d litri\n", 
+            printk("Volume task added via Bluetooth: channel %d, %d liters\n", 
                   channel_id + 1, task_value);
         }
     } else {
@@ -413,7 +413,7 @@ static ssize_t write_valve(struct bt_conn *conn, const struct bt_gatt_attr *attr
     }
     
     if (err != WATERING_SUCCESS) {
-        printk("Eroare la adăugarea task-ului: %d\n", err);
+        printk("Error adding task: %d\n", err);
         return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
     }
     
@@ -688,9 +688,9 @@ static ssize_t read_task_queue(struct bt_conn *conn, const struct bt_gatt_attr *
 {
     struct task_queue_data *value = (struct task_queue_data *)task_queue_value;
     
-    // Utilizăm noua funcție pentru a obține numărul real de task-uri în așteptare
+    // Use the new function to get the actual number of pending tasks
     value->pending_tasks = watering_get_pending_tasks_count();
-    value->completed_tasks = 0; // Nu avem încă o monitorizare a task-urilor finalizate
+    value->completed_tasks = 0; // We don't have task completion tracking yet
     
     // Check if there's a current active task
     if (watering_task_state.current_active_task != NULL) {
@@ -711,7 +711,7 @@ static ssize_t read_task_queue(struct bt_conn *conn, const struct bt_gatt_attr *
         value->current_value = 0;
     }
     
-    // Resetăm comanda și ID-ul task-ului
+    // Reset command and task ID
     value->command = 0;
     value->task_id_to_delete = 0;
     
@@ -730,38 +730,38 @@ static ssize_t write_task_queue(struct bt_conn *conn, const struct bt_gatt_attr 
 
     memcpy(((uint8_t *)value) + offset, buf, len);
     
-    // Procesăm comenzile cozii de task-uri
+    // Process queue commands
     switch(value->command) {
-        case 1:  // Anulează task-ul curent
+        case 1:  // Cancel current task
             if (watering_stop_current_task()) {
-                printk("Task-ul curent anulat prin Bluetooth\n");
+                printk("Current task cancelled via Bluetooth\n");
             } else {
-                printk("Nu există task curent de anulat\n");
+                printk("No current task to cancel\n");
             }
             break;
             
-        case 2:  // Golește întreaga coadă
+        case 2:  // Clear entire queue
             {
                 int removed = watering_clear_task_queue();
-                printk("S-au eliminat %d task-uri din coadă prin comandă Bluetooth\n", removed);
+                printk("%d tasks removed from queue via Bluetooth command\n", removed);
             }
             break;
             
-        case 3:  // Șterge un task specific (bazat pe ID)
-            // Această funcționalitate este mai complexă deoarece necesită identificarea task-urilor
-            // și o structură de date care să permită ștergerea selectivă
-            printk("Ștergerea selectivă a unui task nu este încă implementată complet\n");
+        case 3:  // Delete specific task (by ID)
+            // This functionality is more complex as it requires task identification
+            // and a data structure that allows selective deletion
+            printk("Selective task deletion not yet fully implemented\n");
             break;
             
         default:
-            // Nicio comandă sau comandă necunoscută
+            // No command or unknown command
             break;
     }
     
-    // Actualizăm numărul de task-uri în așteptare
+    // Update pending task count
     value->pending_tasks = watering_get_pending_tasks_count();
     
-    // Resetăm comanda pentru a evita executarea repetată
+    // Reset command to avoid repeated execution
     value->command = 0;
     
     return len;
@@ -806,16 +806,16 @@ static void statistics_ccc_changed(const struct bt_gatt_attr *attr, uint16_t val
     printk("Statistics notifications %s\n", notif_enabled ? "enabled" : "disabled");
 }
 
-/* Implementare pentru RTC */
+/* RTC implementation */
 static ssize_t read_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                         void *buf, uint16_t len, uint16_t offset)
 {
     struct rtc_data *value = (struct rtc_data *)rtc_value;
     rtc_datetime_t now;
     
-    // Citește data și ora curentă din RTC
+    // Read current date and time from RTC
     if (rtc_datetime_get(&now) == 0) {
-        value->year = now.year - 2000;    // Convertim în format pe 2 cifre
+        value->year = now.year - 2000;    // Convert to 2-digit format
         value->month = now.month;
         value->day = now.day;
         value->hour = now.hour;
@@ -823,7 +823,7 @@ static ssize_t read_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         value->second = now.second;
         value->day_of_week = now.day_of_week;
     } else {
-        // RTC indisponibil, folosește valori implicite
+        // RTC unavailable, use default values
         value->year = 23;   // 2023
         value->month = 1;
         value->day = 1;
@@ -847,15 +847,15 @@ static ssize_t write_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 
     memcpy(((uint8_t *)value) + offset, buf, len);
     
-    // Validează datele primite
+    // Validate received data
     if (value->month < 1 || value->month > 12 || value->day < 1 || value->day > 31 ||
         value->hour > 23 || value->minute > 59 || value->second > 59 || value->day_of_week > 6) {
         return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
     
-    // Actualizează RTC-ul
+    // Update the RTC
     rtc_datetime_t new_time;
-    new_time.year = 2000 + value->year;  // Convertim înapoi la an complet
+    new_time.year = 2000 + value->year;  // Convert back to full year
     new_time.month = value->month;
     new_time.day = value->day;
     new_time.hour = value->hour;
@@ -865,11 +865,11 @@ static ssize_t write_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     
     int ret = rtc_datetime_set(&new_time);
     if (ret != 0) {
-        printk("Eroare la setarea RTC: %d\n", ret);
+        printk("Error setting RTC: %d\n", ret);
         return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
     }
     
-    printk("RTC actualizat prin Bluetooth: %02d/%02d/%04d %02d:%02d:%02d (ziua %d)\n",
+    printk("RTC updated via Bluetooth: %02d/%02d/%04d %02d:%02d:%02d (day %d)\n",
            new_time.day, new_time.month, new_time.year,
            new_time.hour, new_time.minute, new_time.second,
            new_time.day_of_week);
@@ -880,10 +880,10 @@ static ssize_t write_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 static void rtc_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
-    printk("Notificări RTC %s\n", notif_enabled ? "activate" : "dezactivate");
+    printk("RTC notifications %s\n", notif_enabled ? "enabled" : "disabled");
 }
 
-/* Implementare pentru alarme */
+/* Alarm implementation */
 static ssize_t read_alarm(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                         void *buf, uint16_t len, uint16_t offset)
 {
@@ -895,10 +895,10 @@ static ssize_t read_alarm(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 static void alarm_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
-    printk("Notificări alarme %s\n", notif_enabled ? "activate" : "dezactivate");
+    printk("Alarm notifications %s\n", notif_enabled ? "enabled" : "disabled");
 }
 
-/* Implementare pentru calibrare */
+/* Calibration implementation */
 static ssize_t read_calibration(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                         void *buf, uint16_t len, uint16_t offset)
 {
@@ -907,7 +907,7 @@ static ssize_t read_calibration(struct bt_conn *conn, const struct bt_gatt_attr 
     if (calibration_active) {
         uint32_t current_pulses = get_pulse_count();
         value->pulses = current_pulses - calibration_start_pulses;
-        value->action = 2; // În desfășurare
+        value->action = 2; // In progress
     }
     
     return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(*value));
@@ -924,16 +924,16 @@ static ssize_t write_calibration(struct bt_conn *conn, const struct bt_gatt_attr
 
     memcpy(((uint8_t *)value) + offset, buf, len);
     
-    // Procesează cererea de calibrare
-    if (value->action == 1) {  // Începe calibrarea
+    // Process calibration request
+    if (value->action == 1) {  // Start calibration
         if (!calibration_active) {
             reset_pulse_count();
             calibration_start_pulses = 0;
             calibration_active = true;
             value->pulses = 0;
-            printk("Calibrare senzor de debit începută\n");
+            printk("Flow sensor calibration started\n");
         }
-    } else if (value->action == 0) {  // Oprește calibrarea și calculează
+    } else if (value->action == 0) {  // Stop calibration and calculate
         if (calibration_active) {
             uint32_t final_pulses = get_pulse_count();
             uint32_t total_pulses = final_pulses - calibration_start_pulses;
@@ -943,15 +943,15 @@ static ssize_t write_calibration(struct bt_conn *conn, const struct bt_gatt_attr
                 uint32_t new_calibration = (total_pulses * 1000) / volume_ml;
                 value->pulses_per_liter = new_calibration;
                 
-                // Actualizează calibrarea sistemului
+                // Update system calibration
                 watering_set_flow_calibration(new_calibration);
                 watering_save_config();
                 
-                printk("Calibrare senzor de debit finalizată: %d impulsuri pentru %d ml = %d impulsuri/litru\n",
+                printk("Flow sensor calibration completed: %d pulses for %d ml = %d pulses/liter\n",
                        total_pulses, volume_ml, new_calibration);
                 
-                // Setează starea completată
-                value->action = 3;  // Calibrare calculată
+                // Set completed state
+                value->action = 3;  // Calibration calculated
                 value->pulses = total_pulses;
             }
             calibration_active = false;
@@ -964,17 +964,17 @@ static ssize_t write_calibration(struct bt_conn *conn, const struct bt_gatt_attr
 static void calibration_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
-    printk("Notificări calibrare %s\n", notif_enabled ? "activate" : "dezactivate");
+    printk("Calibration notifications %s\n", notif_enabled ? "enabled" : "disabled");
 }
 
-/* Implementare pentru istoric */
+/* History implementation */
 static ssize_t read_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                         void *buf, uint16_t len, uint16_t offset)
 {
     struct history_data *value = (struct history_data *)history_value;
     
-    // Aici ar trebui să avem o implementare reală a istoricului
-    // Pentru moment, folosim valori statice
+    // Here we should have a real history implementation
+    // For now, we use static values
     
     return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(*value));
 }
@@ -990,16 +990,16 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
 
     memcpy(((uint8_t *)value) + offset, buf, len);
     
-    // Clientul solicită o anumită intrare din istoric
+    // Client is requesting a specific history entry
     if (value->channel_id < WATERING_CHANNELS_COUNT) {
-        // În implementarea reală, ar trebui să încărcați datele efective din istoric
-        // Momentan simulăm răspunsuri
+        // In a real implementation, you should load actual data from history
+        // Currently we simulate responses
         value->timestamp = k_uptime_get_32() - (value->entry_index * 3600 * 1000);
-        value->mode = value->entry_index % 2;  // Alternează între moduri
-        value->duration = 500 + (value->entry_index * 100);  // Valori simulate
-        value->success = 1;  // Presupunem că toate au reușit
+        value->mode = value->entry_index % 2;  // Alternate between modes
+        value->duration = 500 + (value->entry_index * 100);  // Simulated values
+        value->success = 1;  // Assume all were successful
         
-        printk("Cerere de istoric pentru canalul %d, intrarea %d\n", 
+        printk("History request for channel %d, entry %d\n", 
                value->channel_id, value->entry_index);
     }
     
@@ -1009,24 +1009,24 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
 static void history_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
-    printk("Notificări istoric %s\n", notif_enabled ? "activate" : "dezactivate");
+    printk("History notifications %s\n", notif_enabled ? "enabled" : "disabled");
 }
 
-/* Implementare pentru diagnostice */
+/* Diagnostics implementation */
 static ssize_t read_diagnostics(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                         void *buf, uint16_t len, uint16_t offset)
 {
     struct diagnostics_data *value = (struct diagnostics_data *)diagnostics_value;
     
-    // Colectează informațiile de diagnosticare
-    value->uptime = k_uptime_get_32() / 60000;  // Convertit în minute
+    // Collect diagnostic information
+    value->uptime = k_uptime_get_32() / 60000;  // Convert to minutes
     
-    // Aici ar trebui să colectăm date reale despre erori, starea supapelor, etc.
-    // Pentru moment folosim valori fictive
+    // Here we should collect real data about errors, valve status, etc.
+    // For now we use dummy values
     value->error_count = 0;
     value->last_error = 0;
     
-    // Creează un bitmap cu starea supapelor
+    // Create a bitmap with valve status
     value->valve_status = 0;
     for (int i = 0; i < WATERING_CHANNELS_COUNT && i < 8; i++) {
         if (watering_channels[i].is_active) {
@@ -1034,7 +1034,7 @@ static ssize_t read_diagnostics(struct bt_conn *conn, const struct bt_gatt_attr 
         }
     }
     
-    // Nu avem monitorizare a bateriei în acest sistem
+    // We don't have battery monitoring in this system
     value->battery_level = 0xFF;
     
     return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(*value));
@@ -1043,7 +1043,7 @@ static ssize_t read_diagnostics(struct bt_conn *conn, const struct bt_gatt_attr 
 static void diagnostics_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
-    printk("Notificări diagnostice %s\n", notif_enabled ? "activate" : "dezactivate");
+    printk("Diagnostics notifications %s\n", notif_enabled ? "enabled" : "disabled");
 }
 
 /* Initialize the Bluetooth irrigation service */
@@ -1091,18 +1091,18 @@ int bt_irrigation_service_init(void)
     return 0;
 }
 
-/* Update valve status via Bluetooth - modificat pentru a raporta taskuri în execuție */
+/* Update valve status via Bluetooth - modified to report running tasks */
 int bt_irrigation_valve_status_update(uint8_t channel_id, bool state)
 {
     if (!default_conn) {
         return -ENOTCONN;
     }
 
-    // Raportează doar statusul canalului, fără a permite control direct
+    // Only reports channel status, without allowing direct control
     valve_value[0] = channel_id;
     valve_value[1] = state ? 1 : 0;
-    valve_value[2] = 0;  // Nu este relevant pentru notificări
-    valve_value[3] = 0;  // Nu este relevant pentru notificări
+    valve_value[2] = 0;  // Not relevant for notifications
+    valve_value[3] = 0;  // Not relevant for notifications
 
     return bt_gatt_notify(default_conn, &irrigation_svc.attrs[2],
                         valve_value, sizeof(struct valve_control_data));
@@ -1171,14 +1171,14 @@ int bt_irrigation_queue_status_update(uint8_t count)
 
     struct task_queue_data *queue = (struct task_queue_data *)task_queue_value;
     
-    // Utilizăm valoarea reală a numărului de task-uri dacă este specificată sau o obținem din sistem
+    // Use the actual number of tasks if specified or get it from the system
     if (count == 0xFF) {
         queue->pending_tasks = watering_get_pending_tasks_count();
     } else {
         queue->pending_tasks = count;
     }
     
-    // Celelalte câmpuri sunt completate în read_task_queue
+    // Other fields are filled in read_task_queue
     read_task_queue(NULL, &irrigation_svc.attrs[20], NULL, 0, 0);
     
     return bt_gatt_notify(default_conn, &irrigation_svc.attrs[20],
@@ -1221,7 +1221,7 @@ int bt_irrigation_statistics_update(uint8_t channel_id)
 }
 
 /**
- * @brief Actualizează timpul RTC prin Bluetooth
+ * @brief Update RTC time via Bluetooth
  */
 int bt_irrigation_rtc_update(rtc_datetime_t *datetime) {
     if (!default_conn) {
@@ -1238,14 +1238,14 @@ int bt_irrigation_rtc_update(rtc_datetime_t *datetime) {
     value->second = datetime->second;
     value->day_of_week = datetime->day_of_week;
     
-    // Găsim indexul caracteristicii RTC în serviciu - ajustați în funcție de ordinea caracteristicilor
-    int rtc_index = 26;  // Acest index trebuie ajustat în funcție de ordinea caracteristicilor în BT_GATT_SERVICE_DEFINE
+    // Find the RTC characteristic index in the service - adjust based on characteristic order
+    int rtc_index = 26;  // This index should be adjusted based on the characteristic order in BT_GATT_SERVICE_DEFINE
     
     return bt_gatt_notify(default_conn, &irrigation_svc.attrs[rtc_index], value, sizeof(*value));
 }
 
 /**
- * @brief Notifică clientul Bluetooth despre o alarmă
+ * @brief Notify Bluetooth client about an alarm
  */
 int bt_irrigation_alarm_notify(uint8_t alarm_code, uint16_t alarm_data) {
     if (!default_conn) {
@@ -1258,14 +1258,14 @@ int bt_irrigation_alarm_notify(uint8_t alarm_code, uint16_t alarm_data) {
     value->alarm_data = alarm_data;
     value->timestamp = k_uptime_get_32();
     
-    // Găsim indexul caracteristicii de alarmă în serviciu - ajustați în funcție de ordinea caracteristicilor
-    int alarm_index = 29;  // Acest index trebuie ajustat în funcție de ordinea caracteristicilor în BT_GATT_SERVICE_DEFINE
+    // Find the alarm characteristic index in service - adjust based on characteristic order
+    int alarm_index = 29;  // This index should be adjusted based on the characteristic order in BT_GATT_SERVICE_DEFINE
     
     return bt_gatt_notify(default_conn, &irrigation_svc.attrs[alarm_index], value, sizeof(*value));
 }
 
 /**
- * @brief Începe o sesiune de calibrare a senzorului de debit
+ * @brief Start flow sensor calibration session
  */
 int bt_irrigation_start_flow_calibration(uint8_t start, uint32_t volume_ml) {
     if (!default_conn) {
@@ -1275,28 +1275,28 @@ int bt_irrigation_start_flow_calibration(uint8_t start, uint32_t volume_ml) {
     struct calibration_data *value = (struct calibration_data *)calibration_value;
     
     if (start) {
-        // Începe calibrarea
+        // Start calibration
         value->action = 1;
-        value->volume_ml = 0; // Va fi setat la oprire
+        value->volume_ml = 0; // Will be set when stopping
         value->pulses = 0;
         
-        // Calibrarea efectivă se face când clientul scrie în caracteristică
+        // Actual calibration happens when client writes to characteristic
     } else {
-        // Oprește și calculează calibrarea
+        // Stop and calculate calibration
         value->action = 0;
         value->volume_ml = volume_ml;
         
-        // Calibrarea efectivă se face când clientul scrie în caracteristică
+        // Actual calibration happens when client writes to characteristic
     }
     
-    // Găsim indexul caracteristicii de calibrare în serviciu - ajustați în funcție de ordinea caracteristicilor
-    int calibration_index = 32;  // Acest index trebuie ajustat în funcție de ordinea caracteristicilor în BT_GATT_SERVICE_DEFINE
+    // Find the calibration characteristic index in service - adjust based on characteristic order
+    int calibration_index = 32;  // This index should be adjusted based on the characteristic order in BT_GATT_SERVICE_DEFINE
     
     return bt_gatt_notify(default_conn, &irrigation_svc.attrs[calibration_index], value, sizeof(*value));
 }
 
 /**
- * @brief Actualizează istoricul de irigare
+ * @brief Update irrigation history
  */
 int bt_irrigation_history_update(uint8_t channel_id, uint8_t entry_index) {
     if (!default_conn) {
@@ -1312,21 +1312,21 @@ int bt_irrigation_history_update(uint8_t channel_id, uint8_t entry_index) {
     value->channel_id = channel_id;
     value->entry_index = entry_index;
     
-    // În implementarea reală, ar trebui să preluăm date reale din istoric
-    // Aici folosim valori simulate pentru demonstrație
+    // In a real implementation, we should retrieve real history data
+    // Here we use simulated values for demonstration
     value->timestamp = k_uptime_get_32() - (entry_index * 3600 * 1000);
-    value->mode = entry_index % 2;  // Alternează între moduri
-    value->duration = 500 + (entry_index * 100);  // Valori simulate
-    value->success = 1;  // Presupunem că toate au reușit
+    value->mode = entry_index % 2;  // Alternate between modes
+    value->duration = 500 + (entry_index * 100);  // Simulated values
+    value->success = 1;  // Assume all were successful
     
-    // Găsim indexul caracteristicii de istoric în serviciu - ajustați în funcție de ordinea caracteristicilor
-    int history_index = 35;  // Acest index trebuie ajustat în funcție de ordinea caracteristicilor în BT_GATT_SERVICE_DEFINE
+    // Find the history characteristic index in service - adjust based on characteristic order
+    int history_index = 35;  // This index should be adjusted based on the characteristic order in BT_GATT_SERVICE_DEFINE
     
     return bt_gatt_notify(default_conn, &irrigation_svc.attrs[history_index], value, sizeof(*value));
 }
 
 /**
- * @brief Actualizează diagnosticele sistemului
+ * @brief Update system diagnostics
  */
 int bt_irrigation_diagnostics_update(void) {
     if (!default_conn) {
@@ -1335,14 +1335,14 @@ int bt_irrigation_diagnostics_update(void) {
     
     struct diagnostics_data *value = (struct diagnostics_data *)diagnostics_value;
     
-    // Colectăm informațiile de diagnosticare actuale
-    value->uptime = k_uptime_get_32() / 60000;  // Convertit în minute
+    // Collect current diagnostic information
+    value->uptime = k_uptime_get_32() / 60000;  // Convert to minutes
     
-    // Restul sunt completate în read_diagnostics
+    // The rest is populated in read_diagnostics
     read_diagnostics(NULL, NULL, NULL, 0, 0);
     
-    // Găsim indexul caracteristicii de diagnostice în serviciu - ajustați în funcție de ordinea caracteristicilor
-    int diagnostics_index = 38;  // Acest index trebuie ajustat în funcție de ordinea caracteristicilor în BT_GATT_SERVICE_DEFINE
+    // Find the diagnostics characteristic index in service - adjust based on characteristic order
+    int diagnostics_index = 38;  // This index should be adjusted based on the characteristic order in BT_GATT_SERVICE_DEFINE
     
     return bt_gatt_notify(default_conn, &irrigation_svc.attrs[diagnostics_index], value, sizeof(*value));
 }

@@ -773,141 +773,141 @@ watering_error_t watering_validate_event_config(const watering_event_t *event) {
 }
 
 /**
- * @brief Adaugă un task de irigare bazat pe durată pentru un canal specific
+ * @brief Add a duration-based watering task for a specific channel
  * 
- * @param channel_id ID-ul canalului
- * @param minutes Durata în minute
- * @return WATERING_SUCCESS pe succes, cod de eroare la eșec
+ * @param channel_id Channel ID
+ * @param minutes Duration in minutes
+ * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_add_duration_task(uint8_t channel_id, uint16_t minutes) {
     watering_task_t new_task;
     watering_channel_t *channel;
     watering_error_t err;
     
-    // Validare parametri
+    // Validate parameters
     if (channel_id >= WATERING_CHANNELS_COUNT || minutes == 0) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    // Obține referință la canal
+    // Get channel reference
     err = watering_get_channel(channel_id, &channel);
     if (err != WATERING_SUCCESS) {
-        printk("Eroare la obținerea canalului %d: %d\n", channel_id, err);
+        printk("Error getting channel %d: %d\n", channel_id, err);
         return err;
     }
     
-    // Configurează task-ul
+    // Configure task
     new_task.channel = channel;
     new_task.channel->watering_event.watering_mode = WATERING_BY_DURATION;
     new_task.channel->watering_event.watering.by_duration.duration_minutes = minutes;
     new_task.by_time.start_time = k_uptime_get_32();
     
-    // Adaugă task-ul la coadă
-    printk("Se adaugă task de udare de %d minute pentru canalul %d\n", 
+    // Add task to queue
+    printk("Adding %d minute watering task for channel %d\n", 
            minutes, channel_id + 1);
     return watering_add_task(&new_task);
 }
 
 /**
- * @brief Adaugă un task de irigare bazat pe volum pentru un canal specific
+ * @brief Add a volume-based watering task for a specific channel
  * 
- * @param channel_id ID-ul canalului
- * @param liters Volumul în litri
- * @return WATERING_SUCCESS pe succes, cod de eroare la eșec
+ * @param channel_id Channel ID
+ * @param liters Volume in liters
+ * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_add_volume_task(uint8_t channel_id, uint16_t liters) {
     watering_task_t new_task;
     watering_channel_t *channel;
     watering_error_t err;
     
-    // Validare parametri
+    // Validate parameters
     if (channel_id >= WATERING_CHANNELS_COUNT || liters == 0) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    // Obține referință la canal
+    // Get channel reference
     err = watering_get_channel(channel_id, &channel);
     if (err != WATERING_SUCCESS) {
-        printk("Eroare la obținerea canalului %d: %d\n", channel_id, err);
+        printk("Error getting channel %d: %d\n", channel_id, err);
         return err;
     }
     
-    // Configurează task-ul
+    // Configure task
     new_task.channel = channel;
     new_task.channel->watering_event.watering_mode = WATERING_BY_VOLUME;
     new_task.channel->watering_event.watering.by_volume.volume_liters = liters;
     new_task.by_volume.volume_liters = liters;
     
-    // Adaugă task-ul la coadă
-    printk("Se adaugă task de udare de %d litri pentru canalul %d\n", 
+    // Add task to queue
+    printk("Adding %d liter watering task for channel %d\n", 
            liters, channel_id + 1);
     return watering_add_task(&new_task);
 }
 
 /**
- * @brief Golește coada de task-uri în așteptare
+ * @brief Clear the pending task queue
  * 
- * @return Numărul de task-uri eliminate
+ * @return Number of tasks removed
  */
 int watering_clear_task_queue(void) {
     int count = 0;
     watering_task_t dummy_task;
     
-    // Lock pentru protecția cozii
+    // Lock to protect the queue
     k_mutex_lock(&watering_state_mutex, K_FOREVER);
     
-    // Încercăm să golim coada extragând task-urile până când e goală
+    // Try to empty queue by extracting tasks until empty
     while (k_msgq_get(&watering_tasks_queue, &dummy_task, K_NO_WAIT) == 0) {
         count++;
     }
     
-    // Dacă e necesar, putem reconstrui coada goală pentru a reseta complet starea
+    // If necessary, we could rebuild the empty queue to fully reset its state
     if (count > 0) {
         k_msgq_purge(&watering_tasks_queue);
     }
     
-    printk("Au fost eliminate %d task-uri din coadă\n", count);
+    printk("%d tasks removed from queue\n", count);
     
     k_mutex_unlock(&watering_state_mutex);
     return count;
 }
 
 /**
- * @brief Obține numărul de task-uri în așteptare
+ * @brief Get the number of pending tasks
  * 
- * @return Numărul de task-uri în așteptare
+ * @return Number of pending tasks
  */
 int watering_get_pending_tasks_count(void) {
-    // Folosind funcția Zephyr pentru a obține numărul de mesaje utilizate din coadă
+    // Use Zephyr function to get number of used messages in queue
     return k_msgq_num_used_get(&watering_tasks_queue);
 }
 
 /**
- * @brief Structură pentru informații despre un task în așteptare
- * Folosită pentru stocarea informațiilor despre task-uri
+ * @brief Structure for pending task information
+ * Used to store information about tasks
  */
 typedef struct {
     uint8_t channel_id;
-    uint8_t task_type;   // 0=durată, 1=volum
-    uint16_t value;      // minute sau litri
+    uint8_t task_type;   // 0=duration, 1=volume
+    uint16_t value;      // minutes or liters
 } watering_task_info_t;
 
 /**
- * @brief Obține informații despre task-urile în așteptare
+ * @brief Get information about pending tasks
  * 
- * @param tasks_info Buffer pentru informații despre task-uri (watering_task_info_t[])
- * @param max_tasks Dimensiunea maximă a buffer-ului
- * @return Numărul de task-uri copiate în buffer
+ * @param tasks_info Buffer for task information (watering_task_info_t[])
+ * @param max_tasks Maximum buffer size
+ * @return Number of tasks copied to buffer
  */
 int watering_get_pending_tasks_info(void *tasks_info, int max_tasks) {
-    // Această implementare este mai complexă deoarece nu putem itera printr-o coadă de mesaje
-    // fără a le elimina. O abordare alternativă ar fi să copiem coada într-un buffer temporar
-    // și să o reconstruim apoi.
+    // This implementation is more complex because we can't iterate through a message queue
+    // without removing messages. An alternative approach would be to copy the queue to a temporary buffer
+    // and then rebuild it.
     
-    // Pentru simplitate, vom returna 0 și vom lăsa o implementare completă pentru viitor
-    // când structura de date pentru coadă poate fi modificată pentru a suporta iterare.
-    printk("Funcția watering_get_pending_tasks_info nu este încă implementată complet\n");
+    // For simplicity, we'll return 0 and leave a full implementation for the future
+    // when the queue data structure can be modified to support iteration.
+    printk("watering_get_pending_tasks_info function not yet fully implemented\n");
     
-    // TODO: Implementare completă când structura cozii este modificată pentru a permite iterare
+    // TODO: Full implementation when queue structure is modified to allow iteration
     return 0;
 }
