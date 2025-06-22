@@ -3,6 +3,13 @@
 #include <zephyr/fs/fs.h>
 #include <zephyr/logging/log.h>
 #include <stdio.h>
+#include <zephyr/sys/printk.h>
+#include "watering_internal.h"
+
+/* Fallback if the application forgot CONFIG_LOG_DEFAULT_LEVEL */
+#ifndef CONFIG_LOG_DEFAULT_LEVEL
+#define CONFIG_LOG_DEFAULT_LEVEL 3   /* INFO */
+#endif
 
 /**
  * @file watering_log.c
@@ -16,7 +23,7 @@
 LOG_MODULE_REGISTER(watering, CONFIG_LOG_DEFAULT_LEVEL);
 
 // Logging state variables
-static watering_log_level_t current_log_level = WATERING_LOG_LEVEL_INFO;
+static int current_log_level = WATERING_LOG_LEVEL_ERROR;
 static bool logging_to_file = false;
 static char log_file_path[64] = {0};
 static struct fs_file_t log_file;
@@ -27,14 +34,18 @@ static K_MUTEX_DEFINE(log_mutex);
  * 
  * @param level Initial logging level
  */
-void watering_log_init(watering_log_level_t level) {
+void watering_log_init(int level) {
     k_mutex_lock(&log_mutex, K_FOREVER);
     
-    current_log_level = level;
+    if (level >= WATERING_LOG_LEVEL_NONE && level <= WATERING_LOG_LEVEL_DEBUG) {
+        current_log_level = level;
+    }
+    
     logging_to_file = false;
     memset(log_file_path, 0, sizeof(log_file_path));
     
     LOG_INF("Watering log system initialized with level %d", level);
+    printk("Watering log initialized (level %d)\n", current_log_level);
     
     k_mutex_unlock(&log_mutex);
 }
@@ -44,7 +55,7 @@ void watering_log_init(watering_log_level_t level) {
  * 
  * @param level New logging level
  */
-void watering_log_set_level(watering_log_level_t level) {
+void watering_log_set_level(int level) {
     k_mutex_lock(&log_mutex, K_FOREVER);
     
     if (level != current_log_level) {
@@ -108,7 +119,7 @@ int watering_log_to_file(bool enable, const char *file_path) {
  * @param level Severity level
  * @param message Log message
  */
-void watering_log_write(watering_log_level_t level, const char *message) {
+void watering_log_write(int level, const char *message) {
     // Check if message level is important enough
     if (level > current_log_level) {
         return;
@@ -133,4 +144,40 @@ void watering_log_write(watering_log_level_t level, const char *message) {
     }
     
     // Message is already displayed through Zephyr logging system
+}
+
+/**
+ * @brief Log a message at a specific level
+ *
+ * @param level Log level of this message
+ * @param msg Message to log
+ * @param err_code Error code (if applicable)
+ */
+void watering_log(int level, const char *msg, int err_code)
+{
+    if (level > current_log_level) {
+        return;  // Skip messages above current log level
+    }
+    
+    const char *level_str = "UNKNOWN";
+    switch (level) {
+        case WATERING_LOG_LEVEL_ERROR:
+            level_str = "ERROR";
+            break;
+        case WATERING_LOG_LEVEL_WARNING:
+            level_str = "WARN";
+            break;
+        case WATERING_LOG_LEVEL_INFO:
+            level_str = "INFO";
+            break;
+        case WATERING_LOG_LEVEL_DEBUG:
+            level_str = "DEBUG";
+            break;
+    }
+    
+    if (err_code != 0) {
+        printk("[%s] %s (code: %d)\n", level_str, msg, err_code);
+    } else {
+        printk("[%s] %s\n", level_str, msg);
+    }
 }

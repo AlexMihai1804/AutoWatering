@@ -3,6 +3,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/sys/atomic.h>      /* NEW */
+#include "bt_irrigation_service.h"   /* for bt_irrigation_flow_update */
 
 /**
  * @file flow_sensor.c
@@ -13,25 +15,58 @@
  */
 
 /** Devicetree node label for water flow sensor */
-#define FLOW_SENSOR_NODE DT_NODELABEL(water_flow_sensor)
+#define FLOW_SENSOR_NODE        DT_NODELABEL(water_flow_sensor)
+/** child named “flow_key” directly under the sensor node */
+#define FLOW_SENSOR_GPIO_NODE   DT_CHILD(FLOW_SENSOR_NODE, flow_key)
+#define SENSOR_CONFIG_NODE DT_NODELABEL(sensor_config)
+
+/* pick flow_calibration from DT or default to 450 */
+#define FLOW_CALIB_DT DT_PROP_OR(SENSOR_CONFIG_NODE, flow_calibration, 450)
 
 /** GPIO specification for flow sensor from devicetree */
-static const struct gpio_dt_spec flow_sensor = GPIO_DT_SPEC_GET(FLOW_SENSOR_NODE, gpios);
+static const struct gpio_dt_spec flow_sensor =
+    GPIO_DT_SPEC_GET(FLOW_SENSOR_GPIO_NODE, gpios);
 
-/** Current pulse count from flow sensor */
-volatile uint32_t pulse_count = 0;
+/* ---------- data ---------------------------------------------------------- */
+static atomic_t pulse_count = ATOMIC_INIT(0);   /* REPLACES volatile + mutex */
+static uint32_t last_notified          = 0;   /* last value sent over BLE   */
+static uint32_t last_flow_notify_time  = 0;   /* k_uptime at last BLE notif */
 
 /** Timestamp of last interrupt for debounce */
 static uint32_t last_interrupt_time = 0;
 
-/** Minimum milliseconds between pulses (debounce) */
-#define DEBOUNCE_MS 2
+/** Minimum milliseconds between pulses (debounce) - get from devicetree if available */
+#if DT_NODE_HAS_PROP(SENSOR_CONFIG_NODE, debounce_ms)
+  #define DEBOUNCE_MS DT_PROP(SENSOR_CONFIG_NODE, debounce_ms)
+#else
+  #define DEBOUNCE_MS 2
+#endif
 
 /** GPIO interrupt callback structure */
 static struct gpio_callback flow_sensor_cb;
 
-/** Mutex for protecting access to pulse counter */
-static K_MUTEX_DEFINE(pulse_count_mutex);
+/* Notification-throttling parameters (tune as needed) */
+#define FLOW_NOTIFY_PULSE_STEP        10     /* min. extra pulses before notify */
+#define FLOW_NOTIFY_MIN_INTERVAL_MS  500     /* max. 2 Hz notification rate   */
+
+/* ---------- BLE work handler (no mutex needed) ---------------------------- */
+static void flow_update_work_handler(struct k_work *work)
+{
+    uint32_t cnt = atomic_get(&pulse_count);
+    uint32_t now = k_uptime_get_32();
+
+    /* send only if enough new pulses OR time interval elapsed */
+    if ((cnt - last_notified >= FLOW_NOTIFY_PULSE_STEP) ||
+        (now - last_flow_notify_time >= FLOW_NOTIFY_MIN_INTERVAL_MS)) {
+
+        last_notified         = cnt;
+        last_flow_notify_time = now;
+        /* ignore -ENOTCONN etc. */
+        bt_irrigation_flow_update(cnt);
+    }
+}
+static struct k_work flow_update_work;
+/* ----------------------------------------------------------- */
 
 /**
  * @brief Interrupt handler for flow sensor pulses
@@ -40,56 +75,68 @@ static K_MUTEX_DEFINE(pulse_count_mutex);
  * @param cb Pointer to callback data
  * @param pins Bitmask of pins that triggered the interrupt
  */
-static void flow_sensor_callback(const struct device *dev, struct gpio_callback *cb, uint32_t pins) {
+static void flow_sensor_callback(const struct device *dev,
+                                 struct gpio_callback *cb, uint32_t pins)
+{
     uint32_t now = k_uptime_get_32();
-    
-    // Simple debouncing - ignore pulses that come too quickly
+
     if ((now - last_interrupt_time) > DEBOUNCE_MS) {
         last_interrupt_time = now;
-        k_mutex_lock(&pulse_count_mutex, K_NO_WAIT);
-        pulse_count++;
-        k_mutex_unlock(&pulse_count_mutex);
+        atomic_inc(&pulse_count);
+
+        /* schedule work only if not already pending */
+        if (!k_work_is_pending(&flow_update_work)) {
+            k_work_submit(&flow_update_work);
+        }
     }
 }
 
 /**
  * @brief Initialize the flow sensor hardware and interrupts
+ * 
+ * @return 0 on success, negative error code on failure
  */
-void flow_sensor_init(void) {
+int flow_sensor_init(void) {
     int ret;
     static bool initialized = false;
-    
-    // Only initialize once
+
     if (initialized) {
-        return;
+        return 0;
     }
-    
-    // Check if GPIO device is ready
+
+    /* Verify GPIO device is ready */
     if (!device_is_ready(flow_sensor.port)) {
-        printk("GPIO device for sensor is not ready!\n");
-        return;
+        printk("ERROR: GPIO device not ready!\n");
+        return -ENODEV;
     }
-    
-    // Configure GPIO pin as input
-    ret = gpio_pin_configure_dt(&flow_sensor, GPIO_INPUT);
+
+    /* Configure GPIO pin for sensor input */
+    ret = gpio_pin_configure_dt(&flow_sensor, GPIO_INPUT | GPIO_PULL_UP);
     if (ret < 0) {
-        printk("Error configuring pin: %d\n", ret);
-        return;
+        printk("ERROR: Failed to configure GPIO pin: %d\n", ret);
+        return ret;
     }
     
-    // Configure GPIO interrupt on rising edge
+    /* Enable interrupt on rising edge */
     ret = gpio_pin_interrupt_configure_dt(&flow_sensor, GPIO_INT_EDGE_RISING);
     if (ret < 0) {
-        printk("Error configuring interrupt: %d\n", ret);
-        return;
+        printk("ERROR: Failed to configure GPIO interrupt: %d\n", ret);
+        return ret;
     }
     
-    // Set up callback for GPIO interrupt
+    /* Register interrupt callback */
     gpio_init_callback(&flow_sensor_cb, flow_sensor_callback, BIT(flow_sensor.pin));
-    gpio_add_callback(flow_sensor.port, &flow_sensor_cb);
     
+    ret = gpio_add_callback(flow_sensor.port, &flow_sensor_cb);
+    if (ret < 0) {
+        printk("ERROR: Failed to add GPIO callback: %d\n", ret);
+        return ret;
+    }
+    
+    /* init work item for BLE notifications */
+    k_work_init(&flow_update_work, flow_update_work_handler);
     initialized = true;
-    printk("Flow sensor started on pin %d\n", flow_sensor.pin);
+    return 0;
 }
 
 /**
@@ -97,21 +144,15 @@ void flow_sensor_init(void) {
  * 
  * @return Number of pulses counted since last reset
  */
-uint32_t get_pulse_count(void) {
-    uint32_t count;
-    
-    k_mutex_lock(&pulse_count_mutex, K_FOREVER);
-    count = pulse_count;
-    k_mutex_unlock(&pulse_count_mutex);
-    
-    return count;
+uint32_t get_pulse_count(void)
+{
+    return atomic_get(&pulse_count);          /* no locking required */
 }
 
 /**
  * @brief Reset the flow sensor pulse counter to zero
  */
-void reset_pulse_count(void) {
-    k_mutex_lock(&pulse_count_mutex, K_FOREVER);
-    pulse_count = 0;
-    k_mutex_unlock(&pulse_count_mutex);
+void reset_pulse_count(void)
+{
+    atomic_set(&pulse_count, 0);
 }

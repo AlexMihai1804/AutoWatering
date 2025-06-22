@@ -1,13 +1,27 @@
+# Binding for GPIO-based flow sensor
+
 description: GPIO-based water flow sensor
 
 compatible: "gpio-flow-sensor"
+
+include: base.yaml
 
 properties:
   gpios:
     type: phandle-array
     required: true
-    description: GPIO pin for flow sensor
+    description: GPIO to which the flow sensor is connected
 
   label:
     type: string
-    description: Human-readable name
+    description: Human-readable name for the flow sensor
+
+  debounce-ms:
+    type: int
+    default: 2
+    description: Debounce time in milliseconds for pulse filtering
+
+  pulses-per-liter:
+    type: int
+    default: 450
+    description: Calibration value representing pulses per liter of water flow

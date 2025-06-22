@@ -1,6 +1,7 @@
 #ifndef WATERING_INTERNAL_H
 #define WATERING_INTERNAL_H
-#include "watering.h"
+
+#include "watering.h"  // Include this FIRST to avoid redefinitions
 
 /**
  * @file watering_internal.h
@@ -28,6 +29,9 @@ extern bool system_initialized;
 /** Current time tracking for scheduler */
 extern uint16_t days_since_start;
 
+/** Default state flag for when settings aren't available */
+extern bool using_default_settings;
+
 /**
  * @brief Structure to track the currently active watering task
  */
@@ -44,7 +48,10 @@ extern struct watering_task_state_t watering_task_state;
 #define DEFAULT_PULSES_PER_LITER 750
 
 /** Minimum time between flow checks in milliseconds */
-#define FLOW_CHECK_THRESHOLD_MS 5000
+/* Shorter interval so stalled-flow is caught quickly
+ * (must be < NO_FLOW_STALL_TIMEOUT_MS used in watering_monitor.c)
+ */
+#define FLOW_CHECK_THRESHOLD_MS 1000
 
 /** Maximum number of flow error attempts before entering fault state */
 #define MAX_FLOW_ERROR_ATTEMPTS 3
@@ -57,6 +64,16 @@ extern struct watering_task_state_t watering_task_state;
 
 /** Error logging helper macro with file and line info */
 #define LOG_ERROR(msg, err) log_error_with_info(msg, err, __FILE__, __LINE__)
+
+// Add logging level definitions - without redefining the error enum
+#define WATERING_LOG_LEVEL_NONE    0
+#define WATERING_LOG_LEVEL_ERROR   1
+#define WATERING_LOG_LEVEL_WARNING 2
+#define WATERING_LOG_LEVEL_INFO    3
+#define WATERING_LOG_LEVEL_DEBUG   4
+
+/* exported for flow-monitor logic */
+extern uint32_t initial_pulse_count;
 
 /**
  * @brief Initialize task management system
@@ -100,6 +117,15 @@ watering_error_t check_flow_anomalies(void);
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t config_init(void);
+
+/**
+ * @brief Load default configuration values
+ * 
+ * Used when settings subsystem is unavailable
+ * 
+ * @return WATERING_SUCCESS on success
+ */
+watering_error_t load_default_config(void);
 
 /**
  * @brief Log error with file and line information
@@ -176,5 +202,8 @@ int watering_get_pending_tasks_count(void);
  * @return Number of tasks copied to buffer
  */
 int watering_get_pending_tasks_info(void *tasks_info, int max_tasks);
+
+// Function prototype for logging initialization
+void watering_log_init(int level);
 
 #endif // WATERING_INTERNAL_H

@@ -34,6 +34,19 @@ static uint32_t last_flow_check_time = 0;
 /** Mutex for protecting flow monitor state */
 K_MUTEX_DEFINE(flow_monitor_mutex);
 
+/* --- new constants ---------------------------------------------------- */
+#define NO_FLOW_STALL_TIMEOUT_MS   3000   /* 3 s without new pulses ⇒ error */
+
+/* --- new state vars --------------------------------------------------- */
+static uint32_t last_task_pulses      = 0;
+static uint32_t last_pulse_update_ts  = 0;
+static watering_task_t *watched_task  = NULL;
+
+/* ---------- NEW: flow-rate helpers ----------------------------------- */
+static uint32_t last_rate_check_time = 0;
+static uint32_t last_rate_pulses    = 0;
+// ----------------------------------------------------------------------
+
 /**
  * @brief Check for flow anomalies and update system status
  * 
@@ -43,10 +56,16 @@ K_MUTEX_DEFINE(flow_monitor_mutex);
  * 
  * @return WATERING_SUCCESS on success or WATERING_ERROR_BUSY if in fault state
  */
-watering_error_t check_flow_anomalies(void) {
+watering_error_t check_flow_anomalies(void)
+{
     uint32_t now = k_uptime_get_32();
     
-    k_mutex_lock(&flow_monitor_mutex, K_NO_WAIT);
+    // CRITICAL FIX: Use non-blocking mutex to prevent deadlock
+    if (k_mutex_lock(&flow_monitor_mutex, K_NO_WAIT) != 0) {
+        // If we can't get the mutex immediately, skip this check
+        // It's better to miss a check than to hang the system
+        return WATERING_SUCCESS;
+    }
     
     // Only check periodically to allow flow to stabilize
     if ((now - last_flow_check_time) < FLOW_CHECK_THRESHOLD_MS) {
@@ -62,25 +81,71 @@ watering_error_t check_flow_anomalies(void) {
         return WATERING_ERROR_BUSY;
     }
     
+    // CRITICAL FIX: Get a snapshot of the watering task state to minimize
+    // time spent in critical sections
+    bool task_active = false;
+    uint32_t start_time = 0;
+
+    watering_task_t *cur_task_ptr = watering_task_state.current_active_task;
+    if (cur_task_ptr != NULL) {
+        task_active = true;
+        start_time  = watering_task_state.watering_start_time;
+    }
+
+    /* -------- detect task change -> reset stall watchdog -------------- */
+    if (cur_task_ptr != watched_task) {
+        watched_task          = cur_task_ptr;
+        last_task_pulses      = get_pulse_count();
+        last_pulse_update_ts  = now;
+    }
+
+    // Get pulse count with timeout protection
+    uint32_t pulses = get_pulse_count();
+    /* timing debug removed – avoids undeclared variable */
+    
     // Check for no-flow condition when a valve is open
-    if (watering_task_state.current_active_task != NULL) {
-        uint32_t pulses = get_pulse_count();
-        
-        // If no pulses after 5 seconds of watering, we may have a problem
-        if (pulses == 0 && k_uptime_get_32() - watering_task_state.watering_start_time > 5000) {
-            // Consider making this timeout configurable or longer for low-pressure systems
+    if (task_active) {
+        /* update watchdog when flow increases */
+        if (pulses > last_task_pulses) {
+            last_task_pulses     = pulses;
+            last_pulse_update_ts = now;
+        }
+
+        /* existing “never started” 5 s logic stays unchanged */
+        bool never_started = (pulses == 0 && now - start_time > 5000);
+
+        /* new: no new pulses for a while => stalled flow */
+        bool stalled_flow = (pulses == last_task_pulses) &&
+                            (now - last_pulse_update_ts > NO_FLOW_STALL_TIMEOUT_MS);
+
+        if (never_started || stalled_flow) {
             printk("ALERT: No water flow detected with valve open!\n");
             flow_error_attempts++;
-            
-            // If we've had multiple consecutive errors, enter fault state
-            if (flow_error_attempts >= MAX_FLOW_ERROR_ATTEMPTS) {
-                printk("CRITICAL ERROR: Maximum attempts reached. Entering fault state!\n");
+
+            /* NEW: re-queue current task for a retry --------------------- */
+            if (flow_error_attempts < MAX_FLOW_ERROR_ATTEMPTS &&
+                watering_task_state.current_active_task) {
+
+                /* make a copy of the task that just failed                */
+                watering_task_t retry_task =
+                        *watering_task_state.current_active_task;
+
+                printk("Retrying watering (%d/%d)...\n",
+                       flow_error_attempts, MAX_FLOW_ERROR_ATTEMPTS);
+
+                watering_stop_current_task();   /* closes valve */
+
+                /* push the task back into the queue for another attempt   */
+                watering_add_task(&retry_task);
+                /* keep system status to NO_FLOW so user is informed       */
+                system_status = WATERING_STATUS_NO_FLOW;
+
+            } else {
+                /* exceeded attempts – go to FAULT ----------------------- */
+                printk("CRITICAL ERROR: Maximum attempts reached. "
+                       "Entering fault state!\n");
                 system_status = WATERING_STATUS_FAULT;
                 transition_to_state(WATERING_STATE_ERROR_RECOVERY);
-                watering_stop_current_task();
-            } else {
-                printk("Retrying watering (%d/%d)...\n", flow_error_attempts, MAX_FLOW_ERROR_ATTEMPTS);
-                system_status = WATERING_STATUS_NO_FLOW;
                 watering_stop_current_task();
             }
         } else if (pulses > 0) {
@@ -93,7 +158,6 @@ watering_error_t check_flow_anomalies(void) {
         }
     } else {
         // Check for unexpected flow when no valves are open
-        uint32_t pulses = get_pulse_count();
         if (pulses > UNEXPECTED_FLOW_THRESHOLD) {
             printk("ALERT: Water flow detected with all valves closed! (%d pulses)\n", pulses);
             system_status = WATERING_STATUS_UNEXPECTED_FLOW;
@@ -133,13 +197,34 @@ static void flow_monitor_fn(void *p1, void *p2, void *p3) {
     
     while (!exit_tasks) {
         uint32_t pulses = get_pulse_count();
-        
+
+        /* --- NEW: compute l/min every second ------------------------- */
+        uint32_t now_ms = k_uptime_get_32();
+        if (now_ms - last_rate_check_time >= 1000) {     /* 1 s window */
+            uint32_t delta_p = pulses - last_rate_pulses;
+            uint32_t delta_t = now_ms - last_rate_check_time;   /* ms   */
+            uint32_t calib;
+            if (delta_p > 0 &&
+                watering_get_flow_calibration(&calib) == WATERING_SUCCESS &&
+                calib > 0) {
+
+                /* l/min = pulses * 60000 / (Δt * calib) */
+                uint32_t l_per_min_x100 = (delta_p * 60000u * 100u) /
+                                          (delta_t * calib);
+                printk("Current flow: %u.%02u L/min\n",
+                       l_per_min_x100 / 100, l_per_min_x100 % 100);
+            }
+            last_rate_check_time = now_ms;
+            last_rate_pulses     = pulses;
+        }
+
+        /* existing reporting of total pulses & liters ---------------- */
         if (pulses > 0) {
             uint32_t calibration;
             if (watering_get_flow_calibration(&calibration) == WATERING_SUCCESS) {
-                // Convert pulses to liters for reporting
-                float liters = (float) pulses / calibration;
-                printk("Flow sensor pulses: %u (%.2f liters)\n", pulses, (double) liters);
+                float liters = (float)pulses / calibration;
+                printk("Flow sensor pulses: %u (%.2f liters)\n",
+                       pulses, (double)liters);
             }
             
             // Report on any abnormal system status
@@ -152,7 +237,7 @@ static void flow_monitor_fn(void *p1, void *p2, void *p3) {
                                MAX_FLOW_ERROR_ATTEMPTS);
                         break;
                     case WATERING_STATUS_UNEXPECTED_FLOW:
-                        printk("WARNING: Unexpected flow detected!\n");
+                        printk("Unexpected flow detected!\n");
                         break;
                     case WATERING_STATUS_FAULT:
                         printk("ERROR: System in fault state! Manual intervention needed.\n");

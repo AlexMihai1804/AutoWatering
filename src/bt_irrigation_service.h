@@ -1,5 +1,9 @@
-#ifndef BT_IRRIGATION_SERVICE_H
-#define BT_IRRIGATION_SERVICE_H
+#ifndef CONFIG_BT_MAX_PAIRED
+#define CONFIG_BT_MAX_PAIRED 1
+#endif
+#ifndef CONFIG_BT_MAX_CONN
+#define CONFIG_BT_MAX_CONN 1
+#endif
 
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/gatt.h>
@@ -120,5 +124,3 @@ int bt_irrigation_diagnostics_update(void);
  * @return 0 on success, negative error code on failure
  */
 int bt_irrigation_direct_command(uint8_t channel_id, uint8_t command, uint16_t param);
-
-#endif // BT_IRRIGATION_SERVICE_H

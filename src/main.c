@@ -1,178 +1,171 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/reboot.h>
-#include <zephyr/drivers/watchdog.h>
-
+#include <zephyr/usb/usb_device.h>
+#include <zephyr/drivers/uart.h>
+#include <zephyr/devicetree.h>
+#include <zephyr/pm/pm.h>
 #include "flow_sensor.h"
 #include "watering.h"
-#include "watering_internal.h"  // Add this include to access DEFAULT_PULSES_PER_LITER
+#include "watering_internal.h"
 #include "rtc.h"
-#include "bt_irrigation_service.h"  // Add this include
-
-/**
- * @file main.c
- * @brief Main application for the automatic watering system
- * 
- * This file contains the entry point for the application and handles
- * system initialization, demo setup, and the main monitoring loop.
- */
-
-// Timeout for initialization in milliseconds
+#include "bt_irrigation_service.h"
+#include "usb_descriptors.h"
+#include "nvs_config.h"
+bool critical_section_active = false;
 #define INIT_TIMEOUT_MS 5000
-
-// System status check interval in seconds
-#define STATUS_CHECK_INTERVAL_S 60
-
-// Configuration save interval in seconds
+#define STATUS_CHECK_INTERVAL_S 30
 #define CONFIG_SAVE_INTERVAL_S 3600
+#define USB_GLOBAL_TIMEOUT_MS 10000
+#define USB_MAX_RETRIES 3
+#define USB_RETRY_DELAY_MS 1000
+#define ENABLE_BLUETOOTH true
+#define ENABLE_USB true
+static bool usb_functional = false;
+K_THREAD_STACK_DEFINE(init_thread_stack, 2048);
+static struct k_thread init_thread_data;
+K_SEM_DEFINE(init_complete_sem, 0, 1);
+static volatile bool init_success = false;
+static const struct device *cdc_dev;
 
-// Watchdog configuration
-#define WDT_TIMEOUT_MS 5000
+static int setup_usb_cdc_acm(void);
 
-#if DT_HAS_CHOSEN(zephyr_watchdog) || DT_HAS_ALIAS(watchdog0)
-static const struct device *wdt_dev;
-static struct wdt_timeout_cfg wdt_config;
+static uint32_t boot_start_ms;
 
-/**
- * @brief Configure and start watchdog timer
- * 
- * @return 0 on success, negative error code on failure
- */
-static int setup_watchdog(void) {
-    // Use runtime binding instead of devicetree references
-    wdt_dev = device_get_binding("WDT_0");
-    
-    if (!wdt_dev || !device_is_ready(wdt_dev)) {
-        printk("Watchdog device not ready or not available\n");
+static int set_default_rtc_time(void);
+
+static int setup_usb_cdc_acm(void) {
+    if (!ENABLE_USB) {
         return -ENODEV;
     }
-    
-    wdt_config.window.min = 0;
-    wdt_config.window.max = WDT_TIMEOUT_MS;
-    wdt_config.callback = NULL;  // Reset on timeout
-    
-    int wdt_channel_id = wdt_install_timeout(wdt_dev, &wdt_config);
-    if (wdt_channel_id < 0) {
-        printk("Watchdog install error: %d\n", wdt_channel_id);
-        return wdt_channel_id;
+    cdc_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(cdc_acm_uart0));
+    if (!cdc_dev || !device_is_ready(cdc_dev)) {
+        cdc_dev = device_get_binding("CDC_ACM_0");
     }
-    
-    int ret = wdt_setup(wdt_dev, WDT_OPT_PAUSE_HALTED_BY_DBG);
-    if (ret < 0) {
-        printk("Watchdog setup error: %d\n", ret);
+    if (!cdc_dev || !device_is_ready(cdc_dev)) {
+        printk("CDC ACM device not ready\n");
+        return -ENODEV;
+    }
+    printk("CDC ACM ready (USB was started at boot)\n");
+    usb_functional = true;
+    return 0;
+}
+
+static void setup_usb(void) {
+    printk("Initializing USB with minimal CDC ACM...\n");
+    printk("USB disabled\n");
+    k_sleep(K_MSEC(500));
+    int ret = usb_enable(NULL);
+    if (ret != 0) {
+        printk("Failed to enable USB: %d\n", ret);
+        return;
+    }
+    printk("USB enabled successfully\n");
+    k_sleep(K_MSEC(1000));
+    const struct device *cdc_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(cdc_acm_uart0));
+    if (!cdc_dev) {
+        cdc_dev = device_get_binding("CDC_ACM_0");
+    }
+    if (!cdc_dev) {
+        cdc_dev = device_get_binding("CDC_ACM");
+    }
+    if (cdc_dev && device_is_ready(cdc_dev)) {
+        printk("CDC ACM device found\n"); {
+            uint32_t dtr = 0;
+            while (uart_line_ctrl_get(cdc_dev, UART_LINE_CTRL_DTR, &dtr) == 0 && !dtr) {
+                k_sleep(K_MSEC(10));
+            }
+        }
+        uart_line_ctrl_set(cdc_dev, UART_LINE_CTRL_DCD, 1);
+        uart_line_ctrl_set(cdc_dev, UART_LINE_CTRL_DSR, 1);
+        const char *test_str = "\r\nSystem booting...\r\n";
+        for (int i = 0; i < strlen(test_str); i++) {
+            uart_poll_out(cdc_dev, test_str[i]);
+        }
+        printk("CDC ACM initialized - COM port should be available\n");
+        usb_functional = true;
+    } else {
+        printk("CDC ACM device not found\n");
+        usb_functional = false;
+    }
+}
+
+static void init_thread_entry(void *p1, void *p2, void *p3) {
+    ARG_UNUSED(p1);
+    ARG_UNUSED(p2);
+    ARG_UNUSED(p3);
+    printk("Starting safe initialization process\n");
+    printk("Initializing flow sensor...\n");
+    flow_sensor_init();
+    printk("Flow sensor initialized\n");
+    printk("Safe initialization complete\n");
+    init_success = true;
+    k_sem_give(&init_complete_sem);
+}
+
+__attribute__((unused))
+static watering_error_t initialize_hardware(void) {
+    printk("Performing hardware diagnostics before initialization...\n");
+    k_tid_t init_tid = k_thread_create(&init_thread_data,
+                                       init_thread_stack,
+                                       K_THREAD_STACK_SIZEOF(init_thread_stack),
+                                       init_thread_entry,
+                                       NULL, NULL, NULL,
+                                       K_PRIO_PREEMPT(8), 0, K_NO_WAIT);
+    k_thread_name_set(init_tid, "init_thread");
+    if (k_sem_take(&init_complete_sem, K_MSEC(INIT_TIMEOUT_MS)) != 0) {
+        printk("CRITICAL: Initialization thread timed out!\n");
+        k_thread_abort(init_tid);
+        return WATERING_ERROR_BUSY;
+    }
+
+    return init_success ? WATERING_SUCCESS : WATERING_ERROR_CONFIG;
+}
+
+static int set_default_rtc_time(void) {
+    if (!rtc_is_available()) {
+        printk("DS3231 RTC completely disabled to prevent system hangs\n");
+        printk("ERROR: Failed to initialize RTC. Will use system time instead.\n");
+        return 0;
+    }
+    rtc_datetime_t now;
+    int ret;
+    ret = rtc_datetime_get(&now);
+    if (ret != 0) {
+        printk("ERROR: Failed to read RTC. Using system time instead.\n");
         return ret;
     }
-    
-    printk("Watchdog initialized with %d ms timeout\n", WDT_TIMEOUT_MS);
+    bool is_default = (now.year <= 2000);
+    printk("Current RTC values: %04d-%02d-%02d %02d:%02d:%02d (day %d)\n",
+           now.year, now.month, now.day,
+           now.hour, now.minute, now.second,
+           now.day_of_week);
+    if (is_default) {
+        printk("RTC has default date, setting to 2023-12-10 12:00:00\n");
+        rtc_datetime_t default_time = {
+            .year = 2023,
+            .month = 12,
+            .day = 10,
+            .hour = 12,
+            .minute = 0,
+            .second = 0,
+            .day_of_week = 0
+        };
+        ret = rtc_datetime_set(&default_time);
+        if (ret != 0) {
+            printk("Failed to set default RTC time: %d\n", ret);
+            return ret;
+        }
+        k_msleep(50);
+        rtc_print_time();
+    }
     return 0;
 }
-#else
-// Stub function when no watchdog is available
-static inline int setup_watchdog(void) {
-    printk("No watchdog device available in device tree\n");
-    return 0;
-}
-#endif
 
-/**
- * @brief Initialize system hardware components
- * 
- * @return WATERING_SUCCESS on success, error code on failure
- */
-static watering_error_t initialize_hardware(void) {
-    watering_error_t err;
-    int retry_count = 0;
-    const int max_retries = 3;
-    
-    // Retry initialization loop for better resilience
-    while (retry_count < max_retries) {
-        // Initialize flow sensor hardware
-        flow_sensor_init();
-        
-        // Initialize watering system
-        err = watering_init();
-        if (err == WATERING_SUCCESS) {
-            break;
-        }
-        
-        printk("Failed to initialize watering system: %d (attempt %d/%d)\n", 
-               err, retry_count + 1, max_retries);
-        k_sleep(K_MSEC(500));
-        retry_count++;
-    }
-    
-    if (err != WATERING_SUCCESS) {
-        printk("Failed to initialize watering system after %d attempts\n", max_retries);
-        return err;
-    }
-    
-    // Try to initialize RTC but don't rely on it
-    printk("Attempting to initialize RTC...\n");
-    
-    // Initialize RTC access - don't error out if RTC isn't available
-    int rtc_status = rtc_init();
-    if (rtc_status != 0) {
-        printk("RTC initialization failed - scheduling will use system time only\n");
-    } else {
-        // Only access RTC functions if initialization was successful
-        rtc_datetime_t now;
-        if (rtc_datetime_get(&now) == 0) {
-            printk("RTC time: %02d:%02d:%02d, Date: %02d/%02d/%04d (day %d)\n",
-                now.hour, now.minute, now.second,
-                now.day, now.month, now.year,
-                now.day_of_week);
-        } else {
-            printk("Failed to read current time from RTC\n");
-        }
-    }
-    
-    // Initialize Bluetooth communication
-    int bt_err = bt_irrigation_service_init();
-    if (bt_err != 0) {
-        printk("WARNING: Bluetooth initialization failed: %d\n", bt_err);
-        // Continue anyway as Bluetooth is optional
-    }
-    
-    return WATERING_SUCCESS;
-}
-
-/**
- * @brief Load or create system configuration
- * 
- * @return WATERING_SUCCESS on success, error code on failure
- */
-static watering_error_t initialize_configuration(void) {
-    watering_error_t err;
-    uint32_t calibration;
-    
-    // Load existing configuration or create new one
-    err = watering_load_config();
-    if (err != WATERING_SUCCESS) {
-        printk("No saved configurations found, using default values\n");
-        watering_set_flow_calibration(DEFAULT_PULSES_PER_LITER);
-        err = watering_save_config();
-        if (err != WATERING_SUCCESS) {
-            printk("Warning: Failed to save default configuration: %d\n", err);
-        }
-    }
-    
-    // Display current calibration
-    if (watering_get_flow_calibration(&calibration) == WATERING_SUCCESS) {
-        printk("Flow sensor calibrated to %d pulses per liter\n", calibration);
-    }
-    
-    return WATERING_SUCCESS;
-}
-
-/**
- * @brief Run a test cycle of all valves
- * 
- * @return WATERING_SUCCESS on success, error code on failure
- */
+__attribute__((unused))
 static watering_error_t run_valve_test(void) {
     printk("Running valve test sequence...\n");
     watering_error_t err;
-    
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
         printk("Testing channel %d...\n", i + 1);
         err = watering_channel_on(i);
@@ -180,172 +173,129 @@ static watering_error_t run_valve_test(void) {
             printk("Error activating channel %d: %d\n", i + 1, err);
             continue;
         }
-        
-        k_sleep(K_SECONDS(2));
-        
+        k_sleep(K_SECONDS(1));
         err = watering_channel_off(i);
         if (err != WATERING_SUCCESS) {
             printk("Error deactivating channel %d: %d\n", i + 1, err);
         }
-        
-        k_sleep(K_MSEC(500));
+        k_sleep(K_MSEC(200));
     }
-    
     return WATERING_SUCCESS;
 }
 
-/**
- * @brief Create a demonstration task for testing
- * 
- * @return WATERING_SUCCESS on success, error code on failure
- */
+__attribute__((unused))
 static watering_error_t create_demo_task(void) {
-    watering_error_t err;
-    
-    // Create a volume task for channel 1 (2 liters)
-    err = watering_add_volume_task(0, 2);
-    if (err == WATERING_SUCCESS) {
-        printk("Demonstration volume task added for channel 1 (2 liters)\n");
-    } else {
-        printk("Error adding volume task: %d\n", err);
-        return err;
-    }
-    
-    // Create a duration task for channel 2 (1 minute)
-    err = watering_add_duration_task(1, 1);
-    if (err == WATERING_SUCCESS) {
-        printk("Demonstration duration task added for channel 2 (1 minute)\n");
-    } else {
-        printk("Error adding duration task: %d\n", err);
-    }
-    
-    return err;
+    printk("Demo tasks disabled for debugging\n");
+    return WATERING_SUCCESS;
 }
 
-/**
- * @brief Application entry point
- * 
- * Initializes hardware and software components, runs a test sequence,
- * and starts the watering system.
- * 
- * @return 0 on success, negative error code on failure
- */
+__attribute__((unused))
+static int initialize_component(const char *name, int (*init_func)(void)) {
+    printk("Initializing %s...\n", name);
+    int ret = init_func();
+    if (ret != 0) {
+        printk("ERROR: %s initialization failed: %d\n", name, ret);
+        return ret;
+    }
+    printk("%s initialized successfully\n", name);
+    return 0;
+}
+
+static int watering_init_wrapper(void) {
+    watering_error_t err = watering_init();
+    return (err == WATERING_SUCCESS) ? 0 : -1;
+}
+
+static int valve_init_wrapper(void) {
+    watering_error_t err = valve_init();
+    return (err == WATERING_SUCCESS) ? 0 : -1;
+}
+
+static int flow_sensor_init_wrapper(void) {
+    int ret = flow_sensor_init();
+    if (ret != 0) {
+        printk("Flow sensor hardware init failed with error %d\n", ret);
+        return ret;
+    }
+    return 0;
+}
+
+__attribute__((unused))
+static int nvs_init_wrapper(void) {
+    return nvs_config_init();
+}
+
 int main(void) {
-    printk("Initializing automatic irrigation system...\n");
-    
-    // Setup watchdog timer
-    setup_watchdog();
-    
-    // Initialize hardware components
-    if (initialize_hardware() != WATERING_SUCCESS) {
-        printk("Critical initialization error - attempting recovery\n");
-        k_sleep(K_SECONDS(1));
-        sys_reboot(SYS_REBOOT_WARM);
+    boot_start_ms = k_uptime_get_32();
+    printk("\n\n==============================\n");
+    printk("AutoWatering System v2.4\n");
+    printk("SERIAL PORT FIX BUILD\n");
+    printk("==============================\n\n");
+    critical_section_active = true;
+    printk("Starting USB init with port release safeguards...\n");
+    int usb_ret = setup_usb_cdc_acm();
+    if (usb_ret != 0) {
+        printk("WARNING: USB init failed (%d), continuing without USB console\n", usb_ret);
+    } else {
+        printk("USB init complete\n");
     }
-    
-    // Load or create configuration
-    initialize_configuration();
-    
-    // Run a test sequence to verify all valves are working
-    run_valve_test();
-    
-    // Create a demonstration task for channel 1
-    create_demo_task();
-    
-    // Start background tasks for watering operations
-    watering_error_t err = watering_start_tasks();
-    if (err != WATERING_SUCCESS) {
-        printk("Error starting watering tasks: %d\n", err);
-        return -1;
+    int ret = nvs_config_init();
+    if (ret != 0) {
+        printk("FATAL: NVS initialization failed (%d), halting application\n", ret);
+        k_sleep(K_FOREVER);
     }
-    
-    printk("Watering system now running in dedicated tasks\n");
-    printk("Main application entering monitoring loop\n");
-    
-    // Configuration save timer
-    uint32_t last_save_time = k_uptime_get_32();
-    
-    // Power monitoring variables
-    uint32_t power_check_time = 0;
-    power_mode_t current_mode = POWER_MODE_NORMAL;
-    
-    // Periodic queue status update via Bluetooth
-    uint32_t last_queue_update = k_uptime_get_32();
-    uint32_t queue_update_interval_ms = 5000; // 5 seconds
-    
-    // Main monitoring loop
+    printk("NVS initialization successful\n");
+    k_sleep(K_MSEC(200));
+    printk("Starting valve subsystem init...\n");
+    ret = valve_init_wrapper();
+    if (ret != 0) {
+        printk("WARNING: Valve initialization encountered errors: %d\n", ret);
+    } else {
+        printk("Valve initialization successful\n");
+    }
+    k_sleep(K_MSEC(200));
+    printk("Starting flow sensor init...\n");
+    ret = flow_sensor_init_wrapper();
+    if (ret != 0) {
+        printk("Flow sensor initialization failed: %d – continuing\n", ret);
+    } else {
+        printk("Flow sensor initialization successful\n");
+    }
+    ret = initialize_component("RTC", rtc_init);
+    if (ret != 0) {
+        printk("WARNING: RTC init failed (%d) – using uptime fallback\n", ret);
+    } else {
+        set_default_rtc_time();
+    }
+    printk("Starting watering subsystem init...\n");
+    ret = watering_init_wrapper();
+    if (ret != 0) {
+        printk("WARNING: Watering system initialization failed: %d\n", ret);
+    } else {
+        printk("Watering system initialization successful\n");
+    }
+    k_sleep(K_MSEC(200));
+    printk("Starting watering tasks...\n");
+    ret = watering_start_tasks();
+    if (ret != WATERING_SUCCESS) {
+        printk("ERROR: Failed to start watering tasks: %d\n", ret);
+    } else {
+        printk("Watering tasks started successfully\n");
+    }
+    critical_section_active = false;
+    printk("System initialization complete\n");
+    uint32_t boot_time_ms = k_uptime_get_32() - boot_start_ms;
+    printk("Boot completed in %u ms (%.2f s)\n",
+           boot_time_ms, boot_time_ms / 1000.0f);
+    if (ENABLE_BLUETOOTH) {
+        printk("Initializing Bluetooth irrigation service...\n");
+        int ble_err = bt_irrigation_service_init();
+        if (ble_err != 0) {
+            printk("Error initializing BLE service: %d\n", ble_err);
+        }
+    }
     while (1) {
-        watering_status_t status;
-        watering_state_t state;
-        
-        if (watering_get_status(&status) != WATERING_SUCCESS || 
-            watering_get_state(&state) != WATERING_SUCCESS) {
-            printk("Error reading system state\n");
-        } else {
-            // Handle fault state by periodically trying to reset
-            if (status == WATERING_STATUS_FAULT) {
-                printk("CRITICAL ERROR: System blocked! Manual intervention required.\n");
-                printk("Waiting for problem resolution and manual reset...\n");
-                k_sleep(K_SECONDS(300));  // Wait 5 minutes before trying reset
-                watering_reset_fault();
-            }
-            
-            // Log current system state
-            printk("Main thread: system status: %d, state: %d\n", status, state);
-            
-            // Update Bluetooth status
-            bt_irrigation_system_status_update(status);
-        }
-        
-        // Update flow data over Bluetooth
-        uint32_t pulses = get_pulse_count();
-        bt_irrigation_flow_update(pulses);
-        
-        // Periodically save configuration
-        uint32_t now = k_uptime_get_32();
-        if ((now - last_save_time) > (CONFIG_SAVE_INTERVAL_S * 1000)) {
-            watering_save_config();
-            last_save_time = now;
-        }
-        
-        // Check power state and update mode if needed (demo)
-        // In a real system, this would monitor battery voltage or external power state
-        if ((now - power_check_time) > (300 * 1000)) { // Every 5 minutes
-            power_check_time = now;
-            
-            // Demo power mode rotation (would be based on real power readings)
-            if (current_mode == POWER_MODE_NORMAL) {
-                watering_set_power_mode(POWER_MODE_ENERGY_SAVING);
-                current_mode = POWER_MODE_ENERGY_SAVING;
-                printk("Switched to energy saving mode (demo)\n");
-            } else if (current_mode == POWER_MODE_ENERGY_SAVING) {
-                watering_set_power_mode(POWER_MODE_NORMAL);
-                current_mode = POWER_MODE_NORMAL;
-                printk("Switched to normal power mode (demo)\n");
-            }
-        }
-        
-        // Periodically update the queue status via Bluetooth
-        if ((now - last_queue_update) > queue_update_interval_ms) {
-            uint8_t pending_tasks;
-            bool active_task;
-            if (watering_get_queue_status(&pending_tasks, &active_task) == WATERING_SUCCESS) {
-                bt_irrigation_queue_status_update(pending_tasks);
-            }
-            last_queue_update = now;
-        }
-        
-        // Feed watchdog to prevent reset
-        #if DT_HAS_CHOSEN(zephyr_watchdog) || DT_HAS_ALIAS(watchdog0)
-        if (wdt_dev && device_is_ready(wdt_dev)) {
-            wdt_feed(wdt_dev, 0);
-        }
-        #endif
-        
-        // Sleep before next check
-        k_sleep(K_SECONDS(STATUS_CHECK_INTERVAL_S));
+        k_sleep(K_SECONDS(60));
     }
-    
-    // This point is never reached, but for completeness
     return 0;
 }

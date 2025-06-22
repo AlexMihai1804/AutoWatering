@@ -34,57 +34,51 @@ void log_error_with_info(const char *message, int error_code, const char *file, 
 }
 
 /**
- * @brief Initialize the watering system
  */
 watering_error_t watering_init(void) {
-    if (system_initialized) {
-        return WATERING_SUCCESS;  // Already initialized
+    // Start with minimum logging level
+    watering_log_init(WATERING_LOG_LEVEL_ERROR);
+
+    // Initialize mutex
+    static bool mutex_initialized = false;
+    if (!mutex_initialized) {
+        k_mutex_init(&system_state_mutex);
+        mutex_initialized = true;
     }
-    
-    k_mutex_lock(&system_state_mutex, K_FOREVER);
-    
-    // Initialize default channel names
-    for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
-        snprintf(watering_channels[i].name, sizeof(watering_channels[i].name), "Channel %d", i + 1);
-        watering_channels[i].is_active = false;
-    }
-    
-    // Initialize subsystems
-    watering_error_t err;
-    
-    // Initialize valve hardware
-    err = valve_init();
+
+    // Initialize task system
+    watering_error_t err = tasks_init();
     if (err != WATERING_SUCCESS) {
-        LOG_ERROR("Failed to initialize valve hardware", err);
-        k_mutex_unlock(&system_state_mutex);
         return err;
     }
-    
-    err = tasks_init();
-    if (err != WATERING_SUCCESS) {
-        LOG_ERROR("Failed to initialize tasks", err);
-        k_mutex_unlock(&system_state_mutex);
-        return err;
-    }
-    
+
+    // Set up settings system
     err = config_init();
     if (err != WATERING_SUCCESS) {
-        LOG_ERROR("Failed to initialize configuration", err);
-        // Non-critical error, continue initialization
+        LOG_ERROR("Configuration subsystem init failed", err);
     }
-    
-    err = flow_monitor_init();
+
+    // Use ultra minimal valve initialization
+    err = valve_init();
     if (err != WATERING_SUCCESS) {
-        LOG_ERROR("Failed to initialize flow monitoring", err);
-        k_mutex_unlock(&system_state_mutex);
-        return err;
+        // Don't hang here, but report the error
+        printk("Valve initialization failed but continuing: %d\n", err);
     }
-    
-    system_initialized = true;
+
+    // Set default system state
     system_state = WATERING_STATE_IDLE;
     system_status = WATERING_STATUS_OK;
+    current_power_mode = POWER_MODE_NORMAL;
+
+    // Update system flags
+    system_initialized = true;
     
-    k_mutex_unlock(&system_state_mutex);
+    /* always start flow-monitoring */
+    flow_monitor_init();
+    
+    // Ensure all valves are closed as a safety measure
+    valve_close_all();
+
     return WATERING_SUCCESS;
 }
 

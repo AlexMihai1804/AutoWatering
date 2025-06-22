@@ -3,6 +3,7 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>   /* needed by implementation */
 
 /**
  * @file flow_sensor.h
@@ -16,8 +17,10 @@
  * @brief Initialize the flow sensor hardware
  * 
  * Sets up GPIO and interrupt handlers for the flow sensor pulse detection.
+ * 
+ * @return 0 on success, negative error code on failure
  */
-void flow_sensor_init(void);
+int flow_sensor_init(void);
 
 /**
  * @brief Get the current pulse count from the flow sensor
@@ -30,5 +33,7 @@ uint32_t get_pulse_count(void);
  * @brief Reset the pulse counter to zero
  */
 void reset_pulse_count(void);
+
+// Removed simulation-related functions
 
 #endif // FLOW_SENSOR_H

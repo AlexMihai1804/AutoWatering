@@ -24,7 +24,7 @@ typedef enum {
     WATERING_ERROR_HARDWARE = -3,    /**< Hardware failure or not ready */
     WATERING_ERROR_BUSY = -4,        /**< System is busy/in use */
     WATERING_ERROR_QUEUE_FULL = -5,  /**< Task queue is full */
-    WATERING_ERROR_NOT_FOUND = -6,   /**< Requested item not found */
+    WATERING_ERROR_TIMEOUT = -6,     /**< Operation timed out */
     WATERING_ERROR_CONFIG = -7,      /**< Configuration error */
     WATERING_ERROR_RTC_FAILURE = -8, /**< RTC failure */
     WATERING_ERROR_STORAGE = -9,     /**< Storage/persistence error */

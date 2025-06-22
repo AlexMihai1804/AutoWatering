@@ -4,6 +4,7 @@
 #include <stdio.h>  // Add this for snprintf
 #include "watering.h"
 #include "watering_internal.h"
+#include "nvs_config.h"  // Changed to use direct NVS
 
 /**
  * @file watering_config.c
@@ -30,21 +31,85 @@ static config_header_t config_header = {
 /** Mutex for protecting configuration operations */
 K_MUTEX_DEFINE(config_mutex);
 
+/* Flag to indicate if we're using default settings */
+bool using_default_settings = false;
+
 /**
  * @brief Initialize the configuration subsystem
  * 
- * Sets up Zephyr's settings subsystem for persistent storage
+ * Sets up NVS storage for persistent configuration
  * 
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t config_init(void) {
-    int rc = settings_subsys_init();
-    if (rc) {
-        LOG_ERROR("Error initializing settings subsystem", rc);
-        return WATERING_ERROR_STORAGE;
-    } 
+    int rc;
     
-    printk("Settings subsystem initialized\n");
+    printk("Initializing configuration storage...\n");
+    
+    // Always set default values first to ensure we have something to work with
+    using_default_settings = true;
+    
+    // Initialize NVS for configuration storage
+    rc = nvs_config_init();
+    if (rc != 0) {
+        printk("Failed to initialize NVS: %d\n", rc);
+        printk("Using default configuration values\n");
+        load_default_config();
+        return WATERING_SUCCESS;  // Continue with default settings
+    }
+    
+    // Load all configuration values
+    rc = watering_load_config();
+    if (rc != WATERING_SUCCESS) {
+        printk("Failed to load configuration: %d\n", rc);
+        printk("Using default configuration values\n");
+        load_default_config();
+    } else {
+        // Mark that we're not using defaults anymore
+        using_default_settings = false;
+    }
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Load default configuration values
+ * 
+ * Used when settings subsystem is unavailable
+ * 
+ * @return WATERING_SUCCESS on success
+ */
+watering_error_t load_default_config(void) {
+    printk("Loading default configuration values\n");
+    
+    // Set flow sensor calibration to default
+    watering_set_flow_calibration(DEFAULT_PULSES_PER_LITER);
+    
+    // Set default channel names
+    for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+        snprintf(watering_channels[i].name, sizeof(watering_channels[i].name), 
+                "Channel %d", i + 1);
+                
+        // Default schedule: disabled
+        watering_channels[i].watering_event.auto_enabled = false;
+        
+        // Default to daily schedule at noon
+        watering_channels[i].watering_event.schedule_type = SCHEDULE_DAILY;
+        watering_channels[i].watering_event.schedule.daily.days_of_week = 0x7F; // All days
+        watering_channels[i].watering_event.start_time.hour = 12;
+        watering_channels[i].watering_event.start_time.minute = 0;
+        
+        // Default to 5 minute duration watering
+        watering_channels[i].watering_event.watering_mode = WATERING_BY_DURATION;
+        watering_channels[i].watering_event.watering.by_duration.duration_minutes = 5;
+    }
+    
+    // Default days counter
+    days_since_start = 0;
+    
+    // Set flag to indicate we're using defaults
+    using_default_settings = true;
+    
     return WATERING_SUCCESS;
 }
 
@@ -58,15 +123,21 @@ watering_error_t config_init(void) {
 watering_error_t watering_save_config(void) {
     int ret = 0;
     
+    // Don't try to save if we're in default-only mode
+    if (using_default_settings) {
+        printk("Using default configuration only - save not performed\n");
+        return WATERING_SUCCESS;
+    }
+    
     k_mutex_lock(&config_mutex, K_FOREVER);
     
     // Update configuration header
     config_header.version = WATERING_CONFIG_VERSION;
     config_header.timestamp = k_uptime_get_32();
     
-    // Save header
-    ret = settings_save_one("watering/header", &config_header, sizeof(config_header));
-    if (ret) {
+    // Save header using direct NVS
+    ret = nvs_save_watering_config(&config_header, sizeof(config_header));
+    if (ret < 0) {
         LOG_ERROR("Error saving configuration header", ret);
         k_mutex_unlock(&config_mutex);
         return WATERING_ERROR_STORAGE;
@@ -75,8 +146,8 @@ watering_error_t watering_save_config(void) {
     // Save flow sensor calibration
     uint32_t calibration;
     watering_get_flow_calibration(&calibration);
-    ret = settings_save_one("watering/calibration", &calibration, sizeof(calibration));
-    if (ret) {
+    ret = nvs_save_flow_calibration(calibration);
+    if (ret < 0) {
         LOG_ERROR("Error saving calibration", ret);
         k_mutex_unlock(&config_mutex);
         return WATERING_ERROR_STORAGE;
@@ -84,27 +155,18 @@ watering_error_t watering_save_config(void) {
     
     // Save each channel's configuration
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
-        char path[32];
-        snprintf(path, sizeof(path), "watering/channel/%d", i);
-        ret = settings_save_one(path, &watering_channels[i].watering_event, sizeof(watering_event_t));
-        if (ret) {
+        ret = nvs_save_channel_config(i, &watering_channels[i].watering_event, 
+                                     sizeof(watering_event_t));
+        if (ret < 0) {
             LOG_ERROR("Error saving channel configuration", ret);
             k_mutex_unlock(&config_mutex);
             return WATERING_ERROR_STORAGE;
         }
-        
-        // Save channel name separately
-        snprintf(path, sizeof(path), "watering/name/%d", i);
-        ret = settings_save_one(path, watering_channels[i].name, sizeof(watering_channels[i].name));
-        if (ret) {
-            LOG_ERROR("Error saving channel name", ret);
-            // Non-fatal error, continue
-        }
     }
     
     // Save days_since_start to persistent storage
-    ret = settings_save_one("watering/days_since", &days_since_start, sizeof(days_since_start));
-    if (ret) {
+    ret = nvs_save_days_since_start(days_since_start);
+    if (ret < 0) {
         LOG_ERROR("Error saving days_since_start", ret);
         // Non-fatal error, continue
     }
@@ -238,8 +300,15 @@ watering_error_t watering_load_config(void) {
     
     k_mutex_lock(&config_mutex, K_FOREVER);
     
-    // Load the configuration header first
-    ret = settings_load_subtree_direct("watering/header", header_load_cb, &loaded_header);
+    // Try to load the configuration header
+    ret = nvs_load_watering_config(&loaded_header, sizeof(loaded_header));
+    if (ret < 0 && ret != -ENOENT) {
+        printk("Error loading configuration header: %d\n", ret);
+        printk("Using default configuration\n");
+        k_mutex_unlock(&config_mutex);
+        return load_default_config();
+    }
+    
     if (ret >= 0) {
         // Check version compatibility
         if (loaded_header.version > WATERING_CONFIG_VERSION) {
@@ -251,44 +320,34 @@ watering_error_t watering_load_config(void) {
     }
     
     // Load flow sensor calibration
-    ret = settings_load_subtree_direct("watering/calibration", calibration_load_cb, &saved_calibration);
+    ret = nvs_load_flow_calibration(&saved_calibration);
     if (ret >= 0) {
         watering_set_flow_calibration(saved_calibration);
         loaded_configs++;
-    } else if (ret < 0 && ret != -ENOENT) {
+    } else if (ret != -ENOENT) {
         LOG_ERROR("Error reading calibration", ret);
     }
     
     // Load each channel's configuration
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
-        char path[32];
-        
         // Load channel configuration
-        snprintf(path, sizeof(path), "watering/channel/%d", i);
-        ret = settings_load_subtree_direct(path, channel_config_load_cb, &watering_channels[i].watering_event);
+        ret = nvs_load_channel_config(i, &watering_channels[i].watering_event, 
+                               sizeof(watering_channels[i].watering_event));
         if (ret >= 0) {
             printk("Channel %d configuration loaded\n", i + 1);
             loaded_configs++;
-            
-            // Load channel name
-            snprintf(path, sizeof(path), "watering/name/%d", i);
-            ret = settings_load_subtree_direct(path, channel_name_load_cb, watering_channels[i].name);
-            if (ret >= 0) {
-                printk("Channel %d name loaded: %s\n", i + 1, watering_channels[i].name);
-            } else {
-                // If name isn't loaded, ensure we have a valid one
-                snprintf(watering_channels[i].name, sizeof(watering_channels[i].name), "Channel %d", i + 1);
-            }
-        } else if (ret < 0 && ret != -ENOENT) {
+        } else if (ret != -ENOENT) {
             LOG_ERROR("Error reading channel configuration", ret);
         }
     }
     
     // Load days_since_start counter
-    ret = settings_load_subtree_direct("watering/days_since", days_since_load_cb, &days_since_start);
+    uint16_t days;
+    ret = nvs_load_days_since_start(&days);
     if (ret >= 0) {
+        days_since_start = days;
         printk("Days since start loaded: %d\n", days_since_start);
-    } else if (ret < 0 && ret != -ENOENT) {
+    } else if (ret != -ENOENT) {
         LOG_ERROR("Error reading days_since_start", ret);
     }
     
@@ -296,5 +355,12 @@ watering_error_t watering_load_config(void) {
           loaded_configs, config_header.version);
     
     k_mutex_unlock(&config_mutex);
-    return loaded_configs > 0 ? WATERING_SUCCESS : WATERING_ERROR_NOT_FOUND;
+    
+    if (loaded_configs > 0) {
+        using_default_settings = false;
+        return WATERING_SUCCESS;
+    } else {
+        printk("No configurations found, loading defaults\n");
+        return load_default_config();
+    }
 }

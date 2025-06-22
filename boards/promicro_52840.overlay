@@ -1,99 +1,139 @@
-#include <dt-bindings/gpio/gpio.h>
+/*
+ * AutoWatering – ProMicro nRF52840 complete overlay (rev‑2‑fix‑nfct)
+ *
+ *  – 8 GPIO valves
+ *  – Water‑flow sensor on GPIO interrupt
+ *  – RTC DS3231 on I²C0 (pins relocated)
+ *  – 32 kB NVS partition (label: storage)
+ *  – 8 kB Settings partition (label: settings)
+ *  – NFC pins (P0.09/P0.10) forced to GPIO via UICR
+ */
 
-/ {
-    water_flow_sensor: water_flow_sensor {
-        compatible = "gpio-flow-sensor";
+ / {
+    /* ------------ flow sensor (GPIO INT) ------------ */
+    water_flow_sensor: flow_sensor {
+        compatible = "gpio-keys";
         status = "okay";
-        gpios = <&gpio0 6 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
-        label = "Water Flow Sensor";
+        flow_key {
+            gpios = <&gpio0 6 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+            label = "Water Flow Sensor";
+        };
     };
-    
+
+    /* ------------ application constants ------------- */
+    sensor_config: sensor_config {
+        compatible       = "zephyr,sensor-config";
+        flow-calibration = <450>;   /* pulses per litre */
+        debounce-ms      = <2>;
+    };
+
+    /* ------------ valve outputs --------------------- */
     valves {
-        compatible = "gpio-valves";
+        compatible = "gpio-leds";
         status = "okay";
-        
-        valve1 {
-            gpios = <&gpio0 9 GPIO_ACTIVE_HIGH>;
-            label = "Valve 1";
-        };
-        
-        valve2 {
-            gpios = <&gpio0 10 GPIO_ACTIVE_HIGH>;
-            label = "Valve 2";
-        };
-        
-        valve3 {
-            gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
-            label = "Valve 3";
-        };
-        
-        valve4 {
-            gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;
-            label = "Valve 4";
-        };
-        
-        valve5 {
-            gpios = <&gpio1 15 GPIO_ACTIVE_HIGH>;
-            label = "Valve 5";
-        };
-        
-        valve6 {
-            gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
-            label = "Valve 6";
-        };
-        
-        valve7 {
-            gpios = <&gpio0 29 GPIO_ACTIVE_HIGH>;
-            label = "Valve 7";
-        };
-        
-        valve8 {
-            gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;
-            label = "Valve 8";
-        };
+
+        valve1: valve_1 { gpios = <&gpio0  9 GPIO_ACTIVE_HIGH>; label = "Valve 1"; };
+        valve2: valve_2 { gpios = <&gpio0 10 GPIO_ACTIVE_HIGH>; label = "Valve 2"; };
+        valve3: valve_3 { gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>; label = "Valve 3"; };
+        valve4: valve_4 { gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>; label = "Valve 4"; };
+        valve5: valve_5 { gpios = <&gpio1 15 GPIO_ACTIVE_HIGH>; label = "Valve 5"; };
+        valve6: valve_6 { gpios = <&gpio0  2 GPIO_ACTIVE_HIGH>; label = "Valve 6"; };
+        valve7: valve_7 { gpios = <&gpio0 29 GPIO_ACTIVE_HIGH>; label = "Valve 7"; };
+        valve8: valve_8 { gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>; label = "Valve 8"; };
     };
 
+    /* ------------ aliases ---------------------------- */
     aliases {
-        rtc0 = &ds3231;
-        watchdog0 = &wdt;
+        rtc0               = &rtc_ds3231;
+        settings-partition = &settings_partition;
+        nvs-storage        = &nvs_storage;
+
+        console            = &cdc_acm_uart0;
+        shell-uart         = &cdc_acm_uart0;
     };
 
     chosen {
-        zephyr,settings-partition = &settings_partition;
+        zephyr,settings-partition    = &settings_partition;
+        zephyr,bt-settings-partition = &settings_partition;
+        zephyr,console               = &cdc_acm_uart0;
+        zephyr,shell-uart            = &cdc_acm_uart0;
     };
 };
 
+/* ---------- pinctrl pentru I²C0 mutat ---------- */
+&pinctrl {
+    i2c0_alt: i2c0_alt {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SCL, 0, 11)>,
+                    <NRF_PSEL(TWIM_SDA, 1, 4)>;
+            bias-pull-up;
+        };
+    };
+
+    i2c0_alt_sleep: i2c0_alt_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SCL, 0, 11)>,
+                    <NRF_PSEL(TWIM_SDA, 1, 4)>;
+            bias-pull-up;
+            low-power-enable;
+        };
+    };
+};
+
+/* ---------- I²C0 cu DS3231 ---------- */
 &i2c0 {
     status = "okay";
     clock-frequency = <I2C_BITRATE_STANDARD>;
-    
-    ds3231: ds3231@68 {
-        compatible = "maxim,ds3231-mfd";  /* Only specify the MFD compatible for parent */
+    pinctrl-0 = <&i2c0_alt>;
+    pinctrl-1 = <&i2c0_alt_sleep>;
+    pinctrl-names = "default", "sleep";
+
+    rtc_ds3231: ds3231@68 {
+        compatible = "maxim,ds3231-mfd";
         reg = <0x68>;
-        status = "okay";
-        
-        rtc {
+        status = "okay";       /* hardware present */
+
+        rtc: ds3231_rtc {
             compatible = "maxim,ds3231-rtc";
             status = "okay";
-            isw-gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;
+            label = "DS3231";
+            isw-gpios = <&gpio1 6 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
         };
     };
 };
 
+/* ---------- flash partitions -------------------- */
 &flash0 {
     partitions {
-        compatible = "fixed-partitions";
+        compatible     = "fixed-partitions";
         #address-cells = <1>;
-        #size-cells = <1>;
-        
-        /* Define a settings partition */
-        settings_partition: partition@ff000 {
-            label = "settings-storage";
-            reg = <0xff000 0x1000>;
+        #size-cells    = <1>;
+        ranges;
+
+        /* enlarge to 8 KiB = 2 × 4096 B so Settings backend can mount ≥2 sectors */
+        settings_partition: partition@d7000 {
+            label = "settings";
+            reg   = <0x000d7000 0x00002000>;  /* 8 KiB */
+        };
+
+        /* your NVS userdata stays unchanged */
+        nvs_storage: partition@e3000 {
+            label = "nvs_storage";
+            reg   = <0x000e3000 0x00002000>;
         };
     };
 };
 
-&wdt {
-    status = "okay";
+/* ---------- USB CDC ACM UART --------------------- */
+&zephyr_udc0 {
+    cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+        label = "CDC_ACM_0";
+    };
+};
+
+/* ---------- Disable NFC, make P0.09/P0.10 GPIO --- */
+&uicr {
+    /* Set NFCT pins as normal GPIOs – required for Valve 1 & 2 */
+    nfct-pins-as-gpios;
 };
