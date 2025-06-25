@@ -59,6 +59,14 @@ int bt_irrigation_channel_config_update(uint8_t channel_id);
 int bt_irrigation_queue_status_update(uint8_t count);
 
 /**
+ * @brief Update schedule configuration via Bluetooth
+ * 
+ * @param channel_id Channel ID
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_schedule_update(uint8_t channel_id);
+
+/**
  * @brief Update system configuration via Bluetooth
  * 
  * @return 0 on success, negative error code on failure
@@ -124,3 +132,10 @@ int bt_irrigation_diagnostics_update(void);
  * @return 0 on success, negative error code on failure
  */
 int bt_irrigation_direct_command(uint8_t channel_id, uint8_t command, uint16_t param);
+
+/**
+ * @brief Force send task queue notification (for important changes)
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_queue_status_notify(void);

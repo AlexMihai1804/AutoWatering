@@ -175,68 +175,83 @@ This guide provides solutions for common issues that may occur when setting up o
 
 1. **Check Bluetooth Status**:
    - Verify Bluetooth is enabled in firmware (`CONFIG_BT=y` in prj.conf)
-   - Check if the device is advertising (use a BLE scanner app)
+   - Check if the device is advertising (use a BLE scanner app like nRF Connect)
+   - Device should appear as "AutoWatering"
 
 2. **Reset Bluetooth Stack**:
    ```bash
-   # From the console
-   AutoWatering> bt_reset
+   # From the console (if available via USB)
+   bt reset
+   # Or use Task Queue command 4 via Bluetooth to clear errors
    ```
 
 3. **Check for Interference**:
    - Move away from WiFi routers and other sources of 2.4GHz interference
    - Try in a different location
+   - Ensure no other devices are connected (supports only 1 connection)
 
-4. **Update Client Application**:
-   - Ensure your BLE client app is up-to-date
-   - Try a different BLE client for testing (e.g., nRF Connect)
+4. **MTU Issues**:
+   - For web browsers: Use fragmented writes for large structures
+   - For mobile apps: Negotiate larger MTU after connection
+   - See [Bluetooth API Documentation](BLUETOOTH.md) for MTU handling
+
+5. **Connection Parameters**:
+   - Use recommended connection parameters (30-50ms interval)
+   - Enable notifications before expecting real-time updates
 
 ## System Operation Issues
 
 ### No-Flow Detection
 
-**Symptoms**: System reports "No flow detected" errors when a valve is activated.
+**Symptoms**: System reports "No flow detected" errors when a valve is activated (status code 1).
 
 **Possible Solutions**:
 
 1. **Check Water Supply**:
    - Verify that the water main is turned on
    - Check for closed valves upstream of the irrigation system
+   - Ensure adequate water pressure (typically 15-45 PSI)
 
 2. **Check for Blockages**:
    - Inspect filters for debris
    - Check for kinked hoses or blocked irrigation lines
+   - Verify flow sensor is not obstructed
 
-3. **Adjust Flow Detection Parameters**:
+3. **Flow Sensor Calibration**:
+   - Recalibrate the flow sensor using the Bluetooth interface
+   - Use the calibration characteristic (UUID …efb)
+   - Follow the procedure in [Flow Calibration](#flow-sensor-calibration)
+
+4. **Clear Error State**:
    ```bash
-   # Increase the flow detection timeout (in seconds)
-   AutoWatering> config set flow_timeout 10
-   # Adjust the minimum flow threshold
-   AutoWatering> config set min_flow_rate 5
+   # Use Task Queue command 4 to clear error states
+   # This can be done via Bluetooth or console
    ```
-
-4. **Calibrate Flow Sensor**:
-   - Follow the calibration procedure in the [Flow Calibration](#flow-sensor-calibration) section
 
 ### Unexpected Flow Errors
 
-**Symptoms**: System reports unexpected flow when no valves should be active.
+**Symptoms**: System reports unexpected flow when no valves should be active (status code 2).
 
 **Possible Solutions**:
 
 1. **Check for Leaks**:
    - Inspect the irrigation system for leaks or damaged pipes
    - Verify that all valves fully close when deactivated
+   - Check valve seals and replace if worn
 
-2. **Adjust Flow Threshold**:
-   ```bash
-   # Increase the unexpected flow threshold
-   AutoWatering> config set unexpected_flow_threshold 20
-   ```
-
-3. **Check for Valve Failure**:
+2. **Check for Valve Failure**:
    - Test each valve individually to ensure it closes properly
    - Look for signs of debris preventing full valve closure
+   - Verify relay operation (should show 0V when off)
+
+3. **Adjust Detection Sensitivity**:
+   - The system uses a threshold to detect unexpected flow
+   - Small leaks might trigger false alarms
+   - Consider adjusting system sensitivity if needed
+
+4. **Clear Error State**:
+   - Use Bluetooth Task Queue command 4 to reset error conditions
+   - Monitor system status via the Status characteristic (UUID …ef3)
 
 ### Task Scheduling Issues
 
@@ -245,57 +260,92 @@ This guide provides solutions for common issues that may occur when setting up o
 **Possible Solutions**:
 
 1. **Verify RTC Time**:
-   ```bash
-   # Check current RTC time
-   AutoWatering> rtc_status
-   ```
+   - Check current time via Bluetooth RTC characteristic (UUID …ef9)
+   - Synchronize time using a mobile app or Python script
+   - Ensure RTC battery is functional (DS3231 backup battery)
 
 2. **Check Schedule Configuration**:
-   ```bash
-   # Print schedule for a specific channel
-   AutoWatering> channel 2 show_schedule
-   ```
+   - Verify schedule using the Schedule Config characteristic (UUID …ef5)
+   - Ensure `auto_enabled` flag is set to 1
+   - Check day mask for daily schedules (bit 0=Sunday, 1=Monday, etc.)
 
-3. **Enable Auto Scheduling**:
-   - Make sure the auto scheduling flag is enabled for the channel
-   ```bash
-   AutoWatering> channel 2 set_auto_enabled 1
-   ```
+3. **Schedule Format Verification**:
+   - For daily schedules: Use bitmap format (0x3E = Monday-Friday)
+   - For periodic schedules: Use interval in days (e.g., 3 = every 3 days)
+   - Time format: 24-hour format (hour 0-23, minute 0-59)
 
-4. **Check Day/Time Settings**:
-   - For daily schedules, verify the day of week is correct
-   - Check that hour/minute values are in 24-hour format
+4. **Check System Status**:
+   - Ensure system is not in fault state (status code 3)
+   - Clear any error conditions using Task Queue command 4
+   - Monitor system status via Bluetooth notifications
+
+**Example Schedule Configuration (Python)**:
+```python
+# Monday-Friday at 07:00 for 10 minutes
+schedule_data = struct.pack("<6BHB", 
+    channel_id,  # 0-7
+    0,           # schedule_type (0=Daily)
+    0x3E,        # days_mask (Monday-Friday)
+    7,           # hour
+    0,           # minute
+    0,           # watering_mode (0=duration)
+    10,          # value (10 minutes)
+    1            # auto_enabled
+)
+```
 
 <a id="flow-sensor-calibration"></a>
 ## Flow Sensor Calibration
 
-For accurate volume measurement, calibrate the flow sensor:
+For accurate volume measurement, calibrate the flow sensor using the Bluetooth interface:
 
-1. **Prepare a Measuring Container**:
-   - Get a container with precise volume measurements (1 liter or more)
+### Method 1: Using Bluetooth (Recommended)
 
-2. **Start Calibration Mode**:
-   ```bash
-   # Via console
-   AutoWatering> flow_calibrate start
-   # Or via Bluetooth using the Flow Calibration characteristic
+1. **Start Calibration**:
+   ```python
+   # Using Python with Bleak
+   import struct
+   # Start calibration: action=1, other fields=0
+   data = struct.pack("<B3I", 1, 0, 0, 0)
+   await client.write_gatt_char(CALIBRATION_UUID, data, response=True)
    ```
 
-3. **Measure Water**:
-   - Activate a valve and fill the container to exactly 1 liter
-   - Turn off the valve once the container is filled
+2. **Measure Precise Volume**:
+   - Use a measuring container with known volume (1 liter recommended)
+   - Activate a valve and collect exactly the measured amount
+   - Stop valve when container is full
 
-4. **Complete Calibration**:
-   ```bash
-   # Enter the precise volume in milliliters
-   AutoWatering> flow_calibrate stop 1000
-   # System will calculate the pulses per liter
+3. **Complete Calibration**:
+   ```python
+   # Stop calibration and provide volume in ml
+   data = struct.pack("<B3I", 0, 0, 1000, 0)  # 1000ml = 1 liter
+   await client.write_gatt_char(CALIBRATION_UUID, data, response=True)
    ```
 
-5. **Save Configuration**:
-   ```bash
-   AutoWatering> config save
+4. **Read Result**:
+   ```python
+   # Read calibration result
+   data = await client.read_gatt_char(CALIBRATION_UUID)
+   action, pulses, volume, result = struct.unpack("<B3I", data)
+   print(f"New calibration: {result} pulses/liter")
    ```
+
+### Method 2: Manual Calculation
+
+If Bluetooth is not available:
+
+1. **Reset Pulse Counter**:
+   - Use flow monitoring to track pulse count from zero
+
+2. **Measure Water**:
+   - Collect exactly 1 liter of water through the flow sensor
+   - Note the total pulse count
+
+3. **Calculate Calibration**:
+   - pulses_per_liter = total_pulses_counted
+   - Update system configuration with this value
+
+**Note**: The system automatically saves the new calibration to non-volatile storage.
 
 ## Factory Reset
 
@@ -324,18 +374,27 @@ If you need to reset the system to factory defaults:
 
 If you continue to experience issues:
 
-1. **Generate System Report**:
-   ```bash
-   AutoWatering> system_report
-   # Save the output for support
-   ```
+1. **Check Documentation**:
+   - Review the [Bluetooth API Documentation](BLUETOOTH.md) for interface issues
+   - Check the [Hardware Guide](HARDWARE.md) for wiring problems
+   - Consult the [Software Guide](SOFTWARE.md) for configuration questions
 
-2. **Check GitHub Issues**:
+2. **Generate System Information**:
+   - Use Bluetooth Diagnostics characteristic (UUID …efd) to get system info
+   - Check system status and error counts
+   - Monitor real-time status via notifications
+
+3. **GitHub Issues**:
    - Search for similar issues on the [GitHub repository](https://github.com/AlexMihai1804/AutoWatering/issues)
    - Create a new issue with detailed information if needed
+   - Include system diagnostics and reproduction steps
 
-3. **Contact Maintainers**:
-   - Email the project maintainers with your system report
-   - Include details about your hardware setup and the issue symptoms
+4. **Community Support**:
+   - Check project discussions for common solutions
+   - Share your experience and solutions with others
+
+## Documentation Version
+
+This troubleshooting guide is current as of June 2025 and covers firmware version 1.6 with updated error codes and Bluetooth diagnostics.
 
 [Back to main README](../README.md)

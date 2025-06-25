@@ -200,6 +200,8 @@ watering_error_t watering_channel_on(uint8_t channel_id) {
     
     channel->is_active = true;
     active_valves_count++;
+    
+    printk("Channel %d activated - sending BLE notification\n", channel_id);
     // --- BLE notify ---------------------------------------------------
     bt_irrigation_valve_status_update(channel_id, true);
     
@@ -244,6 +246,7 @@ watering_error_t watering_channel_off(uint8_t channel_id) {
     if (channel->is_active) {
         channel->is_active = false;
         active_valves_count--;
+        printk("Channel %d deactivated - sending BLE notification\n", channel_id);
         /* BLE notify on close */
         bt_irrigation_valve_status_update(channel_id, false);
     }

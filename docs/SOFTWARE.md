@@ -22,7 +22,11 @@ src/
 ├── watering_log.h       # Logging interface
 ├── rtc.c                # Real-time clock interface
 ├── rtc.h                # RTC API
-└── bt_irrigation_service.c # Bluetooth service implementation
+├── bt_irrigation_service.c # Bluetooth service implementation
+├── bt_irrigation_service.h # Bluetooth service API
+├── usb_descriptors.c    # USB device descriptors
+├── usb_descriptors.h    # USB descriptors API
+└── nvs_config.c         # Non-volatile storage management
 ```
 
 ## Key Concepts
@@ -124,6 +128,9 @@ watering_channel_off(3);
 ### Flow Sensor Calibration
 
 ```c
+// Start calibration using Bluetooth interface
+int bt_irrigation_start_flow_calibration(1, 0);
+
 // Reset pulse counter before calibration
 reset_pulse_count();
 
@@ -133,11 +140,35 @@ reset_pulse_count();
 // Get pulse count
 uint32_t pulses = get_pulse_count();
 
-// Calculate and set calibration value
-uint32_t pulses_per_liter = pulses;  // For 1 liter
-watering_set_flow_calibration(pulses_per_liter);
-watering_save_config();
+// Stop calibration and set the measured volume
+bt_irrigation_start_flow_calibration(0, 1000); // 1000ml
+
+// The system automatically calculates and saves the new calibration
 ```
+
+### Bluetooth Integration
+
+The system provides a comprehensive Bluetooth Low Energy interface for remote monitoring and control:
+
+```c
+// Initialize Bluetooth service
+int bt_irrigation_service_init(void);
+
+// Send valve status updates
+bt_irrigation_valve_status_update(channel_id, true);  // Valve on
+bt_irrigation_valve_status_update(channel_id, false); // Valve off
+
+// Update flow measurements
+bt_irrigation_flow_update(pulse_count);
+
+// Report system status changes
+bt_irrigation_system_status_update(WATERING_STATUS_OK);
+
+// Send alarm notifications
+bt_irrigation_alarm_notify(alarm_code, alarm_data);
+```
+
+For detailed information about the Bluetooth API, see the [Bluetooth API Documentation](BLUETOOTH.md).
 
 ### Error Handling
 
@@ -176,11 +207,11 @@ The system can report the following status codes:
 
 | Status | Description |
 |--------|-------------|
-| `WATERING_STATUS_OK` | Normal operation |
+| `WATERING_STATUS_OK` | System operating normally |
 | `WATERING_STATUS_NO_FLOW` | No flow detected when valve is open |
 | `WATERING_STATUS_UNEXPECTED_FLOW` | Flow detected when all valves are closed |
-| `WATERING_STATUS_FAULT` | System in fault state requiring reset |
-| `WATERING_STATUS_RTC_ERROR` | Real-time clock failure |
+| `WATERING_STATUS_FAULT` | System in fault state requiring manual reset |
+| `WATERING_STATUS_RTC_ERROR` | Real-time clock failure detected |
 | `WATERING_STATUS_LOW_POWER` | System operating in low power mode |
 
 ## Power Modes
@@ -226,7 +257,12 @@ The system uses several dedicated threads:
 ## Next Steps
 
 - Explore the hardware setup in the [Hardware Guide](HARDWARE.md)
-- Learn about the Bluetooth interface in the [Bluetooth API Documentation](BLUETOOTH.md)
-- Check out common issues in the [Troubleshooting Guide](TROUBLESHOOTING.md)
+- Learn about the comprehensive Bluetooth interface in the [Bluetooth API Documentation](BLUETOOTH.md)
+- Check out common issues and solutions in the [Troubleshooting Guide](TROUBLESHOOTING.md)
+- Contribute to the project using the [Contributing Guide](CONTRIBUTING.md)
+
+## Documentation Version
+
+This software guide is current as of June 2025 and documents firmware version 1.6 with full Bluetooth API support.
 
 [Back to main README](../README.md)

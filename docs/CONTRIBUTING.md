@@ -43,7 +43,28 @@ There are many ways to contribute to AutoWatering:
    git checkout -b feature/my-feature
    # or
    git checkout -b fix/my-fix
+   # or  
+   git checkout -b docs/update-documentation
    ```
+
+### Hardware Testing
+
+If contributing hardware-related changes:
+
+1. **Test on Real Hardware**:
+   - Verify changes work on actual nRF52840 hardware
+   - Test with real solenoid valves and flow sensors
+   - Document any new hardware requirements
+
+2. **Power Consumption**:
+   - Measure power consumption for new features
+   - Ensure changes don't significantly impact battery life
+   - Document power requirements
+
+3. **Bluetooth Compatibility**:
+   - Test with multiple client platforms (Android, iOS, Web)
+   - Verify MTU handling and fragmentation
+   - Check notification performance
 
 ### Coding Standards
 
@@ -127,8 +148,33 @@ When implementing new features:
    - Split large features into smaller, incremental PRs
 
 3. **Tests**:
-   - Add tests for new functionality
+   - Add tests for new functionality where possible
    - Ensure existing tests continue to pass
+   - Test with real hardware when applicable
+
+### Bluetooth API Changes
+
+Special considerations for Bluetooth interface modifications:
+
+1. **Backward Compatibility**:
+   - Maintain compatibility with existing clients when possible
+   - Document breaking changes clearly in BLUETOOTH.md
+   - Provide migration guidance for API changes
+
+2. **Structure Packing**:
+   - Ensure all structures use `__packed` attribute
+   - Verify byte alignment matches documentation
+   - Test on different platforms for endianness issues
+
+3. **MTU Considerations**:
+   - Test with default MTU (23 bytes) for web browser compatibility
+   - Verify fragmentation protocols work correctly
+   - Document structure size requirements clearly
+
+4. **Testing Requirements**:
+   - Test with multiple client platforms (Android, iOS, Web)
+   - Verify notification behavior and timing
+   - Check error handling and recovery
 
 ### Bug Fixes
 

@@ -90,18 +90,18 @@ watering_error_t load_default_config(void) {
         snprintf(watering_channels[i].name, sizeof(watering_channels[i].name), 
                 "Channel %d", i + 1);
                 
-        // Default schedule: disabled
+        // Default schedule: disabled but with reasonable example values
         watering_channels[i].watering_event.auto_enabled = false;
 
-        /* Disabled DAILY schedule – no days selected, time 00:00 */
+        /* Example DAILY schedule – Monday to Friday (0x3E) at 07:00 for 5 minutes (but disabled) */
         watering_channels[i].watering_event.schedule_type = SCHEDULE_DAILY;
-        watering_channels[i].watering_event.schedule.daily.days_of_week = 0;   /* ← was 0x7F */
-        watering_channels[i].watering_event.start_time.hour   = 0;             /* ← was 12  */
+        watering_channels[i].watering_event.schedule.daily.days_of_week = 0x3E; /* Mon-Fri (bits 1-5) */
+        watering_channels[i].watering_event.start_time.hour   = 7;              /* 07:00 */
         watering_channels[i].watering_event.start_time.minute = 0;
 
-        /* Quantity zero because auto_enabled = false */
+        /* 5 minutes duration (but auto_enabled = false so schedule is inactive) */
         watering_channels[i].watering_event.watering_mode = WATERING_BY_DURATION;
-        watering_channels[i].watering_event.watering.by_duration.duration_minutes = 0; /* ← was 5 */
+        watering_channels[i].watering_event.watering.by_duration.duration_minutes = 5;
     }
     
     // Default days counter

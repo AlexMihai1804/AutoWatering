@@ -27,14 +27,10 @@
 extern const struct bt_gatt_service_static irrigation_svc;
 
 /* ------------------------------------------------------------------ */
-/* 2. Macro used by many *_ccc_changed() handlers – restore           */
-/* ------------------------------------------------------------------ */
-#ifndef SEND_NOTIF
-#define SEND_NOTIF(value_ptr, size) \
-    bt_gatt_notify(default_conn, \
-                   &irrigation_svc.attrs[ATTR_IDX_VALVE_VALUE], \
-                   (value_ptr), (size))
-#endif
+/* REMOVED: Problematic SEND_NOTIF macro that was incorrectly sending  */
+/* all notifications to the VALVE characteristic, causing false        */
+/* "Channel 1 active" notifications. Each notification now uses the    */
+/* correct characteristic attribute index.                             */
 /* ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------------ */
@@ -143,6 +139,7 @@ struct schedule_config_data {
     uint8_t minute;
     uint8_t watering_mode; // 0=duration, 1=volume
     uint16_t value; // Minutes or liters
+    uint8_t auto_enabled; // 0=disabled, 1=enabled
 }
         __packed;
 
@@ -350,33 +347,107 @@ static void connected(struct bt_conn *conn, uint8_t err) {
         default_conn = bt_conn_ref(conn);
     }
 
-    printk("Connected to irrigation controller\n");
+    /* Clear any stale data that might be sent during CCC configuration */
+    memset(valve_value, 0, sizeof(struct valve_control_data));
+    /* Set invalid channel ID to prevent false positives */
+    struct valve_control_data *valve_data = (struct valve_control_data *)valve_value;
+    valve_data->channel_id = 0xFF; /* Invalid channel ID */
+    valve_data->task_type = 0;     /* Inactive */
+    valve_data->value = 0;
+    
+    /* Update status_value with current system status to ensure correct state on reconnect */
+    watering_status_t current_status;
+    if (watering_get_status(&current_status) == WATERING_SUCCESS) {
+        status_value[0] = (uint8_t)current_status;
+        printk("Connected - system status updated to: %d\n", current_status);
+    } else {
+        status_value[0] = (uint8_t)WATERING_STATUS_OK; /* Default to OK if can't read */
+        printk("Connected - defaulted system status to OK\n");
+    }
+    
+    printk("Connected to irrigation controller - values cleared and status updated\n");
 }
 
-static void disconnected(struct bt_conn *conn, uint8_t reason) {
-    printk("Disconnected (reason %u)\n", reason);
+/* Add retry mechanism for advertising restart */
+static void adv_restart_work_handler(struct k_work *work);
+static K_WORK_DEFINE(adv_restart_work, adv_restart_work_handler);
 
-    if (default_conn) {
-        bt_conn_unref(default_conn);
-        default_conn = NULL;
-    }
+static void adv_restart_work_handler(struct k_work *work)
+{
+	int err;
+	int retry_count = 0;
+	const int max_retries = 5;
+	
+	/* Try to stop any existing advertiser first */
+	(void)bt_le_adv_stop();
+	
+	/* Retry loop with exponential backoff */
+	while (retry_count < max_retries) {
+		/* Wait before attempting restart */
+		k_sleep(K_MSEC(50 * (1 << retry_count)));
+		
+		err = bt_le_adv_start(&adv_param,
+		                      adv_ad, ARRAY_SIZE(adv_ad),
+		                      adv_sd, ARRAY_SIZE(adv_sd));
+		
+		if (err == 0) {
+			printk("Advertising restarted successfully after %d retries\n", retry_count);
+			return;
+		}
+		
+		if (err == -EALREADY) {
+			printk("Advertising already active\n");
+			return;
+		}
+		
+		printk("Advertising restart failed (err %d), retry %d/%d\n", 
+		       err, retry_count + 1, max_retries);
+		
+		retry_count++;
+	}
+	
+	printk("Failed to restart advertising after %d attempts\n", max_retries);
+}
 
-    /* restart advertising so a new central can connect */
-    int err = bt_le_adv_start(&adv_param,
-                              adv_ad, ARRAY_SIZE(adv_ad),
-                              adv_sd, ARRAY_SIZE(adv_sd));
-    if (err && err != -EALREADY) {
-        printk("Failed to restart advertising (err %d)\n", err);
-    } else {
-        printk("Advertising restarted\n");
-    }
+static void disconnected(struct bt_conn *conn, uint8_t reason)
+{
+	printk("Disconnected (reason %u)\n", reason);
+
+	if (default_conn) {
+		bt_conn_unref(default_conn);
+		default_conn = NULL;
+	}
+
+	/* Clear all characteristic values on disconnect to prevent stale data */
+	memset(valve_value, 0, sizeof(struct valve_control_data));
+	struct valve_control_data *valve_data = (struct valve_control_data *)valve_value;
+	valve_data->channel_id = 0xFF; /* Invalid channel ID */
+	valve_data->task_type = 0;     /* Inactive */
+	valve_data->value = 0;
+	
+	printk("Valve values cleared on disconnect\n");
+
+	/* Schedule advertising restart in a work item to avoid stack issues */
+	k_work_submit(&adv_restart_work);
 }
 
 /* Valve characteristic read callback */
 static ssize_t read_valve(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                           void *buf, uint16_t len, uint16_t offset) {
+    /* Return current valve_value, but ensure it has valid data */
     const struct valve_control_data *value = attr->user_data;
+    
+    /* If the stored value has an invalid channel ID, don't return anything meaningful */
+    if (value->channel_id >= WATERING_CHANNELS_COUNT) {
+        /* Return empty/inactive state for invalid channel */
+        struct valve_control_data empty_data = {0xFF, 0, 0};
+        printk("BT valve read: returning empty data (invalid channel_id %d)\n", value->channel_id);
+        return bt_gatt_attr_read(conn, attr, buf, len, offset, &empty_data,
+                                 sizeof(struct valve_control_data));
+    }
 
+    printk("BT valve read: channel %d, task_type %d, value %d\n", 
+           value->channel_id, value->task_type, value->value);
     return bt_gatt_attr_read(conn, attr, buf, len, offset, value,
                              sizeof(struct valve_control_data));
 }
@@ -436,7 +507,22 @@ static ssize_t write_valve(struct bt_conn *conn, const struct bt_gatt_attr *attr
 static void valve_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value) {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
     printk("Valve notifications %s\n", notif_enabled ? "enabled" : "disabled");
-    SEND_NOTIF(valve_value, sizeof(struct valve_control_data));
+    
+    /* Clear valve_value completely to prevent stale data from being read */
+    memset(valve_value, 0, sizeof(struct valve_control_data));
+    
+    if (notif_enabled) {
+        printk("Valve notifications enabled - will send status updates when valves change\n");
+        
+        /* Set channel_id to invalid value to ensure no false active state is reported */
+        struct valve_control_data *valve_data = (struct valve_control_data *)valve_value;
+        valve_data->channel_id = 0xFF; /* Invalid channel ID */
+        valve_data->task_type = 0;     /* Inactive */
+        valve_data->value = 0;
+        
+        /* Don't send any automatic notification - let real valve events trigger them */
+        printk("No automatic valve status sent - waiting for real valve events\n");
+    }
 }
 
 /* Flow characteristic read callback */
@@ -452,14 +538,29 @@ static ssize_t read_flow(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 static void flow_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value) {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
     printk("Flow notifications %s\n", notif_enabled ? "enabled" : "disabled");
-    SEND_NOTIF(flow_value, sizeof(uint32_t));
+    
+    if (notif_enabled) {
+        /* Only send current flow reading, not stale data */
+        uint32_t current_flow = get_pulse_count();
+        memcpy(flow_value, &current_flow, sizeof(uint32_t));
+        /* Send flow notification on correct characteristic */
+        bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_FLOW_VALUE], 
+                       flow_value, sizeof(uint32_t));
+    }
 }
 
 /* Status characteristic read callback */
 static ssize_t read_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                            void *buf, uint16_t len, uint16_t offset) {
+    /* Always read current status from system to ensure accuracy */
+    watering_status_t current_status;
+    if (watering_get_status(&current_status) == WATERING_SUCCESS) {
+        status_value[0] = (uint8_t)current_status;
+    } else {
+        status_value[0] = (uint8_t)WATERING_STATUS_OK; /* Default to OK if can't read */
+    }
+    
     const uint8_t *value = attr->user_data;
-
     return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(uint8_t));
 }
 
@@ -467,7 +568,24 @@ static ssize_t read_status(struct bt_conn *conn, const struct bt_gatt_attr *attr
 static void status_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value) {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
     printk("Status notifications %s\n", notif_enabled ? "enabled" : "disabled");
-    SEND_NOTIF(status_value, sizeof(status_value));
+    
+    if (notif_enabled) {
+        /* Always read fresh status from system */
+        watering_status_t current_status;
+        if (watering_get_status(&current_status) == WATERING_SUCCESS) {
+            status_value[0] = (uint8_t)current_status;
+            printk("Status CCC enabled - sending current status: %d\n", current_status);
+        } else {
+            status_value[0] = (uint8_t)WATERING_STATUS_OK;
+            printk("Status CCC enabled - defaulted to OK status\n");
+        }
+        
+        /* Send status notification on correct characteristic */
+        if (default_conn) {
+            bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_STATUS_VALUE], 
+                           status_value, sizeof(status_value));
+        }
+    }
 }
 
 /* ------------------------------------------------------------------
@@ -479,7 +597,12 @@ static void channel_config_ccc_changed(const struct bt_gatt_attr *attr,
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
     printk("Channel Config notifications %s\n",
            notif_enabled ? "enabled" : "disabled");
-    SEND_NOTIF(channel_config_value, sizeof(channel_config_value));
+    
+    if (notif_enabled) {
+        printk("Channel Config notifications enabled - will send updates when config changes\n");
+        /* Clear any stale data */
+        memset(channel_config_value, 0, sizeof(channel_config_value));
+    }
 }
 
 /* Channel Config characteristic read callback */
@@ -780,7 +903,11 @@ static ssize_t read_alarm(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 static void alarm_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
     printk("Alarm notifications %s\n", notif_enabled ? "enabled" : "disabled");
-    SEND_NOTIF(alarm_value, sizeof(struct alarm_data));
+    
+    if (notif_enabled) {
+        /* Only send notifications when real alarms occur - don't send on enable */
+        printk("Alarm notifications enabled - will send when alarms occur\n");
+    }
 }
 
 /* Calibration implementation */
@@ -849,7 +976,11 @@ static ssize_t write_calibration(struct bt_conn *conn, const struct bt_gatt_attr
 static void calibration_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
     printk("Calibration notifications %s\n", notif_enabled ? "enabled" : "disabled");
-    SEND_NOTIF(calibration_value, sizeof(struct calibration_data));
+    
+    if (notif_enabled) {
+        /* Only send notifications when calibration state changes - don't send on enable */
+        printk("Calibration notifications enabled - will send when calibration state changes\n");
+    }
 }
 
 /* History implementation */
@@ -892,7 +1023,11 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
 static void history_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
     printk("History notifications %s\n", notif_enabled ? "enabled" : "disabled");
-    SEND_NOTIF(history_value, sizeof(struct history_data));
+    
+    if (notif_enabled) {
+        /* Only send notifications when history is updated - don't send on enable */
+        printk("History notifications enabled - will send when history updates\n");
+    }
 }
 
 /* Diagnostics implementation */
@@ -925,7 +1060,11 @@ static ssize_t read_diagnostics(struct bt_conn *conn, const struct bt_gatt_attr 
 static void diagnostics_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
     printk("Diagnostics notifications %s\n", notif_enabled ? "enabled" : "disabled");
-    SEND_NOTIF(diagnostics_value, sizeof(struct diagnostics_data));
+    
+    if (notif_enabled) {
+        /* Only send notifications when diagnostics change - don't send on enable */
+        printk("Diagnostics notifications enabled - will send when diagnostics update\n");
+    }
 }
 
 /* Define the complete GATT service */
@@ -1041,6 +1180,7 @@ int bt_irrigation_system_status_update(watering_status_t status) {
     }
 
     status_value[0] = (uint8_t) status;
+    printk("BT status update: setting status to %d\n", status);
 
     return bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_STATUS_VALUE],
                           status_value, sizeof(uint8_t));
@@ -1080,6 +1220,26 @@ int bt_irrigation_channel_config_update(uint8_t channel_id) {
                           config, sizeof(*config));
 }
 
+/* Update schedule configuration via Bluetooth */
+int bt_irrigation_schedule_update(uint8_t channel_id) {
+    if (!default_conn) {
+        return -ENOTCONN;
+    }
+
+    struct schedule_config_data *sched = (struct schedule_config_data *)schedule_value;
+    sched->channel_id = channel_id;
+
+    // Populate with current data
+    read_schedule(NULL, &irrigation_svc.attrs[ATTR_IDX_SCHEDULE_VALUE], NULL, 0, 0);
+
+    printk("BT schedule notification for channel %d: days=0x%02X time=%02d:%02d auto=%s\n", 
+           channel_id, sched->days_mask, sched->hour, sched->minute, 
+           sched->auto_enabled ? "ON" : "OFF");
+
+    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_SCHEDULE_VALUE],
+                          schedule_value, sizeof(struct schedule_config_data));
+}
+
 /* Update queue status via Bluetooth */
 int bt_irrigation_queue_status_update(uint8_t count) {
     if (!default_conn) {
@@ -1096,9 +1256,29 @@ int bt_irrigation_queue_status_update(uint8_t count) {
     }
 
     // Other fields are filled in read_task_queue
-    read_task_queue(NULL, &irrigation_svc.attrs[20], NULL, 0, 0);
+    read_task_queue(NULL, &irrigation_svc.attrs[ATTR_IDX_TASK_QUEUE_VALUE], NULL, 0, 0);
 
-    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[20],
+    /* Send notification for all task queue changes including task creation */
+    printk("BT task queue notification: %d pending tasks\n", queue->pending_count);
+    
+    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_TASK_QUEUE_VALUE], 
+                          queue, sizeof(*queue));
+}
+
+/* Force send task queue notification (for important changes like error clearing) */
+int bt_irrigation_queue_status_notify(void) {
+    if (!default_conn) {
+        return -ENOTCONN;
+    }
+
+    struct task_queue_data *queue = (struct task_queue_data *) task_queue_value;
+
+    // Update with current queue state
+    queue->pending_count = watering_get_pending_tasks_count();
+    read_task_queue(NULL, &irrigation_svc.attrs[ATTR_IDX_TASK_QUEUE_VALUE], NULL, 0, 0);
+
+    printk("BT task queue notification sent: %d pending tasks\n", queue->pending_count);
+    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_TASK_QUEUE_VALUE],
                           queue, sizeof(*queue));
 }
 
@@ -1109,9 +1289,9 @@ int bt_irrigation_config_update(void) {
     }
 
     // Populate with current data
-    read_system_config(NULL, &irrigation_svc.attrs[17], NULL, 0, 0);
+    read_system_config(NULL, &irrigation_svc.attrs[ATTR_IDX_SYSTEM_CFG_VALUE], NULL, 0, 0);
 
-    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[17],
+    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_SYSTEM_CFG_VALUE],
                           system_config_value, sizeof(struct system_config_data));
 }
 
@@ -1129,9 +1309,9 @@ int bt_irrigation_statistics_update(uint8_t channel_id) {
     stats->channel_id = channel_id;
 
     // Populate with current data
-    read_statistics(NULL, &irrigation_svc.attrs[23], NULL, 0, 0);
+    read_statistics(NULL, &irrigation_svc.attrs[ATTR_IDX_STATISTICS_VALUE], NULL, 0, 0);
 
-    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[23],
+    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_STATISTICS_VALUE],
                           stats, sizeof(*stats));
 }
 
@@ -1153,10 +1333,7 @@ int bt_irrigation_rtc_update(rtc_datetime_t *datetime) {
     value->second = datetime->second;
     value->day_of_week = datetime->day_of_week;
 
-    // Find the RTC characteristic index in the service - adjust based on characteristic order
-    int rtc_index = 26; // This index should be adjusted based on the characteristic order in BT_GATT_SERVICE_DEFINE
-
-    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[rtc_index], value, sizeof(*value));
+    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_RTC_VALUE], value, sizeof(*value));
 }
 
 /**
@@ -1173,10 +1350,7 @@ int bt_irrigation_alarm_notify(uint8_t alarm_code, uint16_t alarm_data) {
     value->alarm_data = alarm_data;
     value->timestamp = k_uptime_get_32();
 
-    // Find the alarm characteristic index in service - adjust based on characteristic order
-    int alarm_index = 29; // This index should be adjusted based on the characteristic order in BT_GATT_SERVICE_DEFINE
-
-    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[alarm_index], value, sizeof(*value));
+    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_ALARM_VALUE], value, sizeof(*value));
 }
 
 /**
@@ -1204,11 +1378,7 @@ int bt_irrigation_start_flow_calibration(uint8_t start, uint32_t volume_ml) {
         // Actual calibration happens when client writes to characteristic
     }
 
-    // Find the calibration characteristic index in service - adjust based on characteristic order
-    int calibration_index = 32;
-    // This index should be adjusted based on the characteristic order in BT_GATT_SERVICE_DEFINE
-
-    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[calibration_index], value, sizeof(*value));
+    return bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_CALIB_VALUE], value, sizeof(*value));
 }
 
 /**
@@ -1283,15 +1453,36 @@ int bt_irrigation_valve_status_update(uint8_t channel_id, bool state) {
         return -ENOTCONN;
     }
 
-    struct valve_control_data *data = (struct valve_control_data *) valve_value;
-    data->channel_id = channel_id;
+    /* Validate channel ID */
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        printk("Invalid channel ID %d for valve status update\n", channel_id);
+        return -EINVAL;
+    }
+
+    /* Additional safety check: verify the channel is actually in the reported state */
+    watering_channel_t *channel;
+    if (watering_get_channel(channel_id, &channel) == WATERING_SUCCESS) {
+        if (channel->is_active != state) {
+            printk("WARNING: BT update mismatch - channel %d internal state is %s but trying to report %s\n", 
+                   channel_id, channel->is_active ? "ACTIVE" : "INACTIVE", state ? "ACTIVE" : "INACTIVE");
+            /* Use the actual internal state instead of the requested state */
+            state = channel->is_active;
+        }
+    }
+
+    /* Create a clean status update structure */
+    struct valve_control_data status_data = {
+        .channel_id = channel_id,
+        .task_type = state ? 1 : 0,  /* 1=active, 0=inactive */
+        .value = 0  /* No duration/volume info for status updates */
+    };
     
-    /* Valve status update - we can infer task type from current state */
-    /* This is a status update, not a command */
+    printk("BT valve status update: channel %d, state %s\n", 
+           channel_id, state ? "ACTIVE" : "INACTIVE");
     
     return bt_gatt_notify(default_conn,
                           &irrigation_svc.attrs[ATTR_IDX_VALVE_VALUE],
-                          valve_value, sizeof(struct valve_control_data));
+                          &status_data, sizeof(struct valve_control_data));
 }
 
 /* =================================================================== */
@@ -1319,11 +1510,28 @@ static ssize_t read_schedule(struct bt_conn *c,
     watering_channel_t *channel;
     if (watering_get_channel(sched->channel_id, &channel) == WATERING_SUCCESS) {
         sched->schedule_type = channel->watering_event.schedule_type;
-        sched->days_mask = 0; // Not implemented yet
-        sched->hour = 0; // Not implemented yet
-        sched->minute = 0; // Not implemented yet
+        
+        // Read the correct schedule data based on type
+        if (channel->watering_event.schedule_type == SCHEDULE_DAILY) {
+            sched->days_mask = channel->watering_event.schedule.daily.days_of_week;
+        } else {
+            sched->days_mask = channel->watering_event.schedule.periodic.interval_days;
+        }
+        
+        // Read start time
+        sched->hour = channel->watering_event.start_time.hour;
+        sched->minute = channel->watering_event.start_time.minute;
+        
+        // Read watering configuration
         sched->watering_mode = channel->watering_event.watering_mode;
-        sched->value = 0; // Default value
+        if (channel->watering_event.watering_mode == WATERING_BY_DURATION) {
+            sched->value = channel->watering_event.watering.by_duration.duration_minutes;
+        } else {
+            sched->value = channel->watering_event.watering.by_volume.volume_liters;
+        }
+        
+        // Add auto_enabled flag
+        sched->auto_enabled = channel->watering_event.auto_enabled ? 1 : 0;
     }
     
 	return bt_gatt_attr_read(c, a, buf, len, off,
@@ -1361,12 +1569,43 @@ static ssize_t write_schedule(struct bt_conn *c,
 	    if (sched->channel_id < WATERING_CHANNELS_COUNT) {
 	        watering_channel_t *channel;
 	        if (watering_get_channel(sched->channel_id, &channel) == WATERING_SUCCESS) {
+	            // Update schedule type and mode
 	            channel->watering_event.schedule_type = sched->schedule_type;
-	            // Store schedule parameters (not fully implemented in watering_event_t yet)
 	            channel->watering_event.watering_mode = sched->watering_mode;
 	            
+	            // Update schedule parameters based on type
+	            if (sched->schedule_type == SCHEDULE_DAILY) {
+	                channel->watering_event.schedule.daily.days_of_week = sched->days_mask;
+	            } else {
+	                channel->watering_event.schedule.periodic.interval_days = sched->days_mask;
+	            }
+	            
+	            // Update start time
+	            channel->watering_event.start_time.hour = sched->hour;
+	            channel->watering_event.start_time.minute = sched->minute;
+	            
+	            // Update watering quantity
+	            if (sched->watering_mode == WATERING_BY_DURATION) {
+	                channel->watering_event.watering.by_duration.duration_minutes = sched->value;
+	            } else {
+	                channel->watering_event.watering.by_volume.volume_liters = sched->value;
+	            }
+	            
+	            // Update auto_enabled status
+	            channel->watering_event.auto_enabled = (sched->auto_enabled != 0);
+	            
+	            // Also enable auto scheduling if meaningful values are set
+	            if (sched->days_mask != 0 && sched->value > 0) {
+	                channel->watering_event.auto_enabled = true;
+	            }
+	            
 	            watering_save_config();
-	            printk("BLE: Schedule updated for channel %d\n", sched->channel_id);
+	            printk("BLE: Schedule updated for channel %d - days:0x%02X time:%02d:%02d value:%d auto:%s\n", 
+	                   sched->channel_id, sched->days_mask, sched->hour, sched->minute, sched->value,
+	                   channel->watering_event.auto_enabled ? "ON" : "OFF");
+	            
+	            // Send notification about schedule change
+	            bt_irrigation_schedule_update(sched->channel_id);
 	        }
 	    }
 	}
@@ -1376,8 +1615,12 @@ static ssize_t write_schedule(struct bt_conn *c,
 
 static void schedule_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
-	printk("Schedule notifications %s\n",
-	       (value == BT_GATT_CCC_NOTIFY) ? "enabled" : "disabled");
+	bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
+	printk("Schedule notifications %s\n", notif_enabled ? "enabled" : "disabled");
+	
+	if (notif_enabled) {
+		printk("Schedule notifications enabled - will send when schedule changes\n");
+	}
 }
 
 static ssize_t read_system_config(struct bt_conn *c,
@@ -1483,11 +1726,13 @@ static ssize_t write_task_queue(struct bt_conn *c,
 	switch (queue->command) {
 	    case 1: // Cancel current task
 	        watering_stop_current_task();
+	        bt_irrigation_queue_status_notify(); // Send notification for important change
 	        printk("BLE: Cancelled current task\n");
 	        break;
 	        
 	    case 2: // Clear entire queue
 	        watering_clear_task_queue();
+	        bt_irrigation_queue_status_notify(); // Send notification for important change
 	        printk("BLE: Cleared task queue\n");
 	        break;
 	        
@@ -1498,7 +1743,8 @@ static ssize_t write_task_queue(struct bt_conn *c,
 	    case 4: // Clear runtime errors/alarms
 	        watering_clear_errors();
 	        // Send immediate status update
-	        bt_irrigation_system_status_update(WATERING_STATE_IDLE);
+	        bt_irrigation_system_status_update(WATERING_STATUS_OK);
+	        bt_irrigation_queue_status_notify(); // Send notification for important change
 	        printk("BLE: Cleared runtime errors\n");
 	        break;
 	        
@@ -1515,8 +1761,26 @@ static ssize_t write_task_queue(struct bt_conn *c,
 
 static void task_queue_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
+	bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
 	printk("Task-Queue notifications %s\n",
-	       (value == BT_GATT_CCC_NOTIFY) ? "enabled" : "disabled");
+	       notif_enabled ? "enabled" : "disabled");
+	
+	if (notif_enabled) {
+		printk("Task queue notifications enabled - will send updates when queue changes\n");
+		/* Clear any stale data */
+		memset(task_queue_value, 0, sizeof(task_queue_value));
+		
+		/* Send initial notification with current queue status */
+		struct task_queue_data *queue = (struct task_queue_data *) task_queue_value;
+		queue->pending_count = watering_get_pending_tasks_count();
+		read_task_queue(NULL, &irrigation_svc.attrs[ATTR_IDX_TASK_QUEUE_VALUE], NULL, 0, 0);
+		
+		if (default_conn) {
+			bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_TASK_QUEUE_VALUE],
+			               queue, sizeof(*queue));
+			printk("Initial task queue notification sent: %d pending tasks\n", queue->pending_count);
+		}
+	}
 }
 
 static ssize_t read_statistics(struct bt_conn *c,
@@ -1576,13 +1840,46 @@ static void rtc_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 	printk("RTC notifications %s\n",
 	       (value == BT_GATT_CCC_NOTIFY) ? "enabled" : "disabled");
 }
-/* ------------------------------------------------------------------- */
 
+/* ------------------------------------------------------------------- */
+    
 /* Initialize Bluetooth irrigation service */
-int bt_irrigation_service_init(void) {
+int bt_irrigation_service_init(void)
+{
     int err;
     
     printk("Starting Bluetooth irrigation service...\n");
+    
+    /* Initialize all characteristic values to clean state */
+    memset(valve_value, 0, sizeof(struct valve_control_data));
+    /* Set invalid channel ID to prevent false positives */
+    struct valve_control_data *valve_data = (struct valve_control_data *)valve_value;
+    valve_data->channel_id = 0xFF; /* Invalid channel ID */
+    valve_data->task_type = 0;     /* Inactive */
+    valve_data->value = 0;
+    
+    memset(flow_value, 0, sizeof(uint32_t));
+    memset(status_value, 0, sizeof(uint8_t));
+    memset(channel_config_value, 0, sizeof(struct channel_config_data));
+    memset(schedule_value, 0, sizeof(struct schedule_config_data));
+    memset(system_config_value, 0, sizeof(struct system_config_data));
+    memset(task_queue_value, 0, sizeof(struct task_queue_data));
+    memset(statistics_value, 0, sizeof(struct statistics_data));
+    memset(rtc_value, 0, sizeof(struct rtc_data));
+    memset(alarm_value, 0, sizeof(struct alarm_data));
+    memset(calibration_value, 0, sizeof(struct calibration_data));
+    memset(history_value, 0, sizeof(struct history_data));
+    memset(diagnostics_value, 0, sizeof(struct diagnostics_data));
+    
+    /* Initialize status_value with current system status */
+    watering_status_t current_status;
+    if (watering_get_status(&current_status) == WATERING_SUCCESS) {
+        status_value[0] = (uint8_t)current_status;
+        printk("BT service init - system status: %d\n", current_status);
+    } else {
+        status_value[0] = (uint8_t)WATERING_STATUS_OK;
+        printk("BT service init - defaulted status to OK\n");
+    }
     
     /* Register connection callbacks */
     bt_conn_cb_register(&conn_callbacks);
@@ -1602,7 +1899,7 @@ int bt_irrigation_service_init(void) {
     }
     
     /* Start advertising */
-    err = bt_le_adv_start(&adv_param,
+    err = bt_le_adv_start(&adv_param,               /* <<< use explicit param */
                           adv_ad, ARRAY_SIZE(adv_ad),
                           adv_sd, ARRAY_SIZE(adv_sd));
     if (err) {
@@ -1610,6 +1907,6 @@ int bt_irrigation_service_init(void) {
         return err;
     }
     
-    printk("Advertising successfully started\n");
+    printk("Advertising started successfully\n");
     return 0;
 }

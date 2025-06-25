@@ -375,9 +375,7 @@ void flow_monitor_clear_errors(void)
     flow_error_attempts   = 0;
     last_flow_check_time  = 0;
     last_task_pulses      = 0;
-    /* keep pulse counter but restore OK status only if not in FAULT */
-    if (system_status != WATERING_STATUS_FAULT) {
-        system_status = WATERING_STATUS_OK;
-    }
+    /* Clear all errors unconditionally when explicitly requested */
+    system_status = WATERING_STATUS_OK;
     k_mutex_unlock(&flow_monitor_mutex);
 }
