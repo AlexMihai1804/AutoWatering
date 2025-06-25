@@ -3,6 +3,7 @@
 #include "flow_sensor.h"
 #include "watering.h"
 #include "watering_internal.h"
+#include "bt_irrigation_service.h"   /* + BLE notifications */
 
 /**
  * @file watering_monitor.c
@@ -46,6 +47,16 @@ static watering_task_t *watched_task  = NULL;
 static uint32_t last_rate_check_time = 0;
 static uint32_t last_rate_pulses    = 0;
 // ----------------------------------------------------------------------
+
+/* --- alarm codes used by bt_irrigation_alarm_notify ------------------- */
+#define ALARM_NO_FLOW          1
+#define ALARM_UNEXPECTED_FLOW  2
+
+/* Helper used throughout this file */
+static inline void ble_status_update(void)
+{
+    bt_irrigation_system_status_update(system_status);
+}
 
 /**
  * @brief Check for flow anomalies and update system status
@@ -122,29 +133,43 @@ watering_error_t check_flow_anomalies(void)
             printk("ALERT: No water flow detected with valve open!\n");
             flow_error_attempts++;
 
+            /* raise first-time alarm (kept until cleared) */
+            if (system_status != WATERING_STATUS_NO_FLOW) {
+                bt_irrigation_alarm_notify(ALARM_NO_FLOW, flow_error_attempts);
+            }
+
             /* NEW: re-queue current task for a retry --------------------- */
             if (flow_error_attempts < MAX_FLOW_ERROR_ATTEMPTS &&
                 watering_task_state.current_active_task) {
 
-                /* make a copy of the task that just failed                */
                 watering_task_t retry_task =
                         *watering_task_state.current_active_task;
 
-                printk("Retrying watering (%d/%d)...\n",
-                       flow_error_attempts, MAX_FLOW_ERROR_ATTEMPTS);
+                watering_stop_current_task();
 
-                watering_stop_current_task();   /* closes valve */
+                /* push the task back into the queue ---------------------- */
+                watering_error_t qret = watering_add_task(&retry_task);
 
-                /* push the task back into the queue for another attempt   */
-                watering_add_task(&retry_task);
-                /* keep system status to NO_FLOW so user is informed       */
                 system_status = WATERING_STATUS_NO_FLOW;
+                bt_irrigation_alarm_notify(ALARM_NO_FLOW, flow_error_attempts); /* NEW */
+                ble_status_update();
+
+                /* --- escalate to FAULT if queue full or any error ------- */
+                if (qret != WATERING_SUCCESS) {
+                    printk("Retry enqueue failed (%d) -> entering FAULT\n", qret);
+                    system_status = WATERING_STATUS_FAULT;
+                    bt_irrigation_alarm_notify(ALARM_NO_FLOW, flow_error_attempts); /* NEW */
+                    ble_status_update();
+                    transition_to_state(WATERING_STATE_ERROR_RECOVERY);
+                }
 
             } else {
                 /* exceeded attempts – go to FAULT ----------------------- */
                 printk("CRITICAL ERROR: Maximum attempts reached. "
                        "Entering fault state!\n");
                 system_status = WATERING_STATUS_FAULT;
+                bt_irrigation_alarm_notify(ALARM_NO_FLOW, flow_error_attempts);     /* NEW */
+                ble_status_update();                  /* NEW */
                 transition_to_state(WATERING_STATE_ERROR_RECOVERY);
                 watering_stop_current_task();
             }
@@ -153,6 +178,8 @@ watering_error_t check_flow_anomalies(void)
             flow_error_attempts = 0;
             if (system_status == WATERING_STATUS_NO_FLOW) {
                 system_status = WATERING_STATUS_OK;
+                bt_irrigation_alarm_notify(ALARM_NO_FLOW, 0);  /* clear alarm */
+                ble_status_update();                  /* NEW */
                 printk("Water flow detected, normal operation\n");
             }
         }
@@ -161,6 +188,8 @@ watering_error_t check_flow_anomalies(void)
         if (pulses > UNEXPECTED_FLOW_THRESHOLD) {
             printk("ALERT: Water flow detected with all valves closed! (%d pulses)\n", pulses);
             system_status = WATERING_STATUS_UNEXPECTED_FLOW;
+            bt_irrigation_alarm_notify(ALARM_UNEXPECTED_FLOW, pulses);   /* NEW */
+            ble_status_update();                      /* NEW */
             reset_pulse_count();
             
             // Attempt to recover by making sure all valves are closed
@@ -174,6 +203,8 @@ watering_error_t check_flow_anomalies(void)
             // If flow has stopped, return to normal status
             if (pulses < UNEXPECTED_FLOW_THRESHOLD / 2) {
                 system_status = WATERING_STATUS_OK;
+                bt_irrigation_alarm_notify(ALARM_UNEXPECTED_FLOW, 0);    /* clear alarm */
+                ble_status_update();                  /* NEW */
                 printk("Unexpected flow resolved, normal operation\n");
             }
         }
@@ -284,6 +315,7 @@ watering_error_t flow_monitor_init(void) {
     k_mutex_lock(&flow_monitor_mutex, K_FOREVER);
     
     system_status = WATERING_STATUS_OK;
+    ble_status_update();                              /* NEW */
     flow_error_attempts = 0;
     last_flow_check_time = 0;
     exit_tasks = false;
@@ -322,6 +354,7 @@ watering_error_t watering_reset_fault(void) {
     if (current_status == WATERING_STATUS_FAULT) {
         printk("Resetting system from fault state\n");
         system_status = WATERING_STATUS_OK;
+        ble_status_update();                          /* NEW */
         flow_error_attempts = 0;
         
         // Try to recover the system state
@@ -333,4 +366,18 @@ watering_error_t watering_reset_fault(void) {
     
     k_mutex_unlock(&flow_monitor_mutex);
     return WATERING_ERROR_INVALID_PARAM;  // Not in fault state
+}
+
+/* ---------- NEW: public helper to clear flow error counters -------- */
+void flow_monitor_clear_errors(void)
+{
+    k_mutex_lock(&flow_monitor_mutex, K_FOREVER);
+    flow_error_attempts   = 0;
+    last_flow_check_time  = 0;
+    last_task_pulses      = 0;
+    /* keep pulse counter but restore OK status only if not in FAULT */
+    if (system_status != WATERING_STATUS_FAULT) {
+        system_status = WATERING_STATUS_OK;
+    }
+    k_mutex_unlock(&flow_monitor_mutex);
 }

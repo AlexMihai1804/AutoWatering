@@ -6,6 +6,8 @@
 
 #include "watering.h"
 #include "watering_internal.h"
+#include "flow_sensor.h"             /* reset_pulse_count prototype – NEW */
+#include "bt_irrigation_service.h"   /* valve status notify – NEW */
 
 /**
  * @file valve_control.c

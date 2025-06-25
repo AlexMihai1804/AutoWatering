@@ -5,6 +5,7 @@
 #include <stdio.h>  // Add this for snprintf
 #include "flow_sensor.h"
 #include "watering_internal.h"
+#include "bt_irrigation_service.h"     /* + BLE status update */
 
 /**
  * @file watering.c
@@ -164,6 +165,7 @@ recovery_done:
     if (result == WATERING_SUCCESS) {
         transition_to_state(WATERING_STATE_IDLE);
         system_status = WATERING_STATUS_OK;
+        bt_irrigation_system_status_update(system_status);   /* NEW */
         printk("Error recovery successful\n");
     } else {
         printk("Error recovery failed\n");
@@ -246,6 +248,7 @@ watering_error_t watering_set_power_mode(power_mode_t mode) {
     } else if (system_status == WATERING_STATUS_LOW_POWER) {
         system_status = WATERING_STATUS_OK;
     }
+    bt_irrigation_system_status_update(system_status);   /* NEW */
     
     k_mutex_unlock(&system_state_mutex);
     return WATERING_SUCCESS;
@@ -346,5 +349,91 @@ watering_error_t watering_get_queue_status(uint8_t *pending_count, bool *active)
     
     k_mutex_unlock(&system_state_mutex);
     
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Validate the configuration of a watering event
+ * 
+ * This function checks the event parameters for correctness.
+ * 
+ * @param event Pointer to the watering event to validate
+ * @return WATERING_SUCCESS if the configuration is valid, error code otherwise
+ */
+watering_error_t watering_validate_event_config(const watering_event_t *event) {
+    if (event == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    /* NEW: accept any values if the event is disabled */
+    if (!event->auto_enabled) {
+        return WATERING_SUCCESS;
+    }
+
+    // Validate schedule type
+    if (event->schedule_type != SCHEDULE_DAILY && 
+        event->schedule_type != SCHEDULE_PERIODIC) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    // Validate time
+    if (event->start_time.hour > 23 || 
+        event->start_time.minute > 59) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    // Validate watering mode
+    if (event->watering_mode != WATERING_BY_DURATION && 
+        event->watering_mode != WATERING_BY_VOLUME) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    // Validate watering values
+    if (event->watering_mode == WATERING_BY_DURATION) {
+        if (event->watering.by_duration.duration_minutes == 0) {
+            return WATERING_ERROR_INVALID_PARAM;
+        }
+    } else {
+        if (event->watering.by_volume.volume_liters == 0) {
+            return WATERING_ERROR_INVALID_PARAM;
+        }
+    }
+
+    // Validate schedule-specific settings
+    if (event->schedule_type == SCHEDULE_DAILY) {
+        // At least one day must be selected
+        if (event->schedule.daily.days_of_week == 0) {
+            return WATERING_ERROR_INVALID_PARAM;
+        }
+    } else {
+        // Periodic must have interval > 0
+        if (event->schedule.periodic.interval_days == 0) {
+            return WATERING_ERROR_INVALID_PARAM;
+        }
+    }
+
+    return WATERING_SUCCESS;
+}
+
+/* ------------------------------------------------------------------ */
+/* Clear run-time error flags & counters                              */
+watering_error_t watering_clear_errors(void)
+{
+    k_mutex_lock(&system_state_mutex, K_FOREVER);
+
+    /* return to a known good state */
+    if (system_state == WATERING_STATE_ERROR_RECOVERY) {
+        transition_to_state(WATERING_STATE_IDLE);
+    }
+    system_status = WATERING_STATUS_OK;
+    k_mutex_unlock(&system_state_mutex);
+
+    /* reset flow-monitor counters too */
+    flow_monitor_clear_errors();
+
+    /* inform BLE client (ignore if not connected) */
+    bt_irrigation_system_status_update(system_status);
+
+    printk("All error flags cleared, system back to OK\n");
     return WATERING_SUCCESS;
 }

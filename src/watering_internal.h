@@ -206,4 +206,8 @@ int watering_get_pending_tasks_info(void *tasks_info, int max_tasks);
 // Function prototype for logging initialization
 void watering_log_init(int level);
 
+/* --- new error-reset helpers ----------------------------------------- */
+watering_error_t watering_clear_errors(void);
+void             flow_monitor_clear_errors(void);
+
 #endif // WATERING_INTERNAL_H

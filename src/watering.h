@@ -348,4 +348,13 @@ int watering_cancel_all_tasks(void);
  */
 watering_error_t watering_get_queue_status(uint8_t *pending_count, bool *active);
 
+/**
+ * @brief Clear all run-time error flags and counters
+ *
+ * Useful for a manual “reset errors” command from BLE / console.
+ *
+ * @return WATERING_SUCCESS
+ */
+watering_error_t watering_clear_errors(void);
+
 #endif // WATERING_H

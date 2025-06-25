@@ -92,16 +92,16 @@ watering_error_t load_default_config(void) {
                 
         // Default schedule: disabled
         watering_channels[i].watering_event.auto_enabled = false;
-        
-        // Default to daily schedule at noon
+
+        /* Disabled DAILY schedule – no days selected, time 00:00 */
         watering_channels[i].watering_event.schedule_type = SCHEDULE_DAILY;
-        watering_channels[i].watering_event.schedule.daily.days_of_week = 0x7F; // All days
-        watering_channels[i].watering_event.start_time.hour = 12;
+        watering_channels[i].watering_event.schedule.daily.days_of_week = 0;   /* ← was 0x7F */
+        watering_channels[i].watering_event.start_time.hour   = 0;             /* ← was 12  */
         watering_channels[i].watering_event.start_time.minute = 0;
-        
-        // Default to 5 minute duration watering
+
+        /* Quantity zero because auto_enabled = false */
         watering_channels[i].watering_event.watering_mode = WATERING_BY_DURATION;
-        watering_channels[i].watering_event.watering.by_duration.duration_minutes = 5;
+        watering_channels[i].watering_event.watering.by_duration.duration_minutes = 0; /* ← was 5 */
     }
     
     // Default days counter
@@ -162,6 +162,12 @@ watering_error_t watering_save_config(void) {
             k_mutex_unlock(&config_mutex);
             return WATERING_ERROR_STORAGE;
         }
+
+        ret = nvs_save_channel_name(i, watering_channels[i].name);   /* NEW */
+        if (ret < 0) {
+            LOG_ERROR("Error saving channel name", ret);
+            // non-fatal, continue
+        }
     }
     
     // Save days_since_start to persistent storage
@@ -172,7 +178,15 @@ watering_error_t watering_save_config(void) {
     }
     
     k_mutex_unlock(&config_mutex);
-    printk("Configurations successfully saved (version %d)\n", WATERING_CONFIG_VERSION);
+    /* --------- NEW: avoid duplicate log spam ------------------------ */
+    static uint32_t last_save_log_time = 0;          /* ms since boot */
+    uint32_t now = k_uptime_get_32();
+    if (now - last_save_log_time > 1000) {           /* 1 s debounce */
+        printk("Configurations successfully saved (version %d)\n",
+               WATERING_CONFIG_VERSION);
+        last_save_log_time = now;
+    }
+
     return WATERING_SUCCESS;
 }
 
@@ -338,6 +352,17 @@ watering_error_t watering_load_config(void) {
             loaded_configs++;
         } else if (ret != -ENOENT) {
             LOG_ERROR("Error reading channel configuration", ret);
+        }
+
+        ret = nvs_load_channel_name(i,
+                    watering_channels[i].name,
+                    sizeof(watering_channels[i].name));              /* NEW */
+        if (ret >= 0) {
+            /* name loaded OK */
+        } else if (ret == -ENOENT) {
+            /* keep default / previously set name */
+        } else {
+            LOG_ERROR("Error reading channel name", ret);
         }
     }
     

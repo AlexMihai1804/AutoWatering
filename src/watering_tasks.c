@@ -4,7 +4,8 @@
 #include "flow_sensor.h"
 #include "watering.h"
 #include "watering_internal.h"
-#include "rtc.h" // Add RTC header
+#include "rtc.h"
+#include "bt_irrigation_service.h"   /* NEW */
 
 /**
  * @file watering_tasks.c
@@ -703,6 +704,11 @@ watering_error_t watering_stop_tasks(void) {
     return WATERING_SUCCESS;
 }
 
+/* ------------------------------------------------------------------------
+ * Duplicate definition removed – a unică implementare se află acum în
+ * watering.c.  Menţinem codul comentat ca referinţă dar nu îl mai compilăm.
+ * --------------------------------------------------------------------- */
+#if 0
 /**
  * @brief Validate watering event configuration
  * 
@@ -748,7 +754,7 @@ watering_error_t watering_validate_event_config(const watering_event_t *event) {
     
     return WATERING_SUCCESS;
 }
-
+#endif /* duplicate removed */
 /**
  * @brief Add a duration-based watering task for a specific channel
  * 
