@@ -30,10 +30,20 @@ int flow_sensor_init(void);
 uint32_t get_pulse_count(void);
 
 /**
+ * @brief Get the current smoothed flow rate
+ * 
+ * @return Smoothed flow rate in pulses per second
+ */
+uint32_t get_flow_rate(void);
+
+/**
  * @brief Reset the pulse counter to zero
  */
 void reset_pulse_count(void);
 
-// Removed simulation-related functions
+/**
+ * @brief Print flow sensor debug information
+ */
+void flow_sensor_debug_info(void);
 
 #endif // FLOW_SENSOR_H

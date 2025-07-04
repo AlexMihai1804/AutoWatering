@@ -1,8 +1,10 @@
 #ifndef WATERING_H
 #define WATERING_H
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <zephyr/drivers/gpio.h>
+
 /**
  * @file watering.h
  * @brief Main interface for the automatic irrigation system
@@ -18,16 +20,16 @@
  * @brief Standardized error codes for watering system
  */
 typedef enum {
-    WATERING_SUCCESS = 0,            /**< Operation completed successfully */
-    WATERING_ERROR_INVALID_PARAM = -1,  /**< Invalid parameter provided */
-    WATERING_ERROR_NOT_INITIALIZED = -2,  /**< System not initialized */
-    WATERING_ERROR_HARDWARE = -3,    /**< Hardware failure or not ready */
-    WATERING_ERROR_BUSY = -4,        /**< System is busy/in use */
-    WATERING_ERROR_QUEUE_FULL = -5,  /**< Task queue is full */
-    WATERING_ERROR_TIMEOUT = -6,     /**< Operation timed out */
-    WATERING_ERROR_CONFIG = -7,      /**< Configuration error */
-    WATERING_ERROR_RTC_FAILURE = -8, /**< RTC failure */
-    WATERING_ERROR_STORAGE = -9,     /**< Storage/persistence error */
+    WATERING_SUCCESS = 0,                /**< Operation completed successfully */
+    WATERING_ERROR_INVALID_PARAM = -1,   /**< Invalid parameter provided */
+    WATERING_ERROR_NOT_INITIALIZED = -2, /**< System not initialized */
+    WATERING_ERROR_HARDWARE = -3,        /**< Hardware failure */
+    WATERING_ERROR_BUSY = -4,            /**< System busy with another operation */
+    WATERING_ERROR_QUEUE_FULL = -5,      /**< Task queue is full */
+    WATERING_ERROR_TIMEOUT = -6,         /**< Operation timed out */
+    WATERING_ERROR_CONFIG = -7,          /**< Configuration error */
+    WATERING_ERROR_RTC_FAILURE = -8,     /**< RTC communication failure */
+    WATERING_ERROR_STORAGE = -9,         /**< Storage operation failed */
 } watering_error_t;
 
 /**
@@ -41,16 +43,16 @@ typedef enum {
  * Defines how watering events are scheduled over time.
  */
 typedef enum { 
-    SCHEDULE_DAILY,    /**< Schedule on specific days of the week */
-    SCHEDULE_PERIODIC  /**< Schedule every N days */
+    SCHEDULE_DAILY,    /**< Water on specific days of the week */
+    SCHEDULE_PERIODIC  /**< Water every N days */
 } schedule_type_t;
 
 /**
  * @brief Watering mode that determines how irrigation is measured
  */
 typedef enum watering_mode { 
-    WATERING_BY_DURATION, /**< Water for a specified time period */
-    WATERING_BY_VOLUME    /**< Water until a specified volume is dispensed */
+    WATERING_BY_DURATION, /**< Water for a specific time duration */
+    WATERING_BY_VOLUME    /**< Water until a specific volume is reached */
 } watering_mode_t;
 
 /**
@@ -62,6 +64,527 @@ typedef enum {
     WATERING_STATE_PAUSED,         /**< Watering temporarily paused */
     WATERING_STATE_ERROR_RECOVERY, /**< Error recovery in progress */
 } watering_state_t;
+
+/**
+ * @brief Trigger types for watering events
+ */
+typedef enum {
+    WATERING_TRIGGER_MANUAL = 0,
+    WATERING_TRIGGER_SCHEDULED = 1,
+    WATERING_TRIGGER_REMOTE = 2
+} watering_trigger_type_t;
+
+/**
+ * @brief Type of plant being grown in the channel
+ */
+typedef enum {
+    PLANT_TYPE_VEGETABLES,     /**< Vegetables (tomatoes, peppers, cucumbers, etc.) */
+    PLANT_TYPE_HERBS,          /**< Herbs (basil, parsley, thyme, etc.) */
+    PLANT_TYPE_FLOWERS,        /**< Flowers (roses, tulips, marigolds, etc.) */
+    PLANT_TYPE_SHRUBS,         /**< Shrubs and bushes */
+    PLANT_TYPE_TREES,          /**< Trees and large plants */
+    PLANT_TYPE_LAWN,           /**< Grass and lawn areas */
+    PLANT_TYPE_SUCCULENTS,     /**< Succulents and cacti */
+    PLANT_TYPE_OTHER           /**< Other plant types (with custom name) */
+} plant_type_t;
+
+/**
+ * @brief Specific vegetable types for detailed plant management
+ */
+typedef enum {
+    VEGETABLE_TOMATOES,        /**< Tomatoes (regular, cherry, etc.) */
+    VEGETABLE_PEPPERS,         /**< Peppers (sweet, hot, bell) */
+    VEGETABLE_CUCUMBERS,       /**< Cucumbers and gherkins */
+    VEGETABLE_LETTUCE,         /**< Lettuce and leafy greens */
+    VEGETABLE_CARROTS,         /**< Carrots and root vegetables */
+    VEGETABLE_ONIONS,          /**< Onions, garlic, scallions */
+    VEGETABLE_BEANS,           /**< Beans (green, lima, etc.) */
+    VEGETABLE_PEAS,            /**< Peas and legumes */
+    VEGETABLE_SQUASH,          /**< Squash, zucchini, pumpkins */
+    VEGETABLE_BROCCOLI,        /**< Broccoli, cauliflower, cabbage */
+    VEGETABLE_EGGPLANT,        /**< Eggplant and aubergine */
+    VEGETABLE_SPINACH,         /**< Spinach and similar greens */
+    VEGETABLE_RADISHES,        /**< Radishes and turnips */
+    VEGETABLE_CORN,            /**< Sweet corn */
+    VEGETABLE_POTATO,          /**< Potatoes */
+    VEGETABLE_SWEET_POTATO,    /**< Sweet potatoes and yams */
+    VEGETABLE_BEETS,           /**< Beetroot and sugar beets */
+    VEGETABLE_KALE,            /**< Kale and collard greens */
+    VEGETABLE_SWISS_CHARD,     /**< Swiss chard and rainbow chard */
+    VEGETABLE_ARUGULA,         /**< Arugula and rocket */
+    VEGETABLE_BOK_CHOY,        /**< Bok choy and Asian greens */
+    VEGETABLE_ASPARAGUS,       /**< Asparagus spears */
+    VEGETABLE_ARTICHOKES,      /**< Globe artichokes */
+    VEGETABLE_BRUSSELS_SPROUTS, /**< Brussels sprouts */
+    VEGETABLE_LEEKS,           /**< Leeks and baby leeks */
+    VEGETABLE_CELERY,          /**< Celery and celeriac */
+    VEGETABLE_FENNEL,          /**< Florence fennel */
+    VEGETABLE_OKRA,            /**< Okra pods */
+    VEGETABLE_TURNIPS,         /**< Turnips and rutabaga */
+    VEGETABLE_PARSNIPS,        /**< Parsnips */
+    VEGETABLE_KOHLRABI,        /**< Kohlrabi */
+    VEGETABLE_WATERCRESS,      /**< Watercress and garden cress */
+    VEGETABLE_ENDIVE,          /**< Endive and chicory */
+    VEGETABLE_RADICCHIO,       /**< Radicchio and red chicory */
+    VEGETABLE_RHUBARB,         /**< Rhubarb stalks */
+    VEGETABLE_HORSERADISH,     /**< Horseradish root */
+    VEGETABLE_JERUSALEM_ARTICHOKE, /**< Sunchokes */
+    VEGETABLE_JICAMA,          /**< Mexican turnip */
+    VEGETABLE_TOMATILLO,       /**< Husk cherry */
+    VEGETABLE_GROUND_CHERRY,   /**< Cape gooseberry */
+    VEGETABLE_PEPINO_MELON,    /**< Sweet cucumber */
+    VEGETABLE_CHAYOTE,         /**< Vegetable pear */
+    VEGETABLE_BITTER_MELON,    /**< Bitter gourd */
+    VEGETABLE_DRAGON_FRUIT,    /**< Pitaya cactus fruit */
+    VEGETABLE_MUSHROOM,        /**< Edible mushroom varieties */
+    VEGETABLE_MICROGREENS,     /**< Microgreen varieties */
+    VEGETABLE_SPROUTS,         /**< Bean and seed sprouts */
+    VEGETABLE_OTHER            /**< Other vegetables */
+} vegetable_type_t;
+
+/**
+ * @brief Specific herb types for detailed management
+ */
+typedef enum {
+    HERB_BASIL,                /**< Sweet basil, Thai basil */
+    HERB_PARSLEY,              /**< Flat-leaf, curly parsley */
+    HERB_CILANTRO,             /**< Cilantro/Coriander */
+    HERB_THYME,                /**< Common thyme, lemon thyme */
+    HERB_ROSEMARY,             /**< Rosemary */
+    HERB_OREGANO,              /**< Oregano and marjoram */
+    HERB_SAGE,                 /**< Common sage */
+    HERB_CHIVES,               /**< Chives */
+    HERB_DILL,                 /**< Dill weed */
+    HERB_MINT,                 /**< Peppermint, spearmint */
+    HERB_LAVENDER,             /**< Culinary lavender */
+    HERB_CHERVIL,              /**< Chervil */
+    HERB_TARRAGON,             /**< French tarragon */
+    HERB_BAY_LEAVES,           /**< Bay laurel */
+    HERB_LEMON_BALM,           /**< Lemon balm */
+    HERB_LEMONGRASS,           /**< Lemongrass */
+    HERB_MARJORAM,             /**< Sweet marjoram */
+    HERB_SAVORY,               /**< Summer and winter savory */
+    HERB_FENNEL,               /**< Fennel fronds and bulb */
+    HERB_ANISE,                /**< Anise hyssop */
+    HERB_BORAGE,               /**< Borage flowers and leaves */
+    HERB_CATNIP,               /**< Catnip and catmint */
+    HERB_CHAMOMILE,            /**< German and Roman chamomile */
+    HERB_LEMON_VERBENA,        /**< Lemon verbena */
+    HERB_STEVIA,               /**< Stevia sweetener plant */
+    HERB_PEPPERMINT,           /**< Peppermint varieties */
+    HERB_SPEARMINT,            /**< Spearmint varieties */
+    HERB_CHOCOLATE_MINT,       /**< Chocolate mint */
+    HERB_APPLE_MINT,           /**< Apple mint */
+    HERB_BERGAMOT,             /**< Wild bergamot, bee balm */
+    HERB_COMFREY,              /**< Comfrey (medicinal) */
+    HERB_ECHINACEA,            /**< Purple coneflower */
+    HERB_VALERIAN,             /**< Valerian root */
+    HERB_ELDERFLOWER,          /**< Elderflower blooms */
+    HERB_NETTLE,               /**< Stinging nettle */
+    HERB_DANDELION,            /**< Dandelion greens */
+    HERB_PLANTAIN,             /**< Plantain leaves */
+    HERB_WILD_GARLIC,          /**< Ramps, wild leeks */
+    HERB_SORREL,               /**< French sorrel */
+    HERB_PURSLANE,             /**< Portulaca oleracea */
+    HERB_LAMB_QUARTERS,        /**< Chenopodium album */
+    HERB_CALENDULA,            /**< Pot marigold (edible) */
+    HERB_NASTURTIUM,           /**< Edible nasturtium */
+    HERB_VIOLET,               /**< Sweet violet leaves */
+    HERB_CHICKWEED,            /**< Stellaria media */
+    HERB_CLEAVERS,             /**< Galium aparine */
+    HERB_WOOD_SORREL,          /**< Oxalis species */
+    HERB_MALLOW,               /**< Common mallow */
+    HERB_ROSE_GERANIUM,        /**< Pelargonium graveolens */
+    HERB_LEMON_THYME,          /**< Citrus thyme */
+    HERB_MEXICAN_MINT_MARIGOLD, /**< Tagetes lucida */
+    HERB_EPAZOTE,              /**< Dysphania ambrosioides */
+    HERB_SHISO,                /**< Japanese basil */
+    HERB_PERILLA,              /**< Korean perilla */
+    HERB_OTHER                 /**< Other herbs */
+} herb_type_t;
+
+/**
+ * @brief Specific flower types for garden management
+ */
+typedef enum {
+    FLOWER_ROSES,              /**< Garden roses, climbing roses */
+    FLOWER_TULIPS,             /**< Spring tulips */
+    FLOWER_DAFFODILS,          /**< Daffodils and narcissus */
+    FLOWER_MARIGOLDS,          /**< French, African marigolds */
+    FLOWER_PETUNIAS,           /**< Wave, grandiflora petunias */
+    FLOWER_IMPATIENS,          /**< Busy lizzie, balsam */
+    FLOWER_BEGONIAS,           /**< Wax, tuberous begonias */
+    FLOWER_GERANIUMS,          /**< Zonal, ivy geraniums */
+    FLOWER_PANSIES,            /**< Pansies and violas */
+    FLOWER_SUNFLOWERS,         /**< Annual sunflowers */
+    FLOWER_ZINNIAS,            /**< Common zinnias */
+    FLOWER_COSMOS,             /**< Garden cosmos */
+    FLOWER_NASTURTIUMS,        /**< Climbing nasturtiums */
+    FLOWER_DAHLIAS,            /**< Border, dinner plate dahlias */
+    FLOWER_LILIES,             /**< Asiatic, Oriental lilies */
+    FLOWER_IRIS,               /**< Bearded, Siberian iris */
+    FLOWER_PEONIES,            /**< Herbaceous peonies */
+    FLOWER_HYDRANGEAS,         /**< Bigleaf, panicle hydrangeas */
+    FLOWER_CHRYSANTHEMUMS,     /**< Garden mums, football mums */
+    FLOWER_ASTERS,             /**< Fall asters, New England asters */
+    FLOWER_HOLLYHOCKS,         /**< Tall hollyhocks */
+    FLOWER_LAVENDER,           /**< English, French lavender */
+    FLOWER_SALVIA,             /**< Annual and perennial salvia */
+    FLOWER_VERBENA,            /**< Garden verbena */
+    FLOWER_SNAPDRAGONS,        /**< Tall and dwarf snapdragons */
+    FLOWER_CALENDULA,          /**< Pot marigold */
+    FLOWER_BACHELOR_BUTTONS,   /**< Cornflower */
+    FLOWER_SWEET_PEAS,         /**< Climbing sweet peas */
+    FLOWER_MORNING_GLORY,      /**< Climbing morning glory */
+    FLOWER_MOONFLOWER,         /**< Night-blooming moonflower */
+    FLOWER_FOUR_OCLOCK,        /**< Four o'clock flowers */
+    FLOWER_PORTULACA,          /**< Moss rose */
+    FLOWER_CELOSIA,            /**< Cockscomb celosia */
+    FLOWER_COLEUS,             /**< Ornamental coleus */
+    FLOWER_CALADIUM,           /**< Fancy-leaved caladium */
+    FLOWER_GLADIOLUS,          /**< Sword lilies */
+    FLOWER_CANNA,              /**< Canna lilies */
+    FLOWER_ELEPHANT_EAR,       /**< Colocasia, Alocasia */
+    FLOWER_HIBISCUS,           /**< Tropical hibiscus */
+    FLOWER_BOUGAINVILLEA,      /**< Climbing bougainvillea */
+    FLOWER_JASMINE,            /**< Star jasmine, Confederate jasmine */
+    FLOWER_GARDENIA,           /**< Cape jasmine */
+    FLOWER_AZALEA,             /**< Deciduous azaleas */
+    FLOWER_CAMELLIA,           /**< Camellia sasanqua */
+    FLOWER_RHODODENDRON,       /**< Rhododendron species */
+    FLOWER_MAGNOLIA,           /**< Magnolia blooms */
+    FLOWER_WISTERIA,           /**< Climbing wisteria */
+    FLOWER_CLEMATIS,           /**< Clematis vines */
+    FLOWER_HONEYSUCKLE,        /**< Lonicera varieties */
+    FLOWER_TRUMPET_VINE,       /**< Campsis radicans */
+    FLOWER_PASSION_FLOWER,     /**< Passiflora varieties */
+    FLOWER_MANDEVILLA,         /**< Climbing mandevilla */
+    FLOWER_FUCHSIA,            /**< Hanging fuchsias */
+    FLOWER_LANTANA,            /**< Lantana camara */
+    FLOWER_PENTAS,             /**< Egyptian star cluster */
+    FLOWER_VINCA,              /**< Madagascar periwinkle */
+    FLOWER_TORENIA,            /**< Wishbone flower */
+    FLOWER_ANGELONIA,          /**< Summer snapdragon */
+    FLOWER_CLEOME,             /**< Spider flower */
+    FLOWER_AMARANTHUS,         /**< Love-lies-bleeding */
+    FLOWER_GOMPHRENA,          /**< Globe amaranth */
+    FLOWER_STRAWFLOWER,        /**< Helichrysum */
+    FLOWER_STATICE,            /**< Limonium sinuatum */
+    FLOWER_NIGELLA,            /**< Love-in-a-mist */
+    FLOWER_NICOTIANA,          /**< Flowering tobacco */
+    FLOWER_BROWALLIA,          /**< Bush violet */
+    FLOWER_LOBELIA,            /**< Edging lobelia */
+    FLOWER_ALYSSUM,            /**< Sweet alyssum */
+    FLOWER_CANDYTUFT,          /**< Iberis varieties */
+    FLOWER_DIANTHUS,           /**< Carnations, pinks */
+    FLOWER_OTHER               /**< Other flowers */
+} flower_type_t;
+
+/**
+ * @brief Specific tree types for orchard and landscape management
+ */
+typedef enum {
+    TREE_CITRUS,               /**< Lemon, orange, lime trees */
+    TREE_APPLE,                /**< Apple varieties */
+    TREE_PEAR,                 /**< Pear varieties */
+    TREE_CHERRY,               /**< Sweet and sour cherries */
+    TREE_PLUM,                 /**< Plum and damson */
+    TREE_PEACH,                /**< Peach and nectarine */
+    TREE_FIG,                  /**< Fig trees */
+    TREE_OLIVE,                /**< Olive trees */
+    TREE_AVOCADO,              /**< Avocado trees */
+    TREE_MAPLE,                /**< Ornamental maples */
+    TREE_OAK,                  /**< Oak varieties */
+    TREE_PINE,                 /**< Pine and conifers */
+    TREE_PALM,                 /**< Palm trees */
+    TREE_WILLOW,               /**< Weeping willows */
+    TREE_BIRCH,                /**< Paper birch, river birch */
+    TREE_MAGNOLIA,             /**< Southern, star magnolia */
+    TREE_DOGWOOD,              /**< Flowering dogwood */
+    TREE_REDBUD,               /**< Eastern redbud */
+    TREE_CRAPE_MYRTLE,         /**< Crape myrtle varieties */
+    TREE_JAPANESE_MAPLE,       /**< Japanese maple cultivars */
+    TREE_FRUIT_CITRUS_LEMON,   /**< Lemon trees specifically */
+    TREE_FRUIT_CITRUS_ORANGE,  /**< Orange trees specifically */
+    TREE_FRUIT_CITRUS_LIME,    /**< Lime trees specifically */
+    TREE_FRUIT_CITRUS_GRAPEFRUIT, /**< Grapefruit trees */
+    TREE_FRUIT_STONE_APRICOT,  /**< Apricot trees */
+    TREE_FRUIT_STONE_PERSIMMON, /**< Persimmon trees */
+    TREE_FRUIT_POMEGRANATE,    /**< Pomegranate trees */
+    TREE_FRUIT_MANGO,          /**< Mango trees */
+    TREE_FRUIT_PAPAYA,         /**< Papaya trees */
+    TREE_FRUIT_BANANA,         /**< Banana plants */
+    TREE_NUT_ALMOND,           /**< Almond trees */
+    TREE_NUT_WALNUT,           /**< Walnut trees */
+    TREE_NUT_PECAN,            /**< Pecan trees */
+    TREE_NUT_HAZELNUT,         /**< Hazelnut trees */
+    TREE_EVERGREEN_SPRUCE,     /**< Spruce varieties */
+    TREE_EVERGREEN_FIR,        /**< Fir trees */
+    TREE_EVERGREEN_CEDAR,      /**< Cedar varieties */
+    TREE_EVERGREEN_JUNIPER,    /**< Juniper trees */
+    TREE_SHADE_ELM,            /**< Elm varieties */
+    TREE_SHADE_ASH,            /**< Ash trees */
+    TREE_SHADE_POPLAR,         /**< Poplar and aspen */
+    TREE_SHADE_SYCAMORE,       /**< Sycamore trees */
+    TREE_TROPICAL_COCONUT,     /**< Coconut palms */
+    TREE_TROPICAL_DATE,        /**< Date palms */
+    TREE_FRUIT_LYCHEE,         /**< Lychee trees */
+    TREE_FRUIT_LONGAN,         /**< Longan trees */
+    TREE_FRUIT_RAMBUTAN,       /**< Rambutan trees */
+    TREE_FRUIT_DRAGON_FRUIT,   /**< Dragon fruit cactus */
+    TREE_FRUIT_JACKFRUIT,      /**< Jackfruit trees */
+    TREE_FRUIT_BREADFRUIT,     /**< Breadfruit trees */
+    TREE_FRUIT_STARFRUIT,      /**< Carambola trees */
+    TREE_FRUIT_GUAVA,          /**< Guava trees */
+    TREE_FRUIT_PASSION_FRUIT,  /**< Passion fruit vines */
+    TREE_FRUIT_KIWI,           /**< Kiwi vines */
+    TREE_FRUIT_GRAPE,          /**< Grape vines */
+    TREE_BERRY_BLUEBERRY,      /**< Blueberry bushes */
+    TREE_BERRY_BLACKBERRY,     /**< Blackberry canes */
+    TREE_BERRY_RASPBERRY,      /**< Raspberry canes */
+    TREE_BERRY_STRAWBERRY,     /**< Strawberry plants */
+    TREE_BERRY_ELDERBERRY,     /**< Elderberry bushes */
+    TREE_BERRY_GOOSEBERRY,     /**< Gooseberry bushes */
+    TREE_BERRY_CURRANT,        /**< Currant bushes */
+    TREE_BERRY_CRANBERRY,      /**< Cranberry bogs */
+    TREE_FLOWERING_CHERRY,     /**< Ornamental cherry */
+    TREE_FLOWERING_PLUM,       /**< Ornamental plum */
+    TREE_FLOWERING_PEAR,       /**< Bradford pear */
+    TREE_FLOWERING_CRABAPPLE,  /**< Ornamental crabapple */
+    TREE_FLOWERING_HAWTHORN,   /**< Hawthorn varieties */
+    TREE_CONIFER_REDWOOD,      /**< Coast redwood */
+    TREE_CONIFER_SEQUOIA,      /**< Giant sequoia */
+    TREE_CONIFER_CYPRESS,      /**< Cypress varieties */
+    TREE_CONIFER_ARBORVITAE,   /**< Thuja varieties */
+    TREE_CONIFER_HEMLOCK,      /**< Hemlock varieties */
+    TREE_BAMBOO,               /**< Bamboo varieties */
+    TREE_OTHER                 /**< Other trees */
+} tree_type_t;
+
+/**
+ * @brief Specific shrub and bush types
+ */
+typedef enum {
+    SHRUB_AZALEA,              /**< Azalea varieties */
+    SHRUB_RHODODENDRON,        /**< Rhododendron species */
+    SHRUB_HYDRANGEA,           /**< Hydrangea varieties */
+    SHRUB_ROSE_BUSH,           /**< Rose bushes */
+    SHRUB_BOXWOOD,             /**< Boxwood hedging */
+    SHRUB_HOLLY,               /**< Holly bushes */
+    SHRUB_JUNIPER,             /**< Juniper shrubs */
+    SHRUB_FORSYTHIA,           /**< Forsythia bushes */
+    SHRUB_LILAC,               /**< Lilac bushes */
+    SHRUB_SPIREA,              /**< Spirea varieties */
+    SHRUB_WEIGELA,             /**< Weigela bushes */
+    SHRUB_VIBURNUM,            /**< Viburnum species */
+    SHRUB_CAMELLIA,            /**< Camellia bushes */
+    SHRUB_GARDENIA,            /**< Gardenia bushes */
+    SHRUB_MOCK_ORANGE,         /**< Philadelphus varieties */
+    SHRUB_BURNING_BUSH,        /**< Euonymus alatus */
+    SHRUB_BARBERRY,            /**< Berberis varieties */
+    SHRUB_PRIVET,              /**< Ligustrum hedging */
+    SHRUB_YEW,                 /**< Taxus varieties */
+    SHRUB_ARBORVITAE,          /**< Thuja varieties */
+    SHRUB_ELDERBERRY,          /**< Sambucus varieties */
+    SHRUB_BUTTERFLY_BUSH,      /**< Buddleia varieties */
+    SHRUB_SERVICEBERRY,        /**< Amelanchier varieties */
+    SHRUB_NINEBARK,            /**< Physocarpus varieties */
+    SHRUB_DOGWOOD_SHRUB,       /**< Shrub dogwood varieties */
+    SHRUB_OTHER                /**< Other shrubs */
+} shrub_type_t;
+
+/**
+ * @brief Specific lawn and grass types
+ */
+typedef enum {
+    LAWN_BERMUDA,              /**< Bermuda grass */
+    LAWN_ZOYSIA,               /**< Zoysia grass */
+    LAWN_ST_AUGUSTINE,         /**< St. Augustine grass */
+    LAWN_KENTUCKY_BLUE,        /**< Kentucky bluegrass */
+    LAWN_FESCUE,               /**< Tall fescue, fine fescue */
+    LAWN_RYE,                  /**< Perennial ryegrass */
+    LAWN_BUFFALO,              /**< Buffalo grass */
+    LAWN_CENTIPEDE,            /**< Centipede grass */
+    LAWN_BAHIA,                /**< Bahia grass */
+    LAWN_GROUND_COVER,         /**< Clover, moss, other ground cover */
+    LAWN_TALL_FESCUE,          /**< Tall fescue specifically */
+    LAWN_FINE_FESCUE,          /**< Fine fescue varieties */
+    LAWN_ANNUAL_RYEGRASS,      /**< Annual ryegrass */
+    LAWN_PERENNIAL_RYEGRASS,   /**< Perennial ryegrass */
+    LAWN_DICHONDRA,            /**< Dichondra ground cover */
+    LAWN_CLOVER_WHITE,         /**< White clover lawn */
+    LAWN_CLOVER_MICRO,         /**< Micro clover */
+    LAWN_SEDUM_VARIETIES,      /**< Sedum ground cover */
+    LAWN_THYME_CREEPING,       /**< Creeping thyme */
+    LAWN_MOSS_LAWN,            /**< Moss lawn areas */
+    LAWN_ARTIFICIAL,           /**< Artificial turf maintenance */
+    LAWN_WILDFLOWER_MIX,       /**< Wildflower meadow */
+    LAWN_PRAIRIE_GRASS,        /**< Native prairie grasses */
+    LAWN_ORNAMENTAL_GRASS,     /**< Ornamental grass plantings */
+    LAWN_SEDGE,                /**< Sedge varieties */
+    LAWN_RUSH,                 /**< Rush varieties */
+    LAWN_MONDO_GRASS,          /**< Ophiopogon japonicus */
+    LAWN_LIRIOPE,              /**< Lily turf */
+    LAWN_AJUGA,                /**< Carpet bugleweed */
+    LAWN_PACHYSANDRA,          /**< Japanese spurge */
+    LAWN_VINCA_MINOR,          /**< Periwinkle ground cover */
+    LAWN_ENGLISH_IVY,          /**< Hedera helix */
+    LAWN_BISHOP_WEED,          /**< Aegopodium podagraria */
+    LAWN_SWEET_WOODRUFF,       /**< Galium odoratum */
+    LAWN_WILD_GINGER,          /**< Asarum canadense */
+    LAWN_HOSTAS,               /**< Hosta ground cover */
+    LAWN_FERNS,                /**< Fern ground cover */
+    LAWN_CORAL_BELLS,          /**< Heuchera varieties */
+    LAWN_LAMIUM,               /**< Dead nettle */
+    LAWN_MAZUS,                /**< Mazus reptans */
+    LAWN_VERONICA,             /**< Speedwell ground cover */
+    LAWN_PHLOX_SUBULATA,       /**< Creeping phlox */
+    LAWN_ICE_PLANT,            /**< Delosperma varieties */
+    LAWN_STONECROP,            /**< Sedum ground covers */
+    LAWN_HEN_AND_CHICKS,       /**< Sempervivum carpet */
+    LAWN_NATIVE_WILDFLOWERS,   /**< Regional wildflower mix */
+    LAWN_XEROPHYTIC_MIX,       /**< Drought-tolerant mix */
+    LAWN_SHADE_MIX,            /**< Shade-tolerant grass mix */
+    LAWN_OTHER                 /**< Other grass types */
+} lawn_type_t;
+
+/**
+ * @brief Specific succulent and cactus types
+ */
+typedef enum {
+    SUCCULENT_ALOE,            /**< Aloe vera and varieties */
+    SUCCULENT_ECHEVERIA,       /**< Echeveria rosettes */
+    SUCCULENT_SEDUM,           /**< Sedum varieties */
+    SUCCULENT_JADE,            /**< Jade plants */
+    SUCCULENT_AGAVE,           /**< Agave and century plants */
+    SUCCULENT_BARREL_CACTUS,   /**< Barrel cacti */
+    SUCCULENT_PRICKLY_PEAR,    /**< Prickly pear cactus */
+    SUCCULENT_CHRISTMAS_CACTUS,/**< Holiday cacti */
+    SUCCULENT_SNAKE_PLANT,     /**< Sansevieria */
+    SUCCULENT_HAWORTHIA,       /**< Haworthia species */
+    SUCCULENT_KALANCHOE,       /**< Kalanchoe varieties */
+    SUCCULENT_HENS_AND_CHICKS, /**< Sempervivum */
+    SUCCULENT_BURROS_TAIL,     /**< Sedum morganianum */
+    SUCCULENT_STRING_OF_PEARLS, /**< Senecio rowleyanus */
+    SUCCULENT_ZEBRA_PLANT,     /**< Haworthia zebra */
+    SUCCULENT_LITHOPS,         /**< Living stones */
+    SUCCULENT_ADENIUM,         /**< Desert rose */
+    SUCCULENT_CRASSULA,        /**< Crassula varieties */
+    SUCCULENT_AEONIUM,         /**< Aeonium rosettes */
+    SUCCULENT_GASTERIA,        /**< Gasteria species */
+    SUCCULENT_PORTULACARIA,    /**< Elephant bush */
+    SUCCULENT_SENECIO,         /**< Senecio succulents */
+    SUCCULENT_EUPHORBIA,       /**< Succulent euphorbias */
+    SUCCULENT_PACHYPHYTUM,     /**< Moonstones */
+    SUCCULENT_GRAPTOVERIA,     /**< Graptoveria hybrids */
+    SUCCULENT_PENCIL_CACTUS,   /**< Euphorbia tirucalli */
+    SUCCULENT_CROWN_OF_THORNS, /**< Euphorbia milii */
+    SUCCULENT_BUNNY_EARS,      /**< Opuntia microdasys */
+    SUCCULENT_GOLDEN_BARREL,   /**< Echinocactus grusonii */
+    SUCCULENT_FISHHOOK_CACTUS, /**< Ferocactus species */
+    SUCCULENT_THANKSGIVING_CACTUS, /**< Schlumbergera truncata */
+    SUCCULENT_EASTER_CACTUS,   /**< Schlumbergera gaertneri */
+    SUCCULENT_MOON_CACTUS,     /**< Gymnocalycium mihanovichii */
+    SUCCULENT_PANDA_PLANT,     /**< Kalanchoe tomentosa */
+    SUCCULENT_MOTHER_IN_LAW_TONGUE, /**< Sansevieria varieties */
+    SUCCULENT_ZZ_PLANT,        /**< Zamioculcas zamiifolia */
+    SUCCULENT_PONYTAIL_PALM,   /**< Beaucarnea recurvata */
+    SUCCULENT_DESERT_WILLOW,   /**< Chilopsis linearis */
+    SUCCULENT_OCOTILLO,        /**< Fouquieria splendens */
+    SUCCULENT_YUCCA,           /**< Yucca varieties */
+    SUCCULENT_CENTURY_PLANT,   /**< Agave americana */
+    SUCCULENT_BLUE_AGAVE,      /**< Agave tequilana */
+    SUCCULENT_FIRESTICK,       /**< Euphorbia tirucalli */
+    SUCCULENT_CANDELABRA,      /**< Euphorbia ingens */
+    SUCCULENT_MEDUSA_HEAD,     /**< Euphorbia caput-medusae */
+    SUCCULENT_BASEBALL_PLANT,  /**< Euphorbia obesa */
+    SUCCULENT_AFRICAN_MILK_TREE, /**< Euphorbia trigona */
+    SUCCULENT_BOTTLE_TREE,     /**< Brachychiton rupestris */
+    SUCCULENT_MONEY_TREE,      /**< Pachira aquatica */
+    SUCCULENT_RUBBER_PLANT,    /**< Ficus elastica */
+    SUCCULENT_FIDDLE_LEAF_FIG, /**< Ficus lyrata */
+    SUCCULENT_GHOST_PLANT,     /**< Graptopetalum paraguayense */
+    SUCCULENT_HOYA,            /**< Wax plant varieties */
+    SUCCULENT_STRING_OF_HEARTS, /**< Ceropegia woodii */
+    SUCCULENT_STRING_OF_BANANAS, /**< Senecio radicans */
+    SUCCULENT_STRING_OF_DOLPHINS, /**< Senecio peregrinus */
+    SUCCULENT_PINK_MOONSTONE,  /**< Pachyphytum oviferum */
+    SUCCULENT_BLUE_CHALK_STICKS, /**< Senecio serpens */
+    SUCCULENT_JELLY_BEAN_PLANT, /**< Sedum rubrotinctum */
+    SUCCULENT_DONKEY_TAIL,     /**< Sedum morganianum */
+    SUCCULENT_WATCH_CHAIN,     /**< Crassula lycopodioides */
+    SUCCULENT_PROPELLER_PLANT, /**< Crassula falcata */
+    SUCCULENT_SILVER_DOLLAR,   /**< Crassula arborescens */
+    SUCCULENT_OTHER            /**< Other succulents */
+} succulent_type_t;
+
+/**
+ * @brief Custom plant configuration for PLANT_TYPE_OTHER
+ */
+typedef struct {
+    char custom_name[32];       /**< Custom plant name (e.g. "Hibiscus rosa-sinensis") */
+    float water_need_factor;    /**< Water need multiplier (0.1-5.0, default 1.0) */
+    uint8_t irrigation_freq;    /**< Recommended irrigation frequency (days between watering) */
+    bool prefer_area_based;     /**< True if plant prefers m² measurement, false for plant count */
+} custom_plant_config_t;
+
+/**
+ * @brief Type of soil in the growing area
+ */
+typedef enum {
+    SOIL_TYPE_CLAY,            /**< Clay soil - retains water well */
+    SOIL_TYPE_SANDY,           /**< Sandy soil - drains quickly */
+    SOIL_TYPE_LOAMY,           /**< Loamy soil - balanced drainage */
+    SOIL_TYPE_PEAT,            /**< Peat soil - organic, moisture retentive */
+    SOIL_TYPE_CHALK,           /**< Chalk soil - alkaline, free draining */
+    SOIL_TYPE_SILT,            /**< Silt soil - fine particles, retains moisture */
+    SOIL_TYPE_POTTING_MIX,     /**< Commercial potting mix */
+    SOIL_TYPE_HYDROPONIC       /**< Hydroponic growing medium */
+} soil_type_t;
+
+/**
+ * @brief Irrigation method used for the channel
+ */
+typedef enum {
+    IRRIGATION_DRIP,           /**< Drip irrigation system */
+    IRRIGATION_SPRINKLER,      /**< Sprinkler or spray irrigation */
+    IRRIGATION_SOAKER_HOSE,    /**< Soaker hose irrigation */
+    IRRIGATION_MICRO_SPRAY,    /**< Micro spray heads */
+    IRRIGATION_FLOOD,          /**< Flood irrigation */
+    IRRIGATION_SUBSURFACE      /**< Subsurface irrigation */
+} irrigation_method_t;
+
+/**
+ * @brief Channel coverage information - either area or plant count
+ */
+typedef struct {
+    bool use_area;             /**< True for area-based, false for plant count */
+    union {
+        struct {
+            float area_m2;     /**< Area in square meters */
+        } area;
+        struct {
+            uint16_t count;    /**< Number of individual plants */
+        } plants;
+    };
+} channel_coverage_t;
+
+/**
+ * @brief Specific plant information based on the main plant type
+ */
+typedef struct {
+    plant_type_t main_type;    /**< Main plant category */
+    union {
+        vegetable_type_t vegetable;    /**< Specific vegetable type */
+        herb_type_t herb;              /**< Specific herb type */
+        flower_type_t flower;          /**< Specific flower type */
+        shrub_type_t shrub;            /**< Specific shrub type */
+        tree_type_t tree;              /**< Specific tree type */
+        lawn_type_t lawn;              /**< Specific lawn type */
+        succulent_type_t succulent;    /**< Specific succulent type */
+        custom_plant_config_t custom;  /**< Custom plant configuration */
+    } specific;
+} plant_info_t;
 
 /**
  * @brief Complete definition of a watering event including scheduling and quantity
@@ -110,6 +633,17 @@ typedef struct {
     char name[64];                    /**< User-friendly name for the channel */
     struct gpio_dt_spec valve;        /**< GPIO specification for the valve control */
     bool is_active;                   /**< Whether this channel is currently active */
+    
+    /* Plant and growing environment fields */
+    plant_info_t plant_info;          /**< Detailed plant type and specific variety */
+    plant_type_t plant_type;          /**< Main type of plant being grown (for backward compatibility) */
+    soil_type_t soil_type;            /**< Type of soil in the growing area */
+    irrigation_method_t irrigation_method; /**< Method of irrigation used */
+    channel_coverage_t coverage;      /**< Area or plant count information */
+    uint8_t sun_percentage;           /**< Percentage of direct sunlight (0-100%) */
+    
+    /* Custom plant configuration (only used when plant_type == PLANT_TYPE_OTHER) */
+    custom_plant_config_t custom_plant; /**< Custom plant settings */
 } watering_channel_t;
 
 /**
@@ -117,6 +651,7 @@ typedef struct {
  */
 typedef struct {
     watering_channel_t *channel;  /**< Channel to be watered */
+    watering_trigger_type_t trigger_type; /**< How this task was triggered */
 
     /** Task-specific parameters depending on watering mode */
     union {
@@ -261,6 +796,14 @@ watering_error_t watering_get_flow_calibration(uint32_t *pulses_per_liter);
 watering_error_t watering_save_config(void);
 
 /**
+ * @brief Saves flow sensor calibration and all channel configurations with priority handling
+ * 
+ * @param is_priority If true, uses shorter throttle time for critical saves (e.g., BLE config changes)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_save_config_priority(bool is_priority);
+
+/**
  * @brief Load system configuration from persistent storage
  * 
  * @return WATERING_SUCCESS on success, error code on failure
@@ -351,10 +894,389 @@ watering_error_t watering_get_queue_status(uint8_t *pending_count, bool *active)
 /**
  * @brief Clear all run-time error flags and counters
  *
- * Useful for a manual “reset errors” command from BLE / console.
+ * Useful for a manual "reset errors" command from BLE / console.
  *
  * @return WATERING_SUCCESS
  */
 watering_error_t watering_clear_errors(void);
+
+/*
+ * Specific plant type management functions
+ */
+
+/**
+ * @brief Set specific vegetable type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param vegetable_type Specific vegetable variety
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_vegetable_type(uint8_t channel_id, vegetable_type_t vegetable_type);
+
+/**
+ * @brief Get specific vegetable type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param vegetable_type Pointer to store the vegetable type
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_vegetable_type(uint8_t channel_id, vegetable_type_t *vegetable_type);
+
+/**
+ * @brief Set specific herb type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param herb_type Specific herb variety
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_herb_type(uint8_t channel_id, herb_type_t herb_type);
+
+/**
+ * @brief Get specific herb type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param herb_type Pointer to store the herb type
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_herb_type(uint8_t channel_id, herb_type_t *herb_type);
+
+/**
+ * @brief Set specific flower type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param flower_type Specific flower variety
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_flower_type(uint8_t channel_id, flower_type_t flower_type);
+
+/**
+ * @brief Get specific flower type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param flower_type Pointer to store the flower type
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_flower_type(uint8_t channel_id, flower_type_t *flower_type);
+
+/**
+ * @brief Set specific tree type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param tree_type Specific tree variety
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_tree_type(uint8_t channel_id, tree_type_t tree_type);
+
+/**
+ * @brief Get specific tree type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param tree_type Pointer to store the tree type
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_tree_type(uint8_t channel_id, tree_type_t *tree_type);
+
+/**
+ * @brief Set specific lawn type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param lawn_type Specific grass variety
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_lawn_type(uint8_t channel_id, lawn_type_t lawn_type);
+
+/**
+ * @brief Get specific lawn type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param lawn_type Pointer to store the lawn type
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_lawn_type(uint8_t channel_id, lawn_type_t *lawn_type);
+
+/**
+ * @brief Set specific succulent type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param succulent_type Specific succulent variety
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_succulent_type(uint8_t channel_id, succulent_type_t succulent_type);
+
+/**
+ * @brief Get specific succulent type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param succulent_type Pointer to store the succulent type
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_succulent_type(uint8_t channel_id, succulent_type_t *succulent_type);
+
+/**
+ * @brief Set specific shrub type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param shrub_type Specific shrub variety
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_shrub_type(uint8_t channel_id, shrub_type_t shrub_type);
+
+/**
+ * @brief Get specific shrub type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param shrub_type Pointer to store the shrub type
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_shrub_type(uint8_t channel_id, shrub_type_t *shrub_type);
+
+/**
+ * @brief Get complete plant information for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param plant_info Pointer to store the complete plant information
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_plant_info(uint8_t channel_id, plant_info_t *plant_info);
+
+/**
+ * @brief Set complete plant information for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param plant_info Complete plant information to set
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_plant_info(uint8_t channel_id, const plant_info_t *plant_info);
+
+/*
+ * Plant and growing environment configuration functions
+ */
+
+/**
+ * @brief Set the plant type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param plant_type Type of plant being grown
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_plant_type(uint8_t channel_id, plant_type_t plant_type);
+
+/**
+ * @brief Get the plant type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param plant_type Pointer to store the plant type
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_plant_type(uint8_t channel_id, plant_type_t *plant_type);
+
+/**
+ * @brief Set the soil type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param soil_type Type of soil in the growing area
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_soil_type(uint8_t channel_id, soil_type_t soil_type);
+
+/**
+ * @brief Get the soil type for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param soil_type Pointer to store the soil type
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_soil_type(uint8_t channel_id, soil_type_t *soil_type);
+
+/**
+ * @brief Set the irrigation method for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param irrigation_method Method of irrigation used
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_irrigation_method(uint8_t channel_id, irrigation_method_t irrigation_method);
+
+/**
+ * @brief Get the irrigation method for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param irrigation_method Pointer to store the irrigation method
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_irrigation_method(uint8_t channel_id, irrigation_method_t *irrigation_method);
+
+/**
+ * @brief Set the coverage area for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param area_m2 Area in square meters
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_coverage_area(uint8_t channel_id, float area_m2);
+
+/**
+ * @brief Set the plant count for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param count Number of individual plants
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_plant_count(uint8_t channel_id, uint16_t count);
+
+/**
+ * @brief Get the coverage information for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param coverage Pointer to store the coverage information
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_coverage(uint8_t channel_id, channel_coverage_t *coverage);
+
+/**
+ * @brief Set the sun percentage for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param sun_percentage Percentage of direct sunlight (0-100%)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_sun_percentage(uint8_t channel_id, uint8_t sun_percentage);
+
+/**
+ * @brief Get the sun percentage for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param sun_percentage Pointer to store the sun percentage
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_sun_percentage(uint8_t channel_id, uint8_t *sun_percentage);
+
+/**
+ * @brief Set custom plant configuration for a channel (when plant_type == PLANT_TYPE_OTHER)
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param custom_config Pointer to custom plant configuration
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_custom_plant(uint8_t channel_id, const custom_plant_config_t *custom_config);
+
+/**
+ * @brief Get custom plant configuration for a channel
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param custom_config Pointer to store the custom plant configuration
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_custom_plant(uint8_t channel_id, custom_plant_config_t *custom_config);
+
+/**
+ * @brief Get the recommended coverage measurement type based on irrigation method
+ * 
+ * @param irrigation_method The irrigation method to check
+ * @return true if area-based (m²) is recommended, false if plant-count is recommended
+ */
+bool watering_recommend_area_based_measurement(irrigation_method_t irrigation_method);
+
+/**
+ * @brief Get water need factor for a specific plant type
+ * 
+ * @param plant_type Type of plant
+ * @param custom_config Custom plant config (used only if plant_type == PLANT_TYPE_OTHER)
+ * @return Water need factor (multiplier for base water requirements)
+ */
+float watering_get_plant_water_factor(plant_type_t plant_type, const custom_plant_config_t *custom_config);
+
+/**
+ * @brief Validate if coverage measurement type matches irrigation method recommendation
+ * 
+ * @param irrigation_method The irrigation method
+ * @param use_area_based Current coverage measurement type (true = m², false = plant count)
+ * @return true if combination is optimal, false if suboptimal
+ */
+bool watering_validate_coverage_method_match(irrigation_method_t irrigation_method, bool use_area_based);
+
+/**
+ * @brief Get comprehensive channel environment information
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param plant_type Pointer to store plant type (can be NULL)
+ * @param soil_type Pointer to store soil type (can be NULL)
+ * @param irrigation_method Pointer to store irrigation method (can be NULL)
+ * @param coverage Pointer to store coverage information (can be NULL)
+ * @param sun_percentage Pointer to store sun percentage (can be NULL)
+ * @param custom_config Pointer to store custom plant configuration (can be NULL)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_channel_environment(uint8_t channel_id, 
+                                                 plant_type_t *plant_type,
+                                                 soil_type_t *soil_type,
+                                                 irrigation_method_t *irrigation_method,
+                                                 channel_coverage_t *coverage,
+                                                 uint8_t *sun_percentage,
+                                                 custom_plant_config_t *custom_config);
+
+/**
+ * @brief Set comprehensive channel environment configuration
+ * 
+ * @param channel_id Channel ID (0-based index)
+ * @param plant_type Type of plant being grown
+ * @param soil_type Type of soil in the growing area
+ * @param irrigation_method Method of irrigation used
+ * @param coverage Pointer to coverage information (area or plant count)
+ * @param sun_percentage Percentage of direct sunlight (0-100%)
+ * @param custom_config Pointer to custom plant configuration (required if plant_type == PLANT_TYPE_OTHER)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_channel_environment(uint8_t channel_id,
+                                                 plant_type_t plant_type,
+                                                 soil_type_t soil_type,
+                                                 irrigation_method_t irrigation_method,
+                                                 const channel_coverage_t *coverage,
+                                                 uint8_t sun_percentage,
+                                                 const custom_plant_config_t *custom_config);
+
+/**
+ * @brief Get the number of pending tasks in the queue
+ * 
+ * @return Number of pending tasks
+ */
+int watering_get_pending_tasks_count(void);
+
+/**
+ * @brief Clear all tasks from the task queue
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+int watering_clear_task_queue(void);
+
+/**
+ * @brief Stop the currently running task
+ * 
+ * @return true if a task was stopped, false if no task was running
+ */
+bool watering_stop_current_task(void);
+
+/**
+ * @brief Clear runtime errors and reset fault state
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_clear_errors(void);
+
+/**
+ * @brief Get task queue status
+ * 
+ * @param pending_count Pointer to store the number of pending tasks
+ * @param active Pointer to store whether a task is currently active
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_queue_status(uint8_t *pending_count, bool *active);
+
+/**
+ * @brief Cancel all watering tasks
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int watering_cancel_all_tasks(void);
 
 #endif // WATERING_H

@@ -9,9 +9,12 @@
 #include "watering.h"
 #include "watering_internal.h"
 #include "rtc.h"
+#ifdef CONFIG_BT
 #include "bt_irrigation_service.h"
+#endif
 #include "usb_descriptors.h"
 #include "nvs_config.h"
+#include "watering_history.h"  // Add history system include
 bool critical_section_active = false;
 #define INIT_TIMEOUT_MS 5000
 #define STATUS_CHECK_INTERVAL_S 30
@@ -19,7 +22,6 @@ bool critical_section_active = false;
 #define USB_GLOBAL_TIMEOUT_MS 10000
 #define USB_MAX_RETRIES 3
 #define USB_RETRY_DELAY_MS 1000
-#define ENABLE_BLUETOOTH true
 #define ENABLE_USB true
 static bool usb_functional = false;
 K_THREAD_STACK_DEFINE(init_thread_stack, 2048);
@@ -33,6 +35,25 @@ static int setup_usb_cdc_acm(void);
 static uint32_t boot_start_ms;
 
 static int set_default_rtc_time(void);
+
+// Memory diagnostic function
+static void print_memory_stats(void) {
+    // Basic memory reporting using uptime and free heap (if available)
+    uint32_t uptime = k_uptime_get_32();
+    printk("=== Memory Statistics ===\n");
+    printk("System uptime: %u ms\n", uptime);
+    printk("========================\n");
+}
+
+static void print_stack_info(void) {
+#ifdef CONFIG_THREAD_STACK_INFO
+    struct k_thread *current = k_current_get();
+    printk("Current thread: %s\n", k_thread_name_get(current));
+    printk("Stack monitoring enabled\n");
+#else
+    printk("Stack monitoring not enabled\n");
+#endif
+}
 
 static int setup_usb_cdc_acm(void) {
     if (!ENABLE_USB) {
@@ -51,6 +72,7 @@ static int setup_usb_cdc_acm(void) {
     return 0;
 }
 
+__attribute__((unused))
 static void setup_usb(void) {
     printk("Initializing USB with minimal CDC ACM...\n");
     printk("USB disabled\n");
@@ -286,16 +308,41 @@ int main(void) {
     printk("System initialization complete\n");
     uint32_t boot_time_ms = k_uptime_get_32() - boot_start_ms;
     printk("Boot completed in %u ms (%.2f s)\n",
-           boot_time_ms, boot_time_ms / 1000.0f);
-    if (ENABLE_BLUETOOTH) {
-        printk("Initializing Bluetooth irrigation service...\n");
-        int ble_err = bt_irrigation_service_init();
-        if (ble_err != 0) {
-            printk("Error initializing BLE service: %d\n", ble_err);
-        }
+           boot_time_ms, (double)(boot_time_ms) / 1000.0);
+
+    // Print memory statistics after initialization
+    print_memory_stats();
+    print_stack_info();
+
+    // Initialize history system
+    printk("Initializing watering history system...\n");
+    watering_error_t hist_err = watering_history_init();
+    if (hist_err != WATERING_SUCCESS) {
+        printk("Warning: History system initialization failed: %d\n", hist_err);
+    } else {
+        printk("History system initialized successfully\n");
     }
+
+#ifdef CONFIG_BT
+    printk("Initializing Bluetooth irrigation service...\n");
+    int ble_err = bt_irrigation_service_init();
+    if (ble_err != 0) {
+        printk("Error initializing BLE service: %d\n", ble_err);
+    }
+#endif
+    
+    // Main loop with periodic memory monitoring
+    int loop_count = 0;
     while (1) {
         k_sleep(K_SECONDS(60));
+        loop_count++;
+        
+        // Print memory stats every 10 minutes
+        if (loop_count % 10 == 0) {
+            printk("=== Runtime Status (uptime: %u min) ===\n", loop_count);
+            print_memory_stats();
+            print_stack_info();
+        }
     }
     return 0;
 }

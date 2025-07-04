@@ -41,8 +41,21 @@ struct watering_task_state_t {
     bool task_in_progress;                 /**< Flag indicating task is in progress */
 };
 
+/**
+ * @brief Structure to track the last completed task for BLE reporting
+ */
+struct last_completed_task_t {
+    watering_task_t *task;                 /**< Last completed task or NULL */
+    uint32_t start_time;                   /**< Start time of the last completed task */
+    uint32_t completion_time;              /**< Time when task was completed */
+    bool valid;                            /**< Whether this structure contains valid data */
+};
+
 /** Global state of active watering tasks */
 extern struct watering_task_state_t watering_task_state;
+
+/** Global state of last completed task for BLE reporting */
+extern struct last_completed_task_t last_completed_task;
 
 /** Default flow sensor calibration (pulses per liter) */
 #define DEFAULT_PULSES_PER_LITER 750

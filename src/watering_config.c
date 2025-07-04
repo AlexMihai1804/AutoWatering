@@ -85,7 +85,7 @@ watering_error_t load_default_config(void) {
     // Set flow sensor calibration to default
     watering_set_flow_calibration(DEFAULT_PULSES_PER_LITER);
     
-    // Set default channel names
+    // Set default channel names and configuration
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
         snprintf(watering_channels[i].name, sizeof(watering_channels[i].name), 
                 "Channel %d", i + 1);
@@ -102,6 +102,27 @@ watering_error_t load_default_config(void) {
         /* 5 minutes duration (but auto_enabled = false so schedule is inactive) */
         watering_channels[i].watering_event.watering_mode = WATERING_BY_DURATION;
         watering_channels[i].watering_event.watering.by_duration.duration_minutes = 5;
+        
+        // Initialize new plant and growing environment fields with defaults
+        watering_channels[i].plant_type = PLANT_TYPE_VEGETABLES;  // Default to vegetables
+        
+        // Initialize plant_info structure
+        watering_channels[i].plant_info.main_type = PLANT_TYPE_VEGETABLES;
+        watering_channels[i].plant_info.specific.vegetable = VEGETABLE_TOMATOES; // Default to tomatoes
+        
+        watering_channels[i].soil_type = SOIL_TYPE_LOAMY;         // Default to loamy soil
+        watering_channels[i].irrigation_method = IRRIGATION_DRIP; // Default to drip irrigation
+        watering_channels[i].sun_percentage = 75;                 // Default to 75% sun exposure
+        
+        // Default to area-based coverage with 1 square meter
+        watering_channels[i].coverage.use_area = true;
+        watering_channels[i].coverage.area.area_m2 = 1.0f;
+        
+        // Initialize custom plant configuration
+        memset(&watering_channels[i].custom_plant, 0, sizeof(watering_channels[i].custom_plant));
+        watering_channels[i].custom_plant.water_need_factor = 1.0f;
+        watering_channels[i].custom_plant.irrigation_freq = 3;
+        watering_channels[i].custom_plant.prefer_area_based = true;
     }
     
     // Default days counter
@@ -121,6 +142,10 @@ watering_error_t load_default_config(void) {
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_save_config(void) {
+    return watering_save_config_priority(false);
+}
+
+watering_error_t watering_save_config_priority(bool is_priority) {
     int ret = 0;
     
     // Don't try to save if we're in default-only mode
@@ -129,7 +154,38 @@ watering_error_t watering_save_config(void) {
         return WATERING_SUCCESS;
     }
     
-    k_mutex_lock(&config_mutex, K_FOREVER);
+    // Smart throttling: allow priority saves more frequently
+    static uint32_t last_save_time = 0;
+    static uint32_t last_priority_save_time = 0;
+    uint32_t now = k_uptime_get_32();
+    
+    if (is_priority) {
+        // Priority saves (like BLE config changes): minimum 250ms between saves
+        if (now - last_priority_save_time < 250) {
+            printk("Priority config save throttled (too frequent, %u ms since last)\n", 
+                   now - last_priority_save_time);
+            return WATERING_SUCCESS;
+        }
+        last_priority_save_time = now;
+    } else {
+        // Normal saves: minimum 1000ms between saves
+        if (now - last_save_time < 1000) {
+            printk("Config save throttled (too frequent, %u ms since last)\n", 
+                   now - last_save_time);
+            return WATERING_SUCCESS;
+        }
+        last_save_time = now;
+    }
+    
+    // Add debug info to identify what's calling this save
+    printk("Config save started at uptime %u ms (%s priority)\n", 
+           now, is_priority ? "HIGH" : "normal");
+    
+    // Use a timeout for the mutex to prevent system freeze
+    if (k_mutex_lock(&config_mutex, K_MSEC(1000)) != 0) {
+        printk("Config save failed: mutex timeout\n");
+        return WATERING_ERROR_TIMEOUT;
+    }
     
     // Update configuration header
     config_header.version = WATERING_CONFIG_VERSION;
@@ -167,6 +223,36 @@ watering_error_t watering_save_config(void) {
         if (ret < 0) {
             LOG_ERROR("Error saving channel name", ret);
             // non-fatal, continue
+        } else {
+            printk("Channel %d name saved: \"%s\" (ret=%d)\n", 
+                   i, watering_channels[i].name, ret);
+        }
+        
+        // Save new plant and growing environment fields
+        // Create a structure to save the extended channel data
+        struct {
+            plant_type_t plant_type;
+            plant_info_t plant_info;
+            soil_type_t soil_type;
+            irrigation_method_t irrigation_method;
+            channel_coverage_t coverage;
+            uint8_t sun_percentage;
+            custom_plant_config_t custom_plant;
+        } channel_env_data;
+        
+        channel_env_data.plant_type = watering_channels[i].plant_type;
+        channel_env_data.plant_info = watering_channels[i].plant_info;
+        channel_env_data.soil_type = watering_channels[i].soil_type;
+        channel_env_data.irrigation_method = watering_channels[i].irrigation_method;
+        channel_env_data.coverage = watering_channels[i].coverage;
+        channel_env_data.sun_percentage = watering_channels[i].sun_percentage;
+        channel_env_data.custom_plant = watering_channels[i].custom_plant;
+        
+        // Save extended data using channel-specific ID
+        ret = nvs_config_write(400 + i, &channel_env_data, sizeof(channel_env_data));
+        if (ret < 0) {
+            LOG_ERROR("Error saving channel environment data", ret);
+            // non-fatal, continue
         }
     }
     
@@ -180,11 +266,11 @@ watering_error_t watering_save_config(void) {
     k_mutex_unlock(&config_mutex);
     /* --------- NEW: avoid duplicate log spam ------------------------ */
     static uint32_t last_save_log_time = 0;          /* ms since boot */
-    uint32_t now = k_uptime_get_32();
-    if (now - last_save_log_time > 1000) {           /* 1 s debounce */
+    uint32_t now_log = k_uptime_get_32();
+    if (now_log - last_save_log_time > 1000) {           /* 1 s debounce */
         printk("Configurations successfully saved (version %d)\n",
                WATERING_CONFIG_VERSION);
-        last_save_log_time = now;
+        last_save_log_time = now_log;
     }
 
     return WATERING_SUCCESS;
@@ -193,6 +279,7 @@ watering_error_t watering_save_config(void) {
 /**
  * @brief Callback for loading header from settings
  */
+__attribute__((unused))
 static int header_load_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg, void *param) {
     config_header_t *header = (config_header_t *) param;
     int rc;
@@ -215,6 +302,7 @@ static int header_load_cb(const char *name, size_t len, settings_read_cb read_cb
 /**
  * @brief Callback for loading calibration value from settings
  */
+__attribute__((unused))
 static int calibration_load_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg, void *param) {
     uint32_t *calibration = (uint32_t *) param;
     int rc;
@@ -237,6 +325,7 @@ static int calibration_load_cb(const char *name, size_t len, settings_read_cb re
 /**
  * @brief Callback for loading channel configuration from settings
  */
+__attribute__((unused))
 static int channel_config_load_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg, void *param) {
     watering_event_t *event = (watering_event_t *) param;
     int rc;
@@ -262,6 +351,7 @@ static int channel_config_load_cb(const char *name, size_t len, settings_read_cb
 /**
  * @brief Callback for loading channel name from settings
  */
+__attribute__((unused))
 static int channel_name_load_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg, void *param) {
     char *channel_name = (char *) param;
     int rc;
@@ -285,6 +375,7 @@ static int channel_name_load_cb(const char *name, size_t len, settings_read_cb r
 /**
  * @brief Callback for loading days counter from settings
  */
+__attribute__((unused))
 static int days_since_load_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg, void *param) {
     uint16_t *days = (uint16_t *) param;
     int rc;
@@ -358,11 +449,42 @@ watering_error_t watering_load_config(void) {
                     watering_channels[i].name,
                     sizeof(watering_channels[i].name));              /* NEW */
         if (ret >= 0) {
-            /* name loaded OK */
+            printk("Channel %d name loaded: \"%s\" (len=%d)\n", 
+                   i, watering_channels[i].name, ret);
         } else if (ret == -ENOENT) {
-            /* keep default / previously set name */
+            printk("Channel %d name not found in NVS, keeping default: \"%s\"\n", 
+                   i, watering_channels[i].name);
         } else {
             LOG_ERROR("Error reading channel name", ret);
+        }
+        
+        // Load new plant and growing environment fields
+        struct {
+            plant_type_t plant_type;
+            plant_info_t plant_info;
+            soil_type_t soil_type;
+            irrigation_method_t irrigation_method;
+            channel_coverage_t coverage;
+            uint8_t sun_percentage;
+            custom_plant_config_t custom_plant;
+        } channel_env_data;
+        
+        ret = nvs_config_read(400 + i, &channel_env_data, sizeof(channel_env_data));
+        if (ret >= 0) {
+            watering_channels[i].plant_type = channel_env_data.plant_type;
+            watering_channels[i].plant_info = channel_env_data.plant_info;
+            watering_channels[i].soil_type = channel_env_data.soil_type;
+            watering_channels[i].irrigation_method = channel_env_data.irrigation_method;
+            watering_channels[i].coverage = channel_env_data.coverage;
+            watering_channels[i].sun_percentage = channel_env_data.sun_percentage;
+            watering_channels[i].custom_plant = channel_env_data.custom_plant;
+            printk("Channel %d environment data loaded (plant_type=%d, specific=%d)\n", 
+                   i + 1, watering_channels[i].plant_type, 
+                   watering_channels[i].plant_info.specific.vegetable);
+        } else if (ret == -ENOENT) {
+            /* Use default values already set in load_default_config */
+        } else {
+            LOG_ERROR("Error reading channel environment data", ret);
         }
     }
     

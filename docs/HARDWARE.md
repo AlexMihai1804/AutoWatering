@@ -195,6 +195,124 @@ For systems installed in areas with unreliable power:
 3. Install the enclosure away from direct water exposure
 4. Ensure proper ventilation to prevent condensation
 
+## Flash Memory Configuration
+
+### Memory Layout and Storage
+
+The AutoWatering system uses the nRF52840's internal flash memory for storage:
+
+| Component | Size | Purpose |
+|-----------|------|---------|
+| **Total Flash** | 1024 KB | Complete flash memory |
+| **Application** | ~400 KB | Firmware and program code |
+| **NVS Storage** | 8 KB (current) / 144 KB (recommended) | History data and settings |
+| **Bluetooth Settings** | 8 KB | Pairing and connection data |
+| **Free Space** | 608 KB / 472 KB | Available for future features |
+
+### Storage Partitioning
+
+The system uses device tree overlays to configure flash partitions:
+
+#### Current Configuration (Limited History)
+```dts
+/* Current configuration - limited history capability */
+nvs_storage: partition@e3000 {
+    label = "nvs_storage";
+    reg = <0x000e3000 0x00002000>;  /* 8 KB */
+};
+
+settings_partition: partition@d7000 {
+    label = "settings";
+    reg = <0x000d7000 0x00002000>;  /* 8 KB */
+};
+```
+
+#### Enhanced Configuration (Full History)
+```dts
+/* Enhanced configuration - full history capability */
+nvs_storage: partition@c0000 {
+    label = "nvs_storage";
+    reg = <0x000c0000 0x00024000>;  /* 144 KB */
+};
+
+settings_partition: partition@e4000 {
+    label = "settings";
+    reg = <0x000e4000 0x00002000>;  /* 8 KB */
+};
+```
+
+### History Storage Requirements
+
+The system implements a comprehensive history system with multiple data levels:
+
+| History Level | Entries | Size per Entry | Total Size | Retention |
+|---------------|---------|----------------|------------|-----------|
+| **Detailed Events** | 2,880 | 22 bytes | 63.4 KB | 30 days |
+| **Daily Statistics** | 2,920 | 20 bytes | 58.4 KB | 1 year |
+| **Monthly Statistics** | 480 | 20 bytes | 9.6 KB | 5 years |
+| **Annual Statistics** | 160 | 20 bytes | 3.2 KB | 20 years |
+| **Cache and Management** | - | - | ~5 KB | Runtime |
+| **Total Required** | **6,440** | **Variable** | **~139 KB** | **Multi-level** |
+
+### Storage Upgrade Instructions
+
+To enable full history capability:
+
+1. **Use Enhanced Device Tree Overlay**:
+   ```bash
+   west build -b promicro_nrf52840 -- -DOVERLAY_CONFIG=boards/promicro_52840_enhanced.overlay
+   ```
+
+2. **Verify Available Flash**:
+   ```bash
+   # Check partition layout
+   west build -t menuconfig
+   # Navigate to: Device Tree -> Flash partitions
+   ```
+
+3. **Flash Configuration**:
+   ```bash
+   west flash
+   ```
+
+### Flash Memory Specifications
+
+- **Type**: Internal flash memory (nRF52840 SoC)
+- **Size**: 1024 KB (1 MB)
+- **Write Cycles**: 10,000 cycles minimum per sector
+- **Sector Size**: 4 KB
+- **Page Size**: 4 KB
+- **Erase Time**: ~20ms per sector
+- **Write Time**: ~40μs per word
+
+### Data Persistence
+
+The system ensures data integrity through:
+
+1. **Wear Leveling**: Automatic wear leveling across flash sectors
+2. **Redundancy**: Critical settings stored in multiple locations
+3. **Validation**: CRC checks and data validation on read
+4. **Backup**: Automatic backup of configuration during updates
+5. **Recovery**: Automatic recovery from corrupted data
+
+### Performance Considerations
+
+- **Write Optimization**: Batch writes to minimize flash wear
+- **Cache System**: RAM cache for frequently accessed data
+- **Background Maintenance**: Automatic defragmentation and cleanup
+- **Power Loss Protection**: Atomic writes for critical data
+
+### Memory Usage Monitoring
+
+The system provides real-time memory usage information via:
+
+- **Diagnostics Characteristic**: Flash usage statistics
+- **System Config**: Available storage reporting
+- **History API**: Storage utilization per history level
+- **Debug Interface**: Detailed memory mapping
+
+For optimal performance, maintain at least 10% free flash space for wear leveling and system operations.
+
 ## Next Steps
 
 After hardware setup:

@@ -4,7 +4,11 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/atomic.h>      /* NEW */
+#include <zephyr/logging/log.h>     /* Add logging support */
 #include "bt_irrigation_service.h"   /* for bt_irrigation_flow_update */
+#include "watering_internal.h"       /* for active task information */
+
+LOG_MODULE_REGISTER(flow_sensor, CONFIG_LOG_DEFAULT_LEVEL);
 
 /**
  * @file flow_sensor.c
@@ -35,41 +39,131 @@ static uint32_t last_flow_notify_time  = 0;   /* k_uptime at last BLE notif */
 /** Timestamp of last interrupt for debounce */
 static uint32_t last_interrupt_time = 0;
 
-/** Minimum milliseconds between pulses (debounce) - get from devicetree if available */
+/** Minimum milliseconds between pulses (debounce) - increased for stability */
 #if DT_NODE_HAS_PROP(SENSOR_CONFIG_NODE, debounce_ms)
   #define DEBOUNCE_MS DT_PROP(SENSOR_CONFIG_NODE, debounce_ms)
 #else
-  #define DEBOUNCE_MS 2
+  #define DEBOUNCE_MS 5  /* Increased from 2ms to 5ms for better noise rejection */
 #endif
 
 /** GPIO interrupt callback structure */
 static struct gpio_callback flow_sensor_cb;
 
-/* Notification-throttling parameters (tune as needed) */
-#define FLOW_NOTIFY_PULSE_STEP        10     /* min. extra pulses before notify */
-#define FLOW_NOTIFY_MIN_INTERVAL_MS  500     /* max. 2 Hz notification rate   */
+/* Notification-throttling parameters for stable flow readings */
+#define FLOW_NOTIFY_PULSE_STEP        1      /* min. extra pulses before notify - ultra responsive */
+#define FLOW_NOTIFY_MIN_INTERVAL_MS  50      /* 20 Hz notification rate - very high frequency */
+#define FLOW_RATE_WINDOW_MS          500     /* 0.5 second window for flow rate calculation - ultra fast response */
+#define MIN_PULSES_FOR_RATE         1        /* minimum pulses before calculating rate - ultra low threshold */
 
-/* ---------- BLE work handler (no mutex needed) ---------------------------- */
+/* Flow rate smoothing variables */
+static uint32_t flow_rate_samples[2] = {0};  /* circular buffer for 2 samples - minimal smoothing */
+static uint8_t sample_index = 0;
+static uint32_t smoothed_flow_rate = 0;
+
+/* Calculate smoothed flow rate from recent samples */
+static uint32_t calculate_smoothed_flow_rate(uint32_t current_rate) {
+    flow_rate_samples[sample_index] = current_rate;
+    sample_index = (sample_index + 1) % 2;  /* Updated for 2 samples */
+    
+    uint32_t sum = 0;
+    uint8_t valid_samples = 0;
+    
+    for (int i = 0; i < 2; i++) {  /* Updated for 2 samples */
+        if (flow_rate_samples[i] > 0) {
+            sum += flow_rate_samples[i];
+            valid_samples++;
+        }
+    }
+    
+    return valid_samples > 0 ? sum / valid_samples : 0;
+}
+
+/* ---------- BLE work handler with flow rate stabilization ---------------- */
 static void flow_update_work_handler(struct k_work *work)
 {
     uint32_t cnt = atomic_get(&pulse_count);
     uint32_t now = k_uptime_get_32();
+    static uint32_t last_rate_calc_time = 0;
+    static uint32_t last_rate_calc_pulses = 0;
 
-    /* send only if enough new pulses OR time interval elapsed */
-    if ((cnt - last_notified >= FLOW_NOTIFY_PULSE_STEP) ||
-        (now - last_flow_notify_time >= FLOW_NOTIFY_MIN_INTERVAL_MS)) {
+    /* Calculate flow rate every few seconds for stability */
+    if ((now - last_rate_calc_time) >= FLOW_RATE_WINDOW_MS) {
+        uint32_t pulse_diff = cnt - last_rate_calc_pulses;
+        uint32_t time_diff_ms = now - last_rate_calc_time;
+        
+        if (pulse_diff >= MIN_PULSES_FOR_RATE && time_diff_ms > 0) {
+            /* Calculate pulses per second, then smooth it */
+            uint32_t current_rate = (pulse_diff * 1000) / time_diff_ms;
+            smoothed_flow_rate = calculate_smoothed_flow_rate(current_rate);
+            /* Only log significant flow rates to avoid spam */
+            if (current_rate > 10) {  /* Only log if >10 pps */
+                LOG_DBG("Flow rate calculated: %u pps (from %u pulses in %u ms)", 
+                       current_rate, pulse_diff, time_diff_ms);
+            }
+        } else if (pulse_diff < MIN_PULSES_FOR_RATE && pulse_diff > 0) {
+            /* Low flow - calculate anyway but mark as potentially noisy */
+            uint32_t current_rate = (pulse_diff * 1000) / time_diff_ms;
+            smoothed_flow_rate = calculate_smoothed_flow_rate(current_rate);
+            /* Only log if there's actual meaningful flow */
+            if (current_rate > 5) {
+                LOG_DBG("Low flow rate: %u pps (from %u pulses)", current_rate, pulse_diff);
+            }
+        } else if (pulse_diff == 0) {
+            /* No flow detected */
+            smoothed_flow_rate = calculate_smoothed_flow_rate(0);
+        }
+        
+        last_rate_calc_time = now;
+        last_rate_calc_pulses = cnt;
+    }
 
-        last_notified         = cnt;
+    /* Send notification with more responsive conditions */
+    bool significant_change = (cnt - last_notified >= FLOW_NOTIFY_PULSE_STEP);
+    bool time_interval_reached = (now - last_flow_notify_time >= FLOW_NOTIFY_MIN_INTERVAL_MS);
+    
+    if (significant_change || time_interval_reached) {
+        last_notified = cnt;
         last_flow_notify_time = now;
-        /* ignore -ENOTCONN etc. */
-        bt_irrigation_flow_update(cnt);
+        
+        /* Send smoothed flow rate for stable readings */
+        /* Only log when there's actual flow activity */
+        if (smoothed_flow_rate > 0) {
+            LOG_DBG("BLE update: sending smoothed rate %u pps (total pulses: %u)", smoothed_flow_rate, cnt);
+        }
+        bt_irrigation_flow_update(smoothed_flow_rate);
+        
+        /* Update statistics if there's an active task */
+        if (watering_task_state.task_in_progress && watering_task_state.current_active_task) {
+            uint8_t channel_id = watering_task_state.current_active_task->channel - watering_channels;
+            if (channel_id < WATERING_CHANNELS_COUNT) {
+                /* Calculate volume from pulse count (assuming calibration) */
+                uint32_t volume_ml = cnt * 1000 / FLOW_CALIB_DT; // Convert pulses to ml
+                bt_irrigation_update_statistics_from_flow(channel_id, volume_ml);
+            }
+        }
     }
 }
 static struct k_work flow_update_work;
+
+/* Periodic timer for forcing BLE updates */
+static struct k_timer periodic_ble_timer;
+
+/* Timer handler to force periodic BLE updates */
+static void periodic_ble_timer_handler(struct k_timer *timer)
+{
+    if (!k_work_is_pending(&flow_update_work)) {
+        k_work_submit(&flow_update_work);
+        /* Only log if there's actual flow activity */
+        if (smoothed_flow_rate > 0) {
+            LOG_DBG("Periodic BLE update triggered (flow active: %u pps)", smoothed_flow_rate);
+        }
+    }
+}
+
 /* ----------------------------------------------------------- */
 
 /**
- * @brief Interrupt handler for flow sensor pulses
+ * @brief Interrupt handler for flow sensor pulses with enhanced debouncing
  * 
  * @param dev GPIO device that triggered the interrupt
  * @param cb Pointer to callback data
@@ -79,14 +173,29 @@ static void flow_sensor_callback(const struct device *dev,
                                  struct gpio_callback *cb, uint32_t pins)
 {
     uint32_t now = k_uptime_get_32();
+    static uint32_t pulse_count_at_last_work = 0;
 
+    /* Enhanced debouncing - require longer gap between pulses */
     if ((now - last_interrupt_time) > DEBOUNCE_MS) {
         last_interrupt_time = now;
         atomic_inc(&pulse_count);
 
-        /* schedule work only if not already pending */
-        if (!k_work_is_pending(&flow_update_work)) {
-            k_work_submit(&flow_update_work);
+        /* Very frequent work submission for maximum responsiveness */
+        uint32_t current_count = atomic_get(&pulse_count);
+        if ((current_count - pulse_count_at_last_work) >= 1) {  /* Every single pulse for instant response */
+            if (!k_work_is_pending(&flow_update_work)) {
+                pulse_count_at_last_work = current_count;
+                k_work_submit(&flow_update_work);
+                /* Only log every 10th pulse to avoid spam */
+                if (current_count % 10 == 0) {
+                    LOG_DBG("Flow pulse: %u (submitted work)", current_count);
+                }
+            }
+        } else {
+            /* Only log every 10th pulse to avoid spam */
+            if (current_count % 10 == 0) {
+                LOG_DBG("Flow pulse: %u", current_count);
+            }
         }
     }
 }
@@ -135,6 +244,11 @@ int flow_sensor_init(void) {
     
     /* init work item for BLE notifications */
     k_work_init(&flow_update_work, flow_update_work_handler);
+
+    /* Initialize periodic timer for forced BLE updates */
+    k_timer_init(&periodic_ble_timer, periodic_ble_timer_handler, NULL);
+    k_timer_start(&periodic_ble_timer, K_MSEC(200), K_MSEC(200));  /* 200ms period = 5 Hz frequency */
+    
     initialized = true;
     return 0;
 }
@@ -150,9 +264,45 @@ uint32_t get_pulse_count(void)
 }
 
 /**
+ * @brief Get the current smoothed flow rate
+ * 
+ * @return Smoothed flow rate in pulses per second
+ */
+uint32_t get_flow_rate(void)
+{
+    return smoothed_flow_rate;
+}
+
+/**
  * @brief Reset the flow sensor pulse counter to zero
  */
 void reset_pulse_count(void)
 {
     atomic_set(&pulse_count, 0);
+    /* Also reset flow rate calculation */
+    smoothed_flow_rate = 0;
+    sample_index = 0;
+    for (int i = 0; i < 2; i++) {  /* Updated for 2 samples */
+        flow_rate_samples[i] = 0;
+    }
+}
+
+/**
+ * @brief Print flow sensor debug information
+ */
+void flow_sensor_debug_info(void)
+{
+    uint32_t current_pulse_count = atomic_get(&pulse_count);
+    
+    printk("=== Flow Sensor Debug Info ===\n");
+    printk("Total pulses: %u\n", current_pulse_count);
+    printk("Smoothed flow rate: %u pps\n", smoothed_flow_rate);
+    printk("Flow rate samples: ");
+    for (int i = 0; i < 2; i++) {  /* Updated for 2 samples */
+        printk("%u ", flow_rate_samples[i]);
+    }
+    printk("\n");
+    printk("Sample index: %u\n", sample_index);
+    printk("Last notified: %u\n", last_notified);
+    printk("=============================\n");
 }

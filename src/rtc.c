@@ -25,6 +25,7 @@ static bool rtc_working = false;
 
 /* Thread stack and entry point for RTC test operations */
 K_THREAD_STACK_DEFINE(test_stack, 1024);
+__attribute__((unused))
 static struct k_thread test_thread;
 
 /* Function prototypes for thread functions */
@@ -80,6 +81,7 @@ static bool validate_datetime(const rtc_datetime_t *datetime) {
 /**
  * @brief Thread function for RTC testing
  */
+__attribute__((unused))
 static void rtc_test_thread_entry(void* a, void* b, void* c)
 {
     volatile bool *complete_flag = (volatile bool *)a;
@@ -220,6 +222,7 @@ int rtc_datetime_set(const rtc_datetime_t *datetime)
 /**
  * @brief Thread function for RTC write operations
  */
+__attribute__((unused))
 static void rtc_write_thread_entry(void* a, void* b, void* c)
 {
     struct k_sem *completion_sem = (struct k_sem *)a;

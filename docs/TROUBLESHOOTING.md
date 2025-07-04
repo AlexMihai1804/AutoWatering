@@ -2,6 +2,140 @@
 
 This guide provides solutions for common issues that may occur when setting up or using the AutoWatering system.
 
+## Recent Fixes (January 2025)
+
+### Memory Optimization and System Stability - FIXED ✅
+
+**Previous Issue**: System experiencing lockup, freezing, or reset issues due to high RAM usage (96.47% of available memory).
+
+**Resolution Applied**:
+- **Memory Optimization**: Reduced RAM usage from 96.47% to 84.37% (31KB saved)
+- **BLE Buffer Optimization**: Reduced TX/RX buffer counts from 10 to 6 each
+- **Thread Stack Optimization**: Reduced main thread stack from 2048 to 1536 bytes
+- **Runtime Memory Monitoring**: Added periodic memory usage reporting every 60 seconds
+- **Stack Overflow Detection**: Added runtime stack usage monitoring for system stability
+
+**Result**: System now operates stably with 84.37% RAM usage, preventing lockup issues and improving overall reliability.
+
+### BLE Notification State Tracking - FIXED ✅
+
+**Previous Issue**: BLE notifications sent even when client not subscribed, causing "Unable to allocate buffer" errors (-22).
+
+**Resolution Applied**:
+- **Subscription State Tracking**: Implemented proper CCC state tracking for all characteristics
+- **Notification Gating**: Notifications only sent when client is properly subscribed
+- **Error Prevention**: Eliminates unnecessary buffer allocation attempts
+- **Enhanced Debugging**: Added logging for notification state changes
+
+**Result**: BLE notifications now work reliably without buffer allocation errors.
+
+### Advertising Restart After Disconnect - FIXED ✅
+
+**Previous Issue**: Advertising did not restart reliably after BLE disconnect, making device undiscoverable.
+
+**Resolution Applied**:
+- **Robust Restart Logic**: Automatic advertising restart after BLE disconnect
+- **Retry Mechanism**: Up to 3 retry attempts with 5-second intervals
+- **Linear Backoff**: Intelligent retry timing to prevent resource exhaustion
+- **Delayable Work**: Uses Zephyr's delayable work system for reliable scheduling
+
+**Result**: Device now reliably restarts advertising after disconnect, remaining discoverable.
+
+### BLE Buffer Allocation Errors - FIXED ✅
+
+**Previous Issue**: System experiencing "Unable to allocate buffer within timeout" and "No buffer available to send notification" errors.
+
+**Resolution Applied**:
+- **Notification Throttling**: Implemented 100ms minimum delay between BLE notifications
+- **Buffer Pool Increases**: Increased ACL, ATT, and L2CAP buffer pool sizes in firmware
+- **Queue System**: Added automatic queuing and retry for failed notifications
+- **Background Processing**: Dedicated worker thread handles notification overflow
+
+**Result**: System now handles high-frequency BLE communication reliably without buffer overflow.
+
+## System Stability Issues
+
+### Memory Exhaustion and System Lockup
+
+**Symptoms**: Device freezes, resets unexpectedly, or becomes unresponsive during operation.
+
+**Solutions**:
+
+1. **Memory Usage Monitoring** (Built-in as of v1.2.0):
+   - System now reports memory usage every 60 seconds via debug log
+   - Current RAM usage: 84.37% (216,920 bytes of 256KB)
+   - Stack usage monitoring detects potential overflow conditions
+
+2. **If Memory Issues Persist**:
+   - Check for memory leaks in custom code
+   - Review thread stack size requirements
+   - Consider reducing BLE buffer counts further if needed
+
+3. **System Reset Recovery**:
+   - Device automatically recovers from watchdog resets
+   - BLE advertising restarts automatically after system recovery
+   - Configuration preserved in NVS storage
+
+### High RAM Usage (Legacy Issue - Now Resolved)
+
+**Previous State**: System used 96.47% of available RAM (248,192 bytes).
+
+**Current State**: Optimized to 84.37% RAM usage (216,920 bytes).
+
+**Optimizations Applied**:
+- Reduced BLE TX/RX buffers from 10 to 6 each
+- Optimized thread stack sizes across all threads
+- Reduced log buffer from 2048 to 1024 bytes
+- Tuned Zephyr kernel memory settings
+
+**Monitoring**: Runtime memory reporting provides ongoing visibility into system health.
+
+## Bluetooth/BLE Issues
+
+### BLE Connection Problems
+
+**Symptoms**: Cannot connect to device via Bluetooth, frequent disconnections, or missing characteristics.
+
+**Solutions**:
+
+1. **Check Device Discovery**:
+   - Ensure the device is advertising (LED should be blinking during advertising)
+   - Verify device name appears as "AutoWatering" in BLE scanner apps
+   - Try restarting the device if not visible
+
+2. **Connection Issues**:
+   - **Buffer Overflow (FIXED)**: Previous "Unable to allocate buffer" errors resolved with throttling system
+   - Clear Bluetooth cache on mobile device and retry connection
+   - Ensure only one client is connected at a time (CONFIG_BT_MAX_CONN=1)
+
+3. **Missing Characteristics**:
+   - **Service Restoration (FIXED)**: Complete GATT service with all 15 characteristics restored
+   - Verify client app is reading the correct service UUID: `12345678-1234-5678-1234-56789abcdef0`
+   - Some clients cache service discoveries - clear app data or restart
+
+4. **Notification Issues**:
+   - **Reliability Improved**: Notification throttling prevents message loss during high-frequency updates
+   - Enable notifications on required characteristics before expecting updates
+   - Check that client is properly handling GATT_CCC_NOTIFY events
+
+### BLE Performance Optimization
+
+**For High-Frequency Monitoring**:
+- The system automatically throttles notifications to prevent buffer overflow
+- Real-time updates (flow, current task) are prioritized over less critical notifications
+- Background thread ensures no notifications are lost, only delayed if necessary
+
+**Connection Parameters**:
+- Supervision timeout: 4 seconds
+- Connection interval: Optimized for balance between power consumption and responsiveness
+- Automatic parameter negotiation on connection
+
+### Legacy BLE Issues (Now Resolved)
+
+1. ~~**"Unable to allocate buffer within timeout"**~~ - **FIXED**: Notification throttling system prevents this error
+2. ~~**Missing GATT service definition**~~ - **FIXED**: Complete service restored with all characteristics
+3. ~~**Notification flooding**~~ - **FIXED**: Intelligent queuing prevents notification bursts from overwhelming buffers
+
 ## Hardware Issues
 
 ### Valves Not Activating
@@ -253,6 +387,41 @@ This guide provides solutions for common issues that may occur when setting up o
    - Use Bluetooth Task Queue command 4 to reset error conditions
    - Monitor system status via the Status characteristic (UUID …ef3)
 
+### Cannot Add Tasks After Error Clearing
+
+**Symptoms**: After clearing an alarm/error, new tasks cannot be added to the system.
+
+**Root Cause**: The system remained in fault state even after alarm clearing (before firmware fix).
+
+**Solutions**:
+
+1. **Clear Alarms via BLE (Recommended)**:
+   ```python
+   # Clear all alarms - this automatically resets system status
+   clear_command = struct.pack("<B", 0)  # 0 = clear all
+   await client.write_gatt_char(ALARM_UUID, clear_command)
+   ```
+
+2. **Use Task Queue Error Clear Command**:
+   ```python
+   # Alternative method using task queue command 4
+   command_data = struct.pack("<B", 4) + b'\x00' * 14
+   await client.write_gatt_char(TASK_QUEUE_UUID, command_data)
+   ```
+
+3. **Verify System Status Reset**:
+   ```python
+   # Check that system status changed from FAULT (3) to OK (0)
+   status_data = await client.read_gatt_char(STATUS_UUID)
+   status_code = status_data[0]
+   print(f"System status: {status_code}")  # Should be 0 (OK)
+   ```
+
+**Note**: The firmware automatically calls `watering_clear_errors()` when alarms are cleared, which:
+- Resets system status from FAULT to OK
+- Clears all error counters
+- Enables normal task addition and operation
+
 ### Task Scheduling Issues
 
 **Symptoms**: Scheduled tasks don't execute at the expected time.
@@ -347,6 +516,178 @@ If Bluetooth is not available:
 
 **Note**: The system automatically saves the new calibration to non-volatile storage.
 
+## Growing Environment Configuration Issues
+
+### Plant Configuration Not Saving
+
+**Symptoms**: Growing environment settings reset after reboot or don't persist.
+
+**Possible Solutions**:
+
+1. **Check NVS Storage**:
+   ```c
+   // Test NVS functionality
+   watering_error_t result = watering_set_plant_type(0, PLANT_TYPE_TOMATO);
+   if (result != WATERING_SUCCESS) {
+       printk("NVS write failed: %d\n", result);
+   }
+   
+   // Verify by reading back
+   watering_plant_type_t plant_type;
+   result = watering_get_plant_type(0, &plant_type);
+   assert(plant_type == PLANT_TYPE_TOMATO);
+   ```
+
+2. **Check Storage Space**:
+   - Ensure NVS partition has sufficient space
+   - Use diagnostics to check storage status
+
+3. **Validate Parameters**:
+   ```c
+   // All parameters must be within valid ranges
+   assert(plant_type < PLANT_TYPE_COUNT);
+   assert(soil_type < SOIL_TYPE_COUNT);
+   assert(irrigation_method < IRRIGATION_METHOD_COUNT);
+   assert(sun_percentage <= 100);
+   ```
+
+### BLE Growing Environment Communication Failures
+
+**Symptoms**: Cannot read/write growing environment via Bluetooth, or data corruption.
+
+**Possible Solutions**:
+
+1. **Check MTU Size**:
+   ```python
+   # Growing environment requires 50 bytes minimum
+   mtu = await client.get_mtu()
+   if mtu < 53:  # 50 bytes + 3 ATT overhead
+       print("MTU too small, request larger MTU")
+       await client.request_mtu(250)
+   ```
+
+2. **Validate Data Structure**:
+   ```python
+   # Ensure correct packing format
+   data = struct.pack("<5B f H B 32s f 2B",
+       channel_id,           # uint8_t (1 byte)
+       plant_type,           # uint8_t (1 byte)  
+       soil_type,            # uint8_t (1 byte)
+       irrigation_method,    # uint8_t (1 byte)
+       use_area_based,       # uint8_t (1 byte)
+       area_m2,              # float (4 bytes)
+       plant_count,          # uint16_t (2 bytes) - overlays area
+       sun_percentage,       # uint8_t (1 byte)
+       custom_name.encode('utf-8').ljust(32, b'\0'),  # 32 bytes
+       water_need_factor,    # float (4 bytes)
+       irrigation_freq_days, # uint8_t (1 byte)
+       prefer_area_based     # uint8_t (1 byte)
+   )
+   assert len(data) == 47
+   ```
+
+3. **Test Individual Components**:
+   ```python
+   # Test channel selection first
+   await client.write_gatt_char(GROWING_ENV_UUID, bytes([channel_id]))
+   
+   # Then test reading
+   data = await client.read_gatt_char(GROWING_ENV_UUID)
+   if len(data) != 47:
+       print(f"Invalid data length: {len(data)}, expected 47")
+   ```
+
+### Custom Plant Configuration Issues
+
+**Symptoms**: Custom plant names not displaying, water factors not applied correctly.
+
+**Possible Solutions**:
+
+1. **Check String Encoding**:
+   ```python
+   # Ensure UTF-8 encoding and proper null termination
+   custom_name = "Hibiscus rosa-sinensis"
+   name_bytes = custom_name.encode('utf-8')
+   if len(name_bytes) > 31:
+       name_bytes = name_bytes[:31]  # Truncate if too long
+   name_padded = name_bytes + b'\0' * (32 - len(name_bytes))
+   ```
+
+2. **Validate Water Factors**:
+   ```c
+   // Water need factor must be in valid range
+   if (custom_config->water_need_factor < 0.5f || 
+       custom_config->water_need_factor > 3.0f) {
+       return WATERING_ERROR_INVALID_PARAM;
+   }
+   ```
+
+3. **Check Plant Type Selection**:
+   ```c
+   // Custom plants must use PLANT_TYPE_CUSTOM
+   if (plant_type == PLANT_TYPE_CUSTOM) {
+       // Custom configuration fields are used
+   } else {
+       // Built-in plant configuration applies
+   }
+   ```
+
+### Irrigation Method Validation Warnings
+
+**Symptoms**: System warns about irrigation method and coverage combination.
+
+**Solutions**:
+
+1. **Understand Recommendations**:
+   - **Drip/Micro Spray**: Better with plant count measurement
+   - **Sprinkler/Soaker/Flood**: Better with area measurement
+   - **Subsurface**: Usually area-based
+
+2. **Override When Appropriate**:
+   ```c
+   // You can override recommendations if your setup is different
+   bool valid = watering_validate_coverage_method(
+       IRRIGATION_METHOD_DRIP, true  // drip + area
+   );
+   // valid = false (warning), but still allowed
+   ```
+
+3. **Test Water Distribution**:
+   - Run short test cycles to verify coverage
+   - Adjust based on actual plant response
+
+### Environment Data Integration Issues
+
+**Symptoms**: Water factors not affecting irrigation amounts, scheduling not considering environment.
+
+**Solutions**:
+
+1. **Check Integration Status**:
+   ```c
+   // Verify environment data is being used
+   float factor = watering_get_water_factor(plant_type, custom_config);
+   printk("Water factor for channel %d: %.2f\n", channel_id, factor);
+   ```
+
+2. **Monitor Applied Calculations**:
+   - Use diagnostics to see calculated watering amounts
+   - Check if sun percentage affects frequency
+   - Verify soil type impacts duration
+
+3. **Validate API Integration**:
+   ```c
+   // Test complete environment configuration
+   watering_error_t result = watering_set_channel_environment(
+       channel_id, plant_type, soil_type, irrigation_method,
+       use_area_based, area_m2, plant_count, sun_percentage,
+       custom_config
+   );
+   
+   if (result != WATERING_SUCCESS) {
+       printk("Environment setup failed: %d\n", result);
+   }
+   ```
+
 ## Factory Reset
 
 If you need to reset the system to factory defaults:
@@ -398,3 +739,72 @@ If you continue to experience issues:
 This troubleshooting guide is current as of June 2025 and covers firmware version 1.6 with updated error codes and Bluetooth diagnostics.
 
 [Back to main README](../README.md)
+
+## Bluetooth and History Issues
+
+### Manual Tasks Not Appearing in History
+
+**Symptoms**: Manual watering tasks created via Bluetooth are not visible in web applications or are shown as "remote" tasks instead of "manual" tasks.
+
+**Root Cause**: This was a firmware issue where all Bluetooth-initiated tasks were incorrectly categorized as remote tasks instead of manual tasks.
+
+**Solution (Fixed in Firmware v1.6+)**:
+
+The issue has been resolved through multiple improvements:
+
+1. **Trigger Type Tracking**: Tasks now properly track how they were initiated (manual, scheduled, or remote)
+2. **Correct BLE Structure**: Fixed Bluetooth history structure to include all necessary fields
+3. **Proper Categorization**: Manual tasks via Bluetooth are correctly recorded as `WATERING_TRIGGER_MANUAL`
+
+**For Updated Firmware**:
+- Manual tasks via Bluetooth are shown with green highlighting in web applications
+- Scheduled tasks appear in blue
+- Remote tasks (if any) appear in purple
+- Use the provided `history_viewer_web.html` for visual verification
+
+**For Older Firmware**:
+If you cannot update firmware immediately:
+- Manual tasks will still function correctly, they're just mis-categorized
+- Look for tasks with `trigger_type = 2` in the history data
+- These are actually your manual tasks, despite being labeled as "remote"
+
+**Verification Steps**:
+1. Flash firmware v1.6 or later
+2. Open `history_viewer_web.html` in Chrome/Edge browser
+3. Connect to your AutoWatering device
+4. Create a manual task (e.g., 2-minute duration on any channel)
+5. Check history - task should appear with "Manual" badge and green highlighting
+
+**Related Files**:
+- `history_viewer_web.html` - Web application for viewing categorized history
+- Corrected history characteristic UUID: `12345678-1234-5678-1234-56789abcdefc`
+
+### Bluetooth History Structure Mismatch
+
+**Symptoms**: Web applications cannot parse history data correctly, showing empty or garbled history events.
+
+**Root Cause**: The Bluetooth service history structure was missing fields that are present in the actual history system.
+
+**Solution**: 
+The detailed event structure now includes all necessary fields:
+```c
+struct {
+    uint32_t timestamp;
+    uint8_t channel_id;      // Channel that performed the watering
+    uint8_t event_type;      // START/COMPLETE/ABORT/ERROR
+    uint8_t mode;            // DURATION/VOLUME
+    uint16_t target_value;
+    uint16_t actual_value;
+    uint16_t total_volume_ml;
+    uint8_t trigger_type;    // 0=manual, 1=scheduled, 2=remote
+    uint8_t success_status;  // 0=failed, 1=success, 2=partial
+    uint8_t error_code;
+    uint16_t flow_rate_avg;
+    uint8_t reserved[2];     // For alignment
+} detailed;
+```
+
+**For Web Developers**:
+- Updated structure size is 24 bytes (previously 22 bytes)
+- Parse `channel_id` and `event_type` fields for complete event information
+- Use correct history UUID: `…efc` not `…ef8`

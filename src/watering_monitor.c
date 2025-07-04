@@ -110,9 +110,17 @@ watering_error_t check_flow_anomalies(void)
         last_pulse_update_ts  = now;
     }
 
-    // Get pulse count with timeout protection
+    // Get pulse count and flow rate with timeout protection
     uint32_t pulses = get_pulse_count();
-    /* timing debug removed – avoids undeclared variable */
+    uint32_t flow_rate = get_flow_rate();  /* Get stabilized flow rate */
+    
+    /* Debug info every 10 seconds when task is active */
+    static uint32_t last_debug_time = 0;
+    if (task_active && (now - last_debug_time > 10000)) {
+        printk("Flow monitor: pulses=%u, rate=%u pps, task_pulses=%u\n", 
+               pulses, flow_rate, last_task_pulses);
+        last_debug_time = now;
+    }
     
     // Check for no-flow condition when a valve is open
     if (task_active) {
@@ -229,9 +237,9 @@ static void flow_monitor_fn(void *p1, void *p2, void *p3) {
     while (!exit_tasks) {
         uint32_t pulses = get_pulse_count();
 
-        /* --- NEW: compute l/min every second ------------------------- */
+        /* --- NEW: compute l/min every 0.5 seconds for responsiveness --- */
         uint32_t now_ms = k_uptime_get_32();
-        if (now_ms - last_rate_check_time >= 1000) {     /* 1 s window */
+        if (now_ms - last_rate_check_time >= 500) {     /* 0.5 s window - ultra responsive */
             uint32_t delta_p = pulses - last_rate_pulses;
             uint32_t delta_t = now_ms - last_rate_check_time;   /* ms   */
             uint32_t calib;
@@ -286,7 +294,7 @@ static void flow_monitor_fn(void *p1, void *p2, void *p3) {
         }
         
         // Adjust sleep duration based on power mode
-        uint32_t sleep_time = 1000; // Default 1 second
+        uint32_t sleep_time = 500; // Default 0.5 seconds - ultra responsive
         switch (current_power_mode) {
             case POWER_MODE_ENERGY_SAVING:
                 sleep_time = 5000; // 5 seconds in energy saving mode

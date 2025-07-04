@@ -3,6 +3,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <stdio.h>  // Add this for snprintf
+#include <string.h> // Add this for strncpy, memset
 #include "flow_sensor.h"
 #include "watering_internal.h"
 #include "bt_irrigation_service.h"     /* + BLE status update */
@@ -435,5 +436,693 @@ watering_error_t watering_clear_errors(void)
     bt_irrigation_system_status_update(system_status);
 
     printk("All error flags cleared, system back to OK\n");
+    return WATERING_SUCCESS;
+}
+
+/* ------------------------------------------------------------------ */
+/* Plant and growing environment configuration functions              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Set the plant type for a channel
+ */
+watering_error_t watering_set_plant_type(uint8_t channel_id, plant_type_t plant_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (plant_type > PLANT_TYPE_OTHER) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].plant_type = plant_type;
+    
+    // Save configuration changes
+    watering_save_config();
+    
+    printk("Channel %d plant type set to %d\n", channel_id, plant_type);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get the plant type for a channel
+ */
+watering_error_t watering_get_plant_type(uint8_t channel_id, plant_type_t *plant_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || plant_type == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *plant_type = watering_channels[channel_id].plant_type;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set the soil type for a channel
+ */
+watering_error_t watering_set_soil_type(uint8_t channel_id, soil_type_t soil_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (soil_type > SOIL_TYPE_HYDROPONIC) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].soil_type = soil_type;
+    
+    // Save configuration changes
+    watering_save_config();
+    
+    printk("Channel %d soil type set to %d\n", channel_id, soil_type);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get the soil type for a channel
+ */
+watering_error_t watering_get_soil_type(uint8_t channel_id, soil_type_t *soil_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || soil_type == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *soil_type = watering_channels[channel_id].soil_type;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set the irrigation method for a channel
+ */
+watering_error_t watering_set_irrigation_method(uint8_t channel_id, irrigation_method_t irrigation_method) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (irrigation_method > IRRIGATION_SUBSURFACE) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].irrigation_method = irrigation_method;
+    
+    // Save configuration changes
+    watering_save_config();
+    
+    printk("Channel %d irrigation method set to %d\n", channel_id, irrigation_method);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get the irrigation method for a channel
+ */
+watering_error_t watering_get_irrigation_method(uint8_t channel_id, irrigation_method_t *irrigation_method) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || irrigation_method == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *irrigation_method = watering_channels[channel_id].irrigation_method;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set the coverage area for a channel
+ */
+watering_error_t watering_set_coverage_area(uint8_t channel_id, float area_m2) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (area_m2 < 0.0f || area_m2 > 10000.0f) { // Reasonable limit of 1 hectare
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].coverage.use_area = true;
+    watering_channels[channel_id].coverage.area.area_m2 = area_m2;
+    
+    // Save configuration changes
+    watering_save_config();
+    
+    printk("Channel %d coverage area set to %.2f m²\n", channel_id, (double)area_m2);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set the plant count for a channel
+ */
+watering_error_t watering_set_plant_count(uint8_t channel_id, uint16_t count) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (count == 0 || count > 10000) { // Reasonable limits
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].coverage.use_area = false;
+    watering_channels[channel_id].coverage.plants.count = count;
+    
+    // Save configuration changes
+    watering_save_config();
+    
+    printk("Channel %d plant count set to %d\n", channel_id, count);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get the coverage information for a channel
+ */
+watering_error_t watering_get_coverage(uint8_t channel_id, channel_coverage_t *coverage) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || coverage == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *coverage = watering_channels[channel_id].coverage;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set the sun percentage for a channel
+ */
+watering_error_t watering_set_sun_percentage(uint8_t channel_id, uint8_t sun_percentage) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (sun_percentage > 100) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].sun_percentage = sun_percentage;
+    
+    // Save configuration changes
+    watering_save_config();
+    
+    printk("Channel %d sun percentage set to %d%%\n", channel_id, sun_percentage);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get the sun percentage for a channel
+ */
+watering_error_t watering_get_sun_percentage(uint8_t channel_id, uint8_t *sun_percentage) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || sun_percentage == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *sun_percentage = watering_channels[channel_id].sun_percentage;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set custom plant configuration for a channel
+ */
+watering_error_t watering_set_custom_plant(uint8_t channel_id, const custom_plant_config_t *custom_config) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || custom_config == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Validate water need factor range
+    if (custom_config->water_need_factor < 0.1f || custom_config->water_need_factor > 5.0f) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Validate irrigation frequency
+    if (custom_config->irrigation_freq == 0 || custom_config->irrigation_freq > 30) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Copy the configuration
+    watering_channels[channel_id].custom_plant = *custom_config;
+    
+    // Ensure custom name is null-terminated
+    watering_channels[channel_id].custom_plant.custom_name[31] = '\0';
+    
+    // Save configuration changes
+    watering_save_config();
+    
+    printk("Channel %d custom plant configured: %s (factor: %.1f)\n", 
+           channel_id, custom_config->custom_name, (double)custom_config->water_need_factor);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get custom plant configuration for a channel
+ */
+watering_error_t watering_get_custom_plant(uint8_t channel_id, custom_plant_config_t *custom_config) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || custom_config == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *custom_config = watering_channels[channel_id].custom_plant;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get the recommended coverage measurement type based on irrigation method
+ */
+bool watering_recommend_area_based_measurement(irrigation_method_t irrigation_method) {
+    switch (irrigation_method) {
+        case IRRIGATION_DRIP:
+        case IRRIGATION_MICRO_SPRAY:
+            // These methods target individual plants
+            return false;  // Recommend plant count
+            
+        case IRRIGATION_SPRINKLER:
+        case IRRIGATION_SOAKER_HOSE:
+        case IRRIGATION_FLOOD:
+        case IRRIGATION_SUBSURFACE:
+            // These methods cover areas uniformly
+            return true;   // Recommend area-based (m²)
+            
+        default:
+            return true;   // Default to area-based for unknown methods
+    }
+}
+
+/**
+ * @brief Get water need factor for a specific plant type
+ */
+float watering_get_plant_water_factor(plant_type_t plant_type, const custom_plant_config_t *custom_config) {
+    switch (plant_type) {
+        case PLANT_TYPE_VEGETABLES:
+            return 1.2f;  // Higher water needs for vegetables
+            
+        case PLANT_TYPE_HERBS:
+            return 0.8f;  // Moderate water needs for herbs
+            
+        case PLANT_TYPE_FLOWERS:
+            return 1.0f;  // Standard water needs for flowers
+            
+        case PLANT_TYPE_SHRUBS:
+            return 0.7f;  // Lower water needs for established shrubs
+            
+        case PLANT_TYPE_TREES:
+            return 0.9f;  // Moderate water needs for trees
+            
+        case PLANT_TYPE_LAWN:
+            return 1.1f;  // Regular watering for lawn
+            
+        case PLANT_TYPE_SUCCULENTS:
+            return 0.3f;  // Very low water needs for succulents
+            
+        case PLANT_TYPE_OTHER:
+            // Use custom configuration if available
+            if (custom_config != NULL) {
+                return custom_config->water_need_factor;
+            }
+            return 1.0f;  // Default factor if no custom config
+            
+        default:
+            return 1.0f;  // Default factor for unknown types
+    }
+}
+
+/**
+ * @brief Validate if coverage measurement type matches irrigation method recommendation
+ */
+bool watering_validate_coverage_method_match(irrigation_method_t irrigation_method, bool use_area_based) {
+    bool recommended_area_based = watering_recommend_area_based_measurement(irrigation_method);
+    return (use_area_based == recommended_area_based);
+}
+
+/**
+ * @brief Get comprehensive channel environment information
+ */
+watering_error_t watering_get_channel_environment(uint8_t channel_id, 
+                                                 plant_type_t *plant_type,
+                                                 soil_type_t *soil_type,
+                                                 irrigation_method_t *irrigation_method,
+                                                 channel_coverage_t *coverage,
+                                                 uint8_t *sun_percentage,
+                                                 custom_plant_config_t *custom_config) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channel_t *channel = &watering_channels[channel_id];
+    
+    if (plant_type) *plant_type = channel->plant_type;
+    if (soil_type) *soil_type = channel->soil_type;
+    if (irrigation_method) *irrigation_method = channel->irrigation_method;
+    if (coverage) *coverage = channel->coverage;
+    if (sun_percentage) *sun_percentage = channel->sun_percentage;
+    if (custom_config) *custom_config = channel->custom_plant;
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set comprehensive channel environment configuration
+ */
+watering_error_t watering_set_channel_environment(uint8_t channel_id,
+                                                 plant_type_t plant_type,
+                                                 soil_type_t soil_type,
+                                                 irrigation_method_t irrigation_method,
+                                                 const channel_coverage_t *coverage,
+                                                 uint8_t sun_percentage,
+                                                 const custom_plant_config_t *custom_config) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (sun_percentage > 100) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (coverage == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channel_t *channel = &watering_channels[channel_id];
+    
+    // Set all environment parameters
+    channel->plant_type = plant_type;
+    channel->soil_type = soil_type;
+    channel->irrigation_method = irrigation_method;
+    channel->coverage = *coverage;
+    channel->sun_percentage = sun_percentage;
+    
+    // Set custom plant config if provided and plant type is OTHER
+    if (plant_type == PLANT_TYPE_OTHER && custom_config != NULL) {
+        // Validate custom config
+        if (custom_config->water_need_factor < 0.1f || custom_config->water_need_factor > 5.0f) {
+            return WATERING_ERROR_INVALID_PARAM;
+        }
+        if (custom_config->irrigation_freq == 0 || custom_config->irrigation_freq > 30) {
+            return WATERING_ERROR_INVALID_PARAM;
+        }
+        
+        channel->custom_plant = *custom_config;
+        // Ensure custom name is null-terminated
+        channel->custom_plant.custom_name[31] = '\0';
+    } else if (plant_type == PLANT_TYPE_OTHER) {
+        // Clear custom config if plant type is OTHER but no config provided
+        memset(&channel->custom_plant, 0, sizeof(custom_plant_config_t));
+        strncpy(channel->custom_plant.custom_name, "Custom Plant", 31);
+        channel->custom_plant.water_need_factor = 1.0f;
+        channel->custom_plant.irrigation_freq = 3;
+        channel->custom_plant.prefer_area_based = watering_recommend_area_based_measurement(irrigation_method);
+    }
+    
+    // Save configuration changes
+    watering_save_config();
+    
+    printk("Channel %d environment configured: plant=%d, soil=%d, irrigation=%d, sun=%d%%\n",
+           channel_id, plant_type, soil_type, irrigation_method, sun_percentage);
+    
+    return WATERING_SUCCESS;
+}
+
+/* ------------------------------------------------------------------ */
+/* Specific plant type management functions                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Set specific vegetable type for a channel
+ */
+watering_error_t watering_set_vegetable_type(uint8_t channel_id, vegetable_type_t vegetable_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (vegetable_type > VEGETABLE_OTHER) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Set main type to vegetables and specific type
+    watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_VEGETABLES;
+    watering_channels[channel_id].plant_info.specific.vegetable = vegetable_type;
+    watering_channels[channel_id].plant_type = PLANT_TYPE_VEGETABLES; // For backward compatibility
+    
+    watering_save_config();
+    printk("Channel %d vegetable type set to %d\n", channel_id, vegetable_type);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get specific vegetable type for a channel
+ */
+watering_error_t watering_get_vegetable_type(uint8_t channel_id, vegetable_type_t *vegetable_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || vegetable_type == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (watering_channels[channel_id].plant_info.main_type != PLANT_TYPE_VEGETABLES) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *vegetable_type = watering_channels[channel_id].plant_info.specific.vegetable;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set specific herb type for a channel
+ */
+watering_error_t watering_set_herb_type(uint8_t channel_id, herb_type_t herb_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (herb_type > HERB_OTHER) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_HERBS;
+    watering_channels[channel_id].plant_info.specific.herb = herb_type;
+    watering_channels[channel_id].plant_type = PLANT_TYPE_HERBS;
+    
+    watering_save_config();
+    printk("Channel %d herb type set to %d\n", channel_id, herb_type);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get specific herb type for a channel
+ */
+watering_error_t watering_get_herb_type(uint8_t channel_id, herb_type_t *herb_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || herb_type == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (watering_channels[channel_id].plant_info.main_type != PLANT_TYPE_HERBS) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *herb_type = watering_channels[channel_id].plant_info.specific.herb;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set specific flower type for a channel
+ */
+watering_error_t watering_set_flower_type(uint8_t channel_id, flower_type_t flower_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (flower_type > FLOWER_OTHER) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_FLOWERS;
+    watering_channels[channel_id].plant_info.specific.flower = flower_type;
+    watering_channels[channel_id].plant_type = PLANT_TYPE_FLOWERS;
+    
+    watering_save_config();
+    printk("Channel %d flower type set to %d\n", channel_id, flower_type);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get specific flower type for a channel
+ */
+watering_error_t watering_get_flower_type(uint8_t channel_id, flower_type_t *flower_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || flower_type == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (watering_channels[channel_id].plant_info.main_type != PLANT_TYPE_FLOWERS) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *flower_type = watering_channels[channel_id].plant_info.specific.flower;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set specific tree type for a channel
+ */
+watering_error_t watering_set_tree_type(uint8_t channel_id, tree_type_t tree_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (tree_type > TREE_OTHER) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_TREES;
+    watering_channels[channel_id].plant_info.specific.tree = tree_type;
+    watering_channels[channel_id].plant_type = PLANT_TYPE_TREES;
+    
+    watering_save_config();
+    printk("Channel %d tree type set to %d\n", channel_id, tree_type);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get specific tree type for a channel
+ */
+watering_error_t watering_get_tree_type(uint8_t channel_id, tree_type_t *tree_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || tree_type == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (watering_channels[channel_id].plant_info.main_type != PLANT_TYPE_TREES) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *tree_type = watering_channels[channel_id].plant_info.specific.tree;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set specific lawn type for a channel
+ */
+watering_error_t watering_set_lawn_type(uint8_t channel_id, lawn_type_t lawn_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (lawn_type > LAWN_OTHER) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_LAWN;
+    watering_channels[channel_id].plant_info.specific.lawn = lawn_type;
+    watering_channels[channel_id].plant_type = PLANT_TYPE_LAWN;
+    
+    watering_save_config();
+    printk("Channel %d lawn type set to %d\n", channel_id, lawn_type);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get specific lawn type for a channel
+ */
+watering_error_t watering_get_lawn_type(uint8_t channel_id, lawn_type_t *lawn_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || lawn_type == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (watering_channels[channel_id].plant_info.main_type != PLANT_TYPE_LAWN) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *lawn_type = watering_channels[channel_id].plant_info.specific.lawn;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set specific succulent type for a channel
+ */
+watering_error_t watering_set_succulent_type(uint8_t channel_id, succulent_type_t succulent_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (succulent_type > SUCCULENT_OTHER) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_SUCCULENTS;
+    watering_channels[channel_id].plant_info.specific.succulent = succulent_type;
+    watering_channels[channel_id].plant_type = PLANT_TYPE_SUCCULENTS;
+    
+    watering_save_config();
+    printk("Channel %d succulent type set to %d\n", channel_id, succulent_type);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get specific succulent type for a channel
+ */
+watering_error_t watering_get_succulent_type(uint8_t channel_id, succulent_type_t *succulent_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || succulent_type == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (watering_channels[channel_id].plant_info.main_type != PLANT_TYPE_SUCCULENTS) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *succulent_type = watering_channels[channel_id].plant_info.specific.succulent;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set specific shrub type for a channel
+ */
+watering_error_t watering_set_shrub_type(uint8_t channel_id, shrub_type_t shrub_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (shrub_type > SHRUB_OTHER) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_SHRUBS;
+    watering_channels[channel_id].plant_info.specific.shrub = shrub_type;
+    watering_channels[channel_id].plant_type = PLANT_TYPE_SHRUBS;
+    
+    watering_save_config();
+    printk("Channel %d shrub type set to %d\n", channel_id, shrub_type);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get specific shrub type for a channel
+ */
+watering_error_t watering_get_shrub_type(uint8_t channel_id, shrub_type_t *shrub_type) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || shrub_type == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (watering_channels[channel_id].plant_info.main_type != PLANT_TYPE_SHRUBS) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *shrub_type = watering_channels[channel_id].plant_info.specific.shrub;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get complete plant information for a channel
+ */
+watering_error_t watering_get_plant_info(uint8_t channel_id, plant_info_t *plant_info) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || plant_info == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *plant_info = watering_channels[channel_id].plant_info;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set complete plant information for a channel
+ */
+watering_error_t watering_set_plant_info(uint8_t channel_id, const plant_info_t *plant_info) {
+    if (channel_id >= WATERING_CHANNELS_COUNT || plant_info == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (plant_info->main_type > PLANT_TYPE_OTHER) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channels[channel_id].plant_info = *plant_info;
+    watering_channels[channel_id].plant_type = plant_info->main_type; // For backward compatibility
+    
+    watering_save_config();
+    printk("Channel %d plant info updated (main type: %d)\n", channel_id, plant_info->main_type);
     return WATERING_SUCCESS;
 }

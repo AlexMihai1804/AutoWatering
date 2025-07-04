@@ -1,12 +1,11 @@
 /*
- * AutoWatering – ProMicro nRF52840 complete overlay (rev‑2‑fix‑nfct)
+ * AutoWatering – ProMicro nRF52840 enhanced storage overlay
+ * (Enhanced storage configuration with 144KB history partition)
  *
- *  – 8 GPIO valves
- *  – Water‑flow sensor on GPIO interrupt
- *  – RTC DS3231 on I²C0 (pins relocated)
- *  – 32 kB NVS partition (label: storage)
- *  – 8 kB Settings partition (label: settings)
- *  – NFC pins (P0.09/P0.10) forced to GPIO via UICR
+ * This overlay provides sufficient storage for full history capability:
+ * - 8 KB Settings partition (Bluetooth settings)
+ * - 144 KB NVS Storage partition (history data)
+ * - Total: 152 KB allocated (plenty of free space remaining)
  */
 
  / {
@@ -23,8 +22,8 @@
     /* ------------ application constants ------------- */
     sensor_config: sensor_config {
         compatible       = "zephyr,sensor-config";
-        flow-calibration = <450>;   /* pulses per litre */
-        debounce-ms      = <2>;
+        flow-calibration = <750>;   /* pulses per litre */
+        debounce-ms      = <2>;     /* optimized for 30 L/min capability */
     };
 
     /* ------------ valve outputs --------------------- */
@@ -112,16 +111,16 @@
         #size-cells    = <1>;
         ranges;
 
-        /* enlarge to 8 KiB = 2 × 4096 B so Settings backend can mount ≥2 sectors */
+        /* Settings partition: 8 KiB = 2 × 4096 B for Bluetooth settings */
         settings_partition: partition@d7000 {
             label = "settings";
             reg   = <0x000d7000 0x00002000>;  /* 8 KiB */
         };
 
-        /* your NVS userdata stays unchanged */
-        nvs_storage: partition@e3000 {
+        /* Enhanced NVS partition: 144 KiB = 36 × 4096 B for full history capability */
+        nvs_storage: partition@c0000 {
             label = "nvs_storage";
-            reg   = <0x000e3000 0x00002000>;
+            reg   = <0x000c0000 0x00024000>;  /* 144 KiB */
         };
     };
 };

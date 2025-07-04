@@ -6,6 +6,7 @@
 #include "watering_internal.h"
 #include "rtc.h"
 #include "bt_irrigation_service.h"   /* NEW */
+#include "watering_history.h"        /* Add history integration */
 
 /**
  * @file watering_tasks.c
@@ -20,6 +21,9 @@ K_MSGQ_DEFINE(watering_tasks_queue, sizeof(watering_task_t), 10, 4);
 
 /** Current state of task execution */
 struct watering_task_state_t watering_task_state = {NULL, 0, false};
+
+/** Global state of last completed task for BLE reporting */
+struct last_completed_task_t last_completed_task = {NULL, 0, 0, false};
 
 /** Flow pulse count at task start */
 uint32_t initial_pulse_count = 0;        /* was static, now global */
@@ -96,6 +100,13 @@ watering_error_t tasks_init(void) {
     watering_task_state.current_active_task = NULL;
     watering_task_state.watering_start_time = 0;
     watering_task_state.task_in_progress = false;
+    
+    // Initialize last completed task state
+    last_completed_task.task = NULL;
+    last_completed_task.start_time = 0;
+    last_completed_task.completion_time = 0;
+    last_completed_task.valid = false;
+    
     current_task_state = TASK_STATE_IDLE;
     watering_tasks_running = false;
     exit_tasks = false;
@@ -199,8 +210,13 @@ watering_error_t watering_start_task(watering_task_t *task)
     reset_pulse_count();           /* always start from 0                */
     initial_pulse_count = 0;       /* value after reset – kept for ref   */
 
+    // Clear any previous completed task when starting a new one
+    last_completed_task.valid = false;
+    
     watering_task_state.watering_start_time = k_uptime_get_32();
     watering_task_state.task_in_progress = true;
+    
+    printk("TASK DEBUG: watering_start_time set to %u\n", watering_task_state.watering_start_time);
     
     if (task->channel->watering_event.watering_mode == WATERING_BY_VOLUME) {
         reset_pulse_count();
@@ -216,6 +232,38 @@ watering_error_t watering_start_task(watering_task_t *task)
     current_task_state = TASK_STATE_RUNNING;
     
     k_mutex_unlock(&watering_state_mutex);
+    
+    /* Record task start in history */
+    #ifdef CONFIG_BT
+    watering_mode_t mode = task->channel->watering_event.watering_mode;
+    uint16_t target_value;
+    if (mode == WATERING_BY_DURATION) {
+        target_value = task->channel->watering_event.watering.by_duration.duration_minutes;
+    } else {
+        target_value = task->channel->watering_event.watering.by_volume.volume_liters;
+    }
+    
+    // Record in history system
+    printk("Recording task start in history: channel=%d, mode=%d, target=%d, trigger=%d\n", 
+           channel_id, mode, target_value, task->trigger_type);
+    watering_history_record_task_start(channel_id, mode, target_value, task->trigger_type);
+    
+    // Notify BLE clients about new history event
+    bt_irrigation_history_notify_event(channel_id, WATERING_EVENT_START, 
+                                      watering_task_state.watering_start_time / 1000, 0);
+    #endif
+    
+    /* Notify BLE clients about task start */
+    #ifdef CONFIG_BT
+    bt_irrigation_current_task_update(channel_id, 
+                                     watering_task_state.watering_start_time / 1000,
+                                     (uint8_t)task->channel->watering_event.watering_mode,
+                                     (task->channel->watering_event.watering_mode == WATERING_BY_DURATION) ? 
+                                         task->channel->watering_event.watering.by_duration.duration_minutes * 60 : 
+                                         task->channel->watering_event.watering.by_volume.volume_liters * 1000,
+                                     0, 0);
+    #endif
+    
     return WATERING_SUCCESS;
 }
 
@@ -239,11 +287,42 @@ bool watering_stop_current_task(void) {
     printk("Stopping watering for channel %d after %d seconds\n", 
            channel_id + 1, duration_ms / 1000);
     
+    // Save completed task information for BLE reporting
+    last_completed_task.task = watering_task_state.current_active_task;
+    last_completed_task.start_time = watering_task_state.watering_start_time;
+    last_completed_task.completion_time = k_uptime_get_32();
+    last_completed_task.valid = true;
+    
+    /* Calculate actual values for history recording */
+    uint16_t actual_value;
+    uint16_t total_volume_ml = get_pulse_count() * 1000 / pulses_per_liter; // Convert to ml
+    
+    if (watering_task_state.current_active_task->channel->watering_event.watering_mode == WATERING_BY_DURATION) {
+        actual_value = duration_ms / (60 * 1000); // Convert to minutes
+    } else {
+        actual_value = total_volume_ml / 1000; // Convert to liters
+    }
+    
     watering_task_state.current_active_task = NULL;
     watering_task_state.task_in_progress = false;
     current_task_state = TASK_STATE_IDLE;
     
     k_mutex_unlock(&watering_state_mutex);
+    
+    /* Record task completion in history */
+    #ifdef CONFIG_BT
+    watering_history_record_task_complete(channel_id, actual_value, total_volume_ml, WATERING_SUCCESS_COMPLETE);
+    
+    // Notify BLE clients about history event
+    bt_irrigation_history_notify_event(channel_id, WATERING_EVENT_COMPLETE, 
+                                      k_uptime_get_32() / 1000, total_volume_ml);
+    #endif
+    
+    /* Notify BLE clients about task completion */
+    #ifdef CONFIG_BT
+    bt_irrigation_current_task_update(0xFF, 0, 0, 0, 0, 0); // No active task
+    #endif
+    
     return true;
 }
 
@@ -257,7 +336,7 @@ int watering_check_tasks(void) {
         return 0;   /* skip this cycle if busy */
     }
     
-    uint32_t start_time = k_uptime_get_32();
+    __attribute__((unused)) uint32_t start_time = k_uptime_get_32();
     watering_error_t flow_check_result = check_flow_anomalies();
     
     if (flow_check_result != WATERING_SUCCESS && flow_check_result != WATERING_ERROR_BUSY) {
@@ -270,7 +349,7 @@ int watering_check_tasks(void) {
         return -WATERING_ERROR_BUSY;
     }
     
-    uint32_t task_start_time = k_uptime_get_32();
+    __attribute__((unused)) uint32_t task_start_time = k_uptime_get_32();
     
     if (watering_task_state.current_active_task != NULL) {
         watering_channel_t *channel = watering_task_state.current_active_task->channel;
@@ -309,11 +388,23 @@ int watering_check_tasks(void) {
             uint8_t channel_id = watering_task_state.current_active_task->channel - watering_channels;
             watering_channel_off(channel_id);
             
+            // Save completed task information for BLE reporting
+            last_completed_task.task = watering_task_state.current_active_task;
+            last_completed_task.start_time = watering_task_state.watering_start_time;
+            last_completed_task.completion_time = k_uptime_get_32();
+            last_completed_task.valid = true;
+            
             watering_task_state.current_active_task = NULL;
             watering_task_state.task_in_progress = false;
             current_task_state = TASK_STATE_COMPLETED;
             
             k_mutex_unlock(&watering_state_mutex);
+            
+            /* Notify BLE clients about task completion */
+            #ifdef CONFIG_BT
+            bt_irrigation_current_task_update(0xFF, 0, 0, 0, 0, 0); // No active task
+            #endif
+            
             return 1;
         }
     }
@@ -343,6 +434,11 @@ watering_error_t watering_cleanup_tasks(void) {
         watering_task_state.current_active_task = NULL;
         watering_task_state.task_in_progress = false;
         current_task_state = TASK_STATE_IDLE;
+        
+        /* Notify BLE clients about task completion */
+        #ifdef CONFIG_BT
+        bt_irrigation_current_task_update(0xFF, 0, 0, 0, 0, 0); // No active task
+        #endif
     }
     
     k_mutex_unlock(&watering_state_mutex);
@@ -618,6 +714,7 @@ watering_error_t watering_scheduler_run(void) {
         if (should_run) {
             watering_task_t new_task;
             new_task.channel = channel;
+            new_task.trigger_type = WATERING_TRIGGER_SCHEDULED;  // Scheduled tasks
             
             if (event->watering_mode == WATERING_BY_DURATION) {
                 new_task.by_time.start_time = k_uptime_get_32();
@@ -778,12 +875,13 @@ watering_error_t watering_add_duration_task(uint8_t channel_id, uint16_t minutes
     }
     
     new_task.channel = channel;
+    new_task.trigger_type = WATERING_TRIGGER_MANUAL;  // Tasks created via Bluetooth are manual
     new_task.channel->watering_event.watering_mode = WATERING_BY_DURATION;
     new_task.channel->watering_event.watering.by_duration.duration_minutes = minutes;
     new_task.by_time.start_time = k_uptime_get_32();
     
-    printk("Adding %d minute watering task for channel %d\n", 
-           minutes, channel_id + 1);
+    printk("Adding %d minute watering task for channel %d with trigger type %d (MANUAL)\n", 
+           minutes, channel_id + 1, new_task.trigger_type);
     return watering_add_task(&new_task);
 }
 
@@ -810,12 +908,13 @@ watering_error_t watering_add_volume_task(uint8_t channel_id, uint16_t liters) {
     }
     
     new_task.channel = channel;
+    new_task.trigger_type = WATERING_TRIGGER_MANUAL;  // Tasks created via Bluetooth are manual
     new_task.channel->watering_event.watering_mode = WATERING_BY_VOLUME;
     new_task.channel->watering_event.watering.by_volume.volume_liters = liters;
     new_task.by_volume.volume_liters = liters;
     
-    printk("Adding %d liter watering task for channel %d\n", 
-           liters, channel_id + 1);
+    printk("Adding %d liter watering task for channel %d with trigger type %d (MANUAL)\n", 
+           liters, channel_id + 1, new_task.trigger_type);
     return watering_add_task(&new_task);
 }
 
@@ -903,5 +1002,98 @@ static watering_error_t run_valve_test(void) {
         k_sleep(K_MSEC(200));
     }
     
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get the number of running tasks
+ * 
+ * @return Number of running tasks (0 or 1 since only one task can run at a time)
+ */
+int watering_get_running_tasks_count(void) {
+    return (watering_task_state.task_in_progress && watering_task_state.current_active_task) ? 1 : 0;
+}
+
+/**
+ * @brief Get the number of completed tasks
+ * 
+ * @return Number of completed tasks (for now just returns 1 if last task is valid)
+ */
+int watering_get_completed_tasks_count(void) {
+    return last_completed_task.valid ? 1 : 0;
+}
+
+/**
+ * @brief Get the number of error tasks
+ * 
+ * @return Number of error tasks (stub - returns 0)
+ */
+int watering_get_error_tasks_count(void) {
+    // TODO: Implement error task tracking
+    return 0;
+}
+
+/**
+ * @brief Get the next scheduled task
+ * 
+ * @return Pointer to next task or NULL if no tasks pending
+ */
+watering_task_t *watering_get_next_task(void) {
+    // TODO: Implement proper next task retrieval
+    // For now, return NULL as we can't peek into the message queue easily
+    return NULL;
+}
+
+/**
+ * @brief Get the current running task
+ * 
+ * @return Pointer to current task or NULL if no task running
+ */
+watering_task_t *watering_get_current_task(void) {
+    return watering_task_state.current_active_task;
+}
+
+/**
+ * @brief Clear all tasks from the system
+ * 
+ * @return WATERING_SUCCESS on success
+ */
+watering_error_t watering_clear_all_tasks(void) {
+    // Stop current task if running
+    watering_stop_current_task();
+    
+    // Clear the task queue
+    watering_clear_task_queue();
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Clear error tasks (stub)
+ * 
+ * @return WATERING_SUCCESS on success
+ */
+watering_error_t watering_clear_error_tasks(void) {
+    // TODO: Implement error task clearing
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Pause all tasks (stub)
+ * 
+ * @return WATERING_SUCCESS on success
+ */
+watering_error_t watering_pause_all_tasks(void) {
+    // TODO: Implement task pausing
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Resume all tasks (stub)
+ * 
+ * @return WATERING_SUCCESS on success
+ */
+watering_error_t watering_resume_all_tasks(void) {
+    // TODO: Implement task resuming
     return WATERING_SUCCESS;
 }
