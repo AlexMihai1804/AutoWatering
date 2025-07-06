@@ -3,6 +3,7 @@
 #include "flow_sensor.h"
 #include "watering.h"
 #include "watering_internal.h"
+#include "watering_history.h"
 #include "bt_irrigation_service.h"   /* + BLE notifications */
 
 /**
@@ -13,6 +14,10 @@
  * with water flow, including no-flow conditions when a valve is open
  * and unexpected flow when all valves are closed.
  */
+
+/* Error codes for task error reporting */
+#define TASK_ERROR_NO_FLOW      1  /**< No flow detected when valve is open */
+#define TASK_ERROR_UNEXPECTED_FLOW 2  /**< Flow detected when valves are closed */
 
 /** Stack size for flow monitor thread */
 #define FLOW_MONITOR_STACK_SIZE 1024
@@ -95,11 +100,13 @@ watering_error_t check_flow_anomalies(void)
     // CRITICAL FIX: Get a snapshot of the watering task state to minimize
     // time spent in critical sections
     bool task_active = false;
+    bool task_paused = false;
     uint32_t start_time = 0;
 
     watering_task_t *cur_task_ptr = watering_task_state.current_active_task;
     if (cur_task_ptr != NULL) {
         task_active = true;
+        task_paused = watering_task_state.task_paused;
         start_time  = watering_task_state.watering_start_time;
     }
 
@@ -123,7 +130,7 @@ watering_error_t check_flow_anomalies(void)
     }
     
     // Check for no-flow condition when a valve is open
-    if (task_active) {
+    if (task_active && !task_paused) {
         /* update watchdog when flow increases */
         if (pulses > last_task_pulses) {
             last_task_pulses     = pulses;

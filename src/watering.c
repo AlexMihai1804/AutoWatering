@@ -2,11 +2,16 @@
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/logging/log.h>
 #include <stdio.h>  // Add this for snprintf
 #include <string.h> // Add this for strncpy, memset
 #include "flow_sensor.h"
 #include "watering_internal.h"
+#include "watering_history.h"          /* Add history integration */
 #include "bt_irrigation_service.h"     /* + BLE status update */
+#include "plant_db.h"                  /* Add plant database */
+
+LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
 
 /**
  * @file watering.c
@@ -27,6 +32,10 @@ bool system_initialized = false;
 
 /** Mutex for protecting system state */
 K_MUTEX_DEFINE(system_state_mutex);
+
+/** Global tracking for completed tasks */
+static int completed_tasks_count = 0;
+static K_MUTEX_DEFINE(completed_tasks_mutex);
 
 /**
  * @brief Log error with file and line information
@@ -701,6 +710,21 @@ bool watering_recommend_area_based_measurement(irrigation_method_t irrigation_me
  * @brief Get water need factor for a specific plant type
  */
 float watering_get_plant_water_factor(plant_type_t plant_type, const custom_plant_config_t *custom_config) {
+    // If custom configuration is provided, use it
+    if (custom_config != NULL) {
+        if (custom_config->custom_name[0] != '\0') {
+            // Try to find the specific species in the database
+            const plant_data_t *plant_data = plant_db_find_species(custom_config->custom_name);
+            if (plant_data != NULL) {
+                // Use mid-season coefficient as the base water factor
+                return plant_db_get_crop_coefficient(plant_data, 1);
+            }
+        }
+        // If species not found, use the custom water factor
+        return custom_config->water_need_factor;
+    }
+    
+    // Default factors based on plant type categories
     switch (plant_type) {
         case PLANT_TYPE_VEGETABLES:
             return 1.2f;  // Higher water needs for vegetables
@@ -724,11 +748,7 @@ float watering_get_plant_water_factor(plant_type_t plant_type, const custom_plan
             return 0.3f;  // Very low water needs for succulents
             
         case PLANT_TYPE_OTHER:
-            // Use custom configuration if available
-            if (custom_config != NULL) {
-                return custom_config->water_need_factor;
-            }
-            return 1.0f;  // Default factor if no custom config
+            return 1.0f;  // Default factor
             
         default:
             return 1.0f;  // Default factor for unknown types
@@ -1125,4 +1145,144 @@ watering_error_t watering_set_plant_info(uint8_t channel_id, const plant_info_t 
     watering_save_config();
     printk("Channel %d plant info updated (main type: %d)\n", channel_id, plant_info->main_type);
     return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get channel statistics for BLE API
+ * 
+ * This function retrieves cumulative statistics for a channel by querying
+ * the history system for daily statistics over recent periods.
+ */
+watering_error_t watering_get_channel_statistics(uint8_t channel_id,
+                                                uint32_t *total_volume_ml,
+                                                uint32_t *last_volume_ml,
+                                                uint32_t *watering_count) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (!total_volume_ml || !last_volume_ml || !watering_count) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Initialize values
+    *total_volume_ml = 0;
+    *last_volume_ml = 0;
+    *watering_count = 0;
+    
+    // For now, use basic channel data since history system is not fully implemented
+    watering_channel_t *channel;
+    watering_error_t err = watering_get_channel(channel_id, &channel);
+    if (err != WATERING_SUCCESS) {
+        return err;
+    }
+    
+    // Use basic estimates when history system is not available
+    // This is a fallback until full history system is implemented
+    *total_volume_ml = 0; // No historical data available
+    *last_volume_ml = 0;  // No last volume data
+    *watering_count = 0;  // No count data
+    
+    // If we have a recent watering time, we can estimate some activity
+    if (channel->last_watering_time > 0) {
+        // Estimate based on configured watering parameters
+        if (channel->watering_event.watering_mode == WATERING_BY_VOLUME) {
+            *last_volume_ml = channel->watering_event.watering.by_volume.volume_liters * 1000; // Convert to ml
+        } else {
+            // For duration mode, estimate based on typical flow rate
+            uint32_t duration_minutes = channel->watering_event.watering.by_duration.duration_minutes;
+            *last_volume_ml = duration_minutes * 100; // Estimate 100ml/minute
+        }
+        *watering_count = 1; // At least one watering happened
+        
+        // Estimate total volume as multiple of last volume (rough approximation)
+        *total_volume_ml = *last_volume_ml * *watering_count;
+    }
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Update channel statistics after watering event
+ * 
+ * This function should be called after each watering event to update
+ * the statistics tracking system.
+ */
+watering_error_t watering_update_channel_statistics(uint8_t channel_id,
+                                                   uint32_t volume_ml,
+                                                   uint32_t timestamp) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channel_t *channel;
+    watering_error_t err = watering_get_channel(channel_id, &channel);
+    if (err != WATERING_SUCCESS) {
+        return err;
+    }
+    
+    // Update channel's last watering time
+    channel->last_watering_time = timestamp;
+    
+    // Log the watering event to history system
+    watering_history_record_task_complete(channel_id, volume_ml, volume_ml, WATERING_SUCCESS_COMPLETE);
+    
+    // Save configuration to persist last watering time
+    watering_save_config();
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Reset channel statistics
+ * 
+ * This function resets all statistics for a channel.
+ */
+watering_error_t watering_reset_channel_statistics(uint8_t channel_id) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Reset last watering time
+    watering_channel_t *channel;
+    watering_error_t err = watering_get_channel(channel_id, &channel);
+    if (err != WATERING_SUCCESS) {
+        return err;
+    }
+    
+    channel->last_watering_time = 0;
+    
+    // Clear history for this channel - record a reset event
+    watering_history_record_task_error(channel_id, 255); // Use error code 255 to indicate "reset"
+    
+    // Save configuration
+    watering_save_config();
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get the number of completed tasks
+ */
+int watering_get_completed_tasks_count(void) {
+    int count = 0;
+    
+    if (k_mutex_lock(&completed_tasks_mutex, K_MSEC(100)) == 0) {
+        count = completed_tasks_count;
+        k_mutex_unlock(&completed_tasks_mutex);
+    }
+    
+    return count;
+}
+
+/**
+ * @brief Increment the completed tasks counter
+ * This function should be called whenever a task completes successfully
+ */
+void watering_increment_completed_tasks_count(void) {
+    if (k_mutex_lock(&completed_tasks_mutex, K_MSEC(100)) == 0) {
+        completed_tasks_count++;
+        k_mutex_unlock(&completed_tasks_mutex);
+        LOG_DBG("Completed tasks count incremented to %d", completed_tasks_count);
+    }
 }

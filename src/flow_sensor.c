@@ -7,6 +7,7 @@
 #include <zephyr/logging/log.h>     /* Add logging support */
 #include "bt_irrigation_service.h"   /* for bt_irrigation_flow_update */
 #include "watering_internal.h"       /* for active task information */
+#include "nvs_config.h"              /* for persistent storage */
 
 LOG_MODULE_REGISTER(flow_sensor, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -18,6 +19,9 @@ LOG_MODULE_REGISTER(flow_sensor, CONFIG_LOG_DEFAULT_LEVEL);
  * counting pulses to measure water flow in real-time.
  */
 
+/* NVS key for flow calibration */
+#define NVS_KEY_FLOW_CALIBRATION  1000
+
 /** Devicetree node label for water flow sensor */
 #define FLOW_SENSOR_NODE        DT_NODELABEL(water_flow_sensor)
 /** child named “flow_key” directly under the sensor node */
@@ -26,6 +30,9 @@ LOG_MODULE_REGISTER(flow_sensor, CONFIG_LOG_DEFAULT_LEVEL);
 
 /* pick flow_calibration from DT or default to 450 */
 #define FLOW_CALIB_DT DT_PROP_OR(SENSOR_CONFIG_NODE, flow_calibration, 450)
+
+/* Current flow calibration value (can be updated via BLE) */
+static uint32_t current_flow_calibration = FLOW_CALIB_DT;
 
 /** GPIO specification for flow sensor from devicetree */
 static const struct gpio_dt_spec flow_sensor =
@@ -249,6 +256,21 @@ int flow_sensor_init(void) {
     k_timer_init(&periodic_ble_timer, periodic_ble_timer_handler, NULL);
     k_timer_start(&periodic_ble_timer, K_MSEC(200), K_MSEC(200));  /* 200ms period = 5 Hz frequency */
     
+    /* Load flow calibration from persistent storage */
+    uint32_t saved_calibration;
+    int nvs_ret = nvs_config_read(NVS_KEY_FLOW_CALIBRATION, &saved_calibration, sizeof(saved_calibration));
+    if (nvs_ret == sizeof(saved_calibration)) {
+        /* Validate loaded calibration */
+        if (saved_calibration >= 100 && saved_calibration <= 10000) {
+            current_flow_calibration = saved_calibration;
+            LOG_INF("Flow calibration loaded from persistent storage: %u pulses/L", current_flow_calibration);
+        } else {
+            LOG_WRN("Invalid calibration loaded (%u), using default %u", saved_calibration, DEFAULT_PULSES_PER_LITER);
+        }
+    } else {
+        LOG_INF("No saved calibration found, using default: %u pulses/L", DEFAULT_PULSES_PER_LITER);
+    }
+    
     initialized = true;
     return 0;
 }
@@ -304,5 +326,45 @@ void flow_sensor_debug_info(void)
     printk("\n");
     printk("Sample index: %u\n", sample_index);
     printk("Last notified: %u\n", last_notified);
+    printk("Flow calibration: %u pulses/L\n", current_flow_calibration);
     printk("=============================\n");
+}
+
+/**
+ * @brief Get the current flow calibration value
+ * 
+ * @return Calibration value in pulses per liter
+ */
+uint32_t get_flow_calibration(void)
+{
+    return current_flow_calibration;
+}
+
+/**
+ * @brief Set the flow calibration value
+ * 
+ * @param pulses_per_liter Calibration value in pulses per liter
+ * @return 0 on success, negative error code on failure
+ */
+int set_flow_calibration(uint32_t pulses_per_liter)
+{
+    /* Validate calibration range */
+    if (pulses_per_liter < 100 || pulses_per_liter > 10000) {
+        printk("Flow calibration out of range: %u (valid: 100-10000)\n", pulses_per_liter);
+        return -EINVAL;
+    }
+    
+    current_flow_calibration = pulses_per_liter;
+    printk("Flow calibration updated: %u pulses/L\n", current_flow_calibration);
+    
+    /* Save to persistent storage */
+    int nvs_ret = nvs_config_write(NVS_KEY_FLOW_CALIBRATION, &current_flow_calibration, sizeof(current_flow_calibration));
+    if (nvs_ret < 0) {
+        LOG_ERR("Failed to save flow calibration to NVS: %d", nvs_ret);
+        return nvs_ret;
+    }
+    
+    LOG_INF("Flow calibration saved to persistent storage: %u pulses/L", current_flow_calibration);
+    
+    return 0;
 }

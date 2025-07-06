@@ -1,0 +1,4097 @@
+{
+  "metadata": {
+    "source": "plant_db.csv",
+    "species_count": 407,
+    "categories_count": 9
+  },
+  "categories": {
+    "Vegetables": [
+      {
+        "species": "Tomatoes",
+        "kc_initial": 0.6,
+        "kc_mid": 1.15,
+        "kc_end": 0.8,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 30.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Peppers",
+        "kc_initial": 0.6,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Cucumbers",
+        "kc_initial": 0.5,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Lettuce",
+        "kc_initial": 0.7,
+        "kc_mid": 1.05,
+        "kc_end": 0.95,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 9.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Carrots",
+        "kc_initial": 0.4,
+        "kc_mid": 1.05,
+        "kc_end": 0.95,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Onions",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Beans",
+        "kc_initial": 0.4,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Peas",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Squash",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Broccoli",
+        "kc_initial": 0.5,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Eggplant",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Spinach",
+        "kc_initial": 0.7,
+        "kc_mid": 1.0,
+        "kc_end": 0.95,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 9.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Radishes",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 9.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Corn",
+        "kc_initial": 0.35,
+        "kc_mid": 1.15,
+        "kc_end": 0.7,
+        "root_depth_m": 1.2,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 36.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Potato",
+        "kc_initial": 0.4,
+        "kc_mid": 1.15,
+        "kc_end": 0.75,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Sweet Potato",
+        "kc_initial": 0.4,
+        "kc_mid": 1.05,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Beets",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Kale",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Swiss Chard",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Arugula",
+        "kc_initial": 0.7,
+        "kc_mid": 1.05,
+        "kc_end": 0.95,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 9.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Bok Choy",
+        "kc_initial": 0.7,
+        "kc_mid": 1.05,
+        "kc_end": 0.95,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 9.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Asparagus",
+        "kc_initial": 0.3,
+        "kc_mid": 0.9,
+        "kc_end": 0.75,
+        "root_depth_m": 1.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Artichokes",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 30.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Brussels Sprouts",
+        "kc_initial": 0.4,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Leeks",
+        "kc_initial": 0.5,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Celery",
+        "kc_initial": 0.7,
+        "kc_mid": 1.1,
+        "kc_end": 0.95,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Fennel",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Okra",
+        "kc_initial": 0.4,
+        "kc_mid": 1.05,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Turnips",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Parsnips",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Kohlrabi",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Watercress",
+        "kc_initial": 0.9,
+        "kc_mid": 1.2,
+        "kc_end": 1.1,
+        "root_depth_m": 0.2,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 6.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Endive",
+        "kc_initial": 0.7,
+        "kc_mid": 1.05,
+        "kc_end": 0.95,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 9.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Radicchio",
+        "kc_initial": 0.7,
+        "kc_mid": 1.05,
+        "kc_end": 0.95,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 9.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Rhubarb",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 30.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Horseradish",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Jerusalem Artichoke",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Jicama",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.9,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Tomatillo",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Ground Cherry",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Pepino Melon",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Chayote",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.8,
+        "root_depth_m": 0.9,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Bitter Melon",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Dragon Fruit",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 1.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 30.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Mushroom",
+        "kc_initial": 1.0,
+        "kc_mid": 1.2,
+        "kc_end": 1.0,
+        "root_depth_m": 0.1,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 6.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Microgreens",
+        "kc_initial": 0.8,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.1,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 3.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Sprouts",
+        "kc_initial": 0.8,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.05,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 3.0,
+        "deficit_resistance": 0.0
+      }
+    ],
+    "Herbs": [
+      {
+        "species": "Lemon Verbena",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Stevia",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Peppermint",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Spearmint",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Chocolate Mint",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Apple Mint",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Bergamot",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Comfrey",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Echinacea",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Valerian",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Elderflower",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Nettle",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Dandelion",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Plantain",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Wild Garlic",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Sorrel",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Purslane",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Lamb Quarters",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Calendula",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Nasturtium",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Violet",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Chickweed",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Cleavers",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Wood Sorrel",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Mallow",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Rose Geranium",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Lemon Thyme",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Mexican Mint Marigold",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Epazote",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Shiso",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Perilla",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Basil",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Parsley",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Cilantro",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Thyme",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Rosemary",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Oregano",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Sage",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Chives",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Dill",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Mint",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Lavender",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Chervil",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Tarragon",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Bay Leaves",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Lemon Balm",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Lemongrass",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Marjoram",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Savory",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Fennel",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Anise",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Borage",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Catnip",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Chamomile",
+        "kc_initial": 0.6,
+        "kc_mid": 1.0,
+        "kc_end": 0.8,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      }
+    ],
+    "Flowers": [
+      {
+        "species": "Roses",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Tulips",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Daffodils",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Marigolds",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Petunias",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Impatiens",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Begonias",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Geraniums",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Pansies",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Sunflowers",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Zinnias",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Cosmos",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Nasturtiums",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Dahlias",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Lilies",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Iris",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Peonies",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Hydrangeas",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Chrysanthemums",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Asters",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Hollyhocks",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Lavender",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Salvia",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Verbena",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Snapdragons",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Calendula",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Bachelor Buttons",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Sweet Peas",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Morning Glory",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Moonflower",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Four O'Clock",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Portulaca",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Celosia",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Coleus",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Caladium",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Gladiolus",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Canna",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Elephant Ear",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Hibiscus",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Bougainvillea",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Jasmine",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Gardenia",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Azalea",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Camellia",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Rhododendron",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Magnolia",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Wisteria",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Clematis",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Honeysuckle",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Trumpet Vine",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Passion Flower",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Mandevilla",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Fuchsia",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Lantana",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Pentas",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Vinca",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Torenia",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Angelonia",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Cleome",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Amaranthus",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Gomphrena",
+        "kc_initial": 0.5,
+        "kc_mid": 1.05,
+        "kc_end": 0.9,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Strawflower",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Statice",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Nigella",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Nicotiana",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Browallia",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Lobelia",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Alyssum",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 9.0,
+        "deficit_resistance": 0.0
+      },
+      {
+        "species": "Candytuft",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Dianthus",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      }
+    ],
+    "Shrubs": [
+      {
+        "species": "Azaleas",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Rhododendrons",
+        "kc_initial": 0.4,
+        "kc_mid": 1.0,
+        "kc_end": 0.85,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Boxwood",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.7,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Holly",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.75,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Privet",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.75,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Forsythia",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Lilac",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Viburnum",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Spirea",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Weigela",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Barberry",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Juniper",
+        "kc_initial": 0.3,
+        "kc_mid": 0.9,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 30.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Yew",
+        "kc_initial": 0.3,
+        "kc_mid": 0.9,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 30.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Euonymus",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Photinia",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Camellia",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Gardenia",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Abelia",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Nandina",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Butterfly Bush",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Mock Orange",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Quince",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Deutzia",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Ninebark",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Elderberry",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.9,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 27.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Snowball",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Beautybush",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Smokebush",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Sumac",
+        "kc_initial": 0.3,
+        "kc_mid": 0.9,
+        "kc_end": 0.75,
+        "root_depth_m": 1.2,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 36.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Rose Hips",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Japanese Pieris",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Mountain Laurel",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Andromeda",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Leucothoe",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Mahonia",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.9,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 27.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Pieris",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Skimmia",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Aucuba",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Fatsia",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Daphne",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Winter Jasmine",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Witch Hazel",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Serviceberry",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.9,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 27.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Chokeberry",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Elderberry Ornamental",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Currant Ornamental",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Gooseberry Ornamental",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Blueberry Ornamental",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Cranberry Ornamental",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Potentilla",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Spiraea",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Kerria",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 18.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Flowering Almond",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Double Flowering Plum",
+        "kc_initial": 0.35,
+        "kc_mid": 0.95,
+        "kc_end": 0.8,
+        "root_depth_m": 0.7,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 21.0,
+        "deficit_resistance": 1.0
+      }
+    ],
+    "Trees": [
+      {
+        "species": "Oak",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 75.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Maple",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.2,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 66.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Birch",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 1.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 54.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Willow",
+        "kc_initial": 0.4,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 2.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 60.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Elm",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.2,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 66.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Ash",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 60.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Alder",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 60.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Beech",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 69.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Hawthorn",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 1.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Poplar",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 60.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Chestnut",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 75.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Walnut",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 75.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Pecan",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 75.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Cherry",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 54.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Apple",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 54.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Pear",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 54.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Peach",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 54.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Plum",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 54.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Apricot",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 54.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Nectarine",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 54.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Mango",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 60.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Avocado",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 60.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Lemon",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 48.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Orange",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 48.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Grapefruit",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 48.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Lime",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 48.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Tangerine",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 48.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Kumquat",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.6,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 48.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Pomegranate",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 54.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Fig",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 54.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Persimmon",
+        "kc_initial": 0.35,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 54.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Olive",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 60.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Date Palm",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 75.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Coconut",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 75.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Almond",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 69.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Pistachio",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.3,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 69.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Cashew",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.2,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 66.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Macadamia",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.2,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 66.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Coffee",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 1.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Cacao",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 1.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Teak",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 3.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 90.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Redwood",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 3.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 105.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Baobab",
+        "kc_initial": 0.25,
+        "kc_mid": 0.9,
+        "kc_end": 0.7,
+        "root_depth_m": 4.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 120.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Eucalyptus",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 3.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 90.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Acacia",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 84.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Bamboo",
+        "kc_initial": 0.4,
+        "kc_mid": 1.1,
+        "kc_end": 0.8,
+        "root_depth_m": 1.2,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 36.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Kapok",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 3.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 90.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Breadfruit",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 75.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Jackfruit",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.5,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 75.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Soursop",
+        "kc_initial": 0.3,
+        "kc_mid": 1.05,
+        "kc_end": 0.75,
+        "root_depth_m": 2.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 60.0,
+        "deficit_resistance": 2.0
+      }
+    ],
+    "Fruits": [
+      {
+        "species": "Banana",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Pineapple",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Watermelon",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Cantaloupe",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Honeydew",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Kiwi",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Passionfruit",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Starfruit",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Sapote",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Lychee",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Longan",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Rambutan",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Durian",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Guava",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Cherimoya",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Feijoa",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Tamarillo",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Pomelo",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Ugli Fruit",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Mangosteen",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Jujube",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Atemoya",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Ackee",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Miracle Fruit",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Santol",
+        "kc_initial": 0.6,
+        "kc_mid": 1.1,
+        "kc_end": 0.9,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 15.0,
+        "deficit_resistance": 1.0
+      }
+    ],
+    "Berries": [
+      {
+        "species": "Strawberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Raspberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Blackberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Blueberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Cranberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Mulberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Boysenberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Loganberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Marionberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Salmonberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Cloudberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Lingonberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Huckleberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Goji Berry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Sea Buckthorn",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Bilberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Wineberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Tayberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Dewberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Thimbleberry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Blackcurrant",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Redcurrant",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "White Currant",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Maqui Berry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      },
+      {
+        "species": "Acai Berry",
+        "kc_initial": 0.55,
+        "kc_mid": 1.05,
+        "kc_end": 0.85,
+        "root_depth_m": 0.4,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 12.0,
+        "deficit_resistance": 1.0
+      }
+    ],
+    "Grains": [
+      {
+        "species": "Wheat",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Rice",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Barley",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Oats",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Rye",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Sorghum",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Millet",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Quinoa",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Buckwheat",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Teff",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Triticale",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Spelt",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Amaranth",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Fonio",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Kamut",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Emmer",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Durum Wheat",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Einkorn Wheat",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Job's Tears",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Wild Rice",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Farro",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Freekeh",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Finger Millet",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Kodo Millet",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Pearl Millet",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      },
+      {
+        "species": "Canary Seed",
+        "kc_initial": 0.35,
+        "kc_mid": 1.0,
+        "kc_end": 0.75,
+        "root_depth_m": 1.0,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 45.0,
+        "deficit_resistance": 2.0
+      }
+    ],
+    "Succulents": [
+      {
+        "species": "Watch Chain",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Propeller Plant",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Aloe",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Haworthia",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Zebra Plant",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Gasteria",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Echeveria",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Aeonium",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Hens and Chicks",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Sedum",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Burro's Tail",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "String of Pearls",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Jade",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Crassula",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Kalanchoe",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Panda Plant",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Agave",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Century Plant",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Barrel Cactus",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Golden Barrel",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Prickly Pear",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Bunny Ears",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Pencil Cactus",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Fishhook Cactus",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Christmas Cactus",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Thanksgiving Cactus",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Easter Cactus",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Moon Cactus",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Euphorbia",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Crown of Thorns",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Snake Plant",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Mother-in-Law Tongue",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "ZZ Plant",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Ponytail Palm",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Desert Willow",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Ocotillo",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Yucca",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Blue Agave",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Firestick",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Candelabra",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Medusa Head",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Baseball Plant",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "African Milk Tree",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Bottle Tree",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Money Tree",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Rubber Plant",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Fiddle Leaf Fig",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Ghost Plant",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Hoya",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "String of Hearts",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "String of Bananas",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "String of Dolphins",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Pink Moonstone",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Blue Chalk Sticks",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Jelly Bean Plant",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      },
+      {
+        "species": "Donkey Tail",
+        "kc_initial": 0.25,
+        "kc_mid": 0.85,
+        "kc_end": 0.6,
+        "root_depth_m": 0.8,
+        "raw_percent": 0.5,
+        "min_irrigation_mm": 24.0,
+        "deficit_resistance": 3.0
+      }
+    ]
+  }
+}

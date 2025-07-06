@@ -46,4 +46,19 @@ void reset_pulse_count(void);
  */
 void flow_sensor_debug_info(void);
 
+/**
+ * @brief Get the current flow calibration value
+ * 
+ * @return Calibration value in pulses per liter
+ */
+uint32_t get_flow_calibration(void);
+
+/**
+ * @brief Set the flow calibration value
+ * 
+ * @param pulses_per_liter Calibration value in pulses per liter
+ * @return 0 on success, negative error code on failure
+ */
+int set_flow_calibration(uint32_t pulses_per_liter);
+
 #endif // FLOW_SENSOR_H

@@ -123,10 +123,10 @@ int bt_irrigation_channel_config_update(uint8_t channel_id);
  * Notifies clients about changes in the task queue using the direct notification
  * system with automatic rate limiting.
  * 
- * @param count Number of pending tasks in queue
+ * @param pending_count Number of pending tasks in queue
  * @return 0 on success, negative error code on failure
  */
-int bt_irrigation_queue_status_update(uint8_t count);
+int bt_irrigation_queue_status_update(uint8_t pending_count);
 
 /**
  * @brief Update current task status via Bluetooth
@@ -147,6 +147,17 @@ int bt_irrigation_queue_status_update(uint8_t count);
 int bt_irrigation_current_task_update(uint8_t channel_id, uint32_t start_time, 
                                     uint8_t mode, uint32_t target_value, 
                                     uint32_t current_value, uint32_t total_volume);
+
+/**
+ * @brief Send current task notification via Bluetooth
+ * 
+ * Reads current task status from watering system and sends notification
+ * to connected clients. Used for periodic updates and immediate notifications
+ * when task status changes.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_current_task_notify(void);
 
 /**
  * @brief Update schedule configuration via Bluetooth
@@ -217,6 +228,16 @@ int bt_irrigation_alarm_notify(uint8_t alarm_code, uint16_t alarm_data);
  * @return 0 on success, negative error code on failure
  */
 int bt_irrigation_alarm_clear(uint8_t alarm_code);
+
+/**
+ * @brief Send calibration notification via Bluetooth
+ * 
+ * Reads current calibration status and sends notification to connected
+ * clients. Used for reporting calibration progress and completion.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_calibration_notify(void);
 
 /**
  * @brief Start flow sensor calibration session
@@ -369,6 +390,20 @@ int bt_irrigation_record_error(uint8_t channel_id, uint8_t error_code);
 int bt_irrigation_update_statistics_from_flow(uint8_t channel_id, uint32_t volume_ml);
 
 /**
+ * @brief Update statistics for a channel and notify clients
+ * 
+ * Updates the statistics for a specific channel with new watering data
+ * and sends notification to connected BLE clients. This is the core function
+ * for statistics tracking, called after watering events complete.
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param volume_ml Volume watered in milliliters
+ * @param timestamp Timestamp of the watering event in seconds
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_update_statistics(uint8_t channel_id, uint32_t volume_ml, uint32_t timestamp);
+
+/**
  * @brief Periodic function to update daily/monthly/annual aggregations
  * 
  * Updates historical data aggregations (daily, monthly, annual statistics)
@@ -413,10 +448,31 @@ int bt_irrigation_history_get_monthly(uint8_t channel_id, uint8_t entry_index);
 int bt_irrigation_history_get_annual(uint8_t channel_id, uint8_t entry_index);
 int bt_irrigation_history_notify_event(uint8_t channel_id, uint8_t event_type,
                                       uint32_t timestamp, uint32_t value);
-int bt_irrigation_growing_env_update(uint8_t channel_id);
 int bt_irrigation_direct_command(uint8_t channel_id, uint8_t command, uint16_t param);
 int bt_irrigation_record_error(uint8_t channel_id, uint8_t error_code);
 int bt_irrigation_update_history_aggregations(void);
+
+/* Diagnostics functions */
+/**
+ * @brief Send diagnostics notification
+ * 
+ * Sends current system diagnostics via BLE notification if enabled.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_diagnostics_notify(void);
+
+/**
+ * @brief Update diagnostics data and notify
+ * 
+ * Updates diagnostics data with current system state and sends notification if enabled.
+ * 
+ * @param error_count Total error count since boot
+ * @param last_error Code of the most recent error (0 if no errors)
+ * @param valve_status Valve status bitmap (bit 0 = channel 0, etc.)
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_diagnostics_update(uint16_t error_count, uint8_t last_error, uint8_t valve_status);
 
 /* Debugging and diagnostic functions */
 void bt_irrigation_debug_notification_status(void);

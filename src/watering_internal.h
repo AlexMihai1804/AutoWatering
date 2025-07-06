@@ -39,6 +39,9 @@ struct watering_task_state_t {
     watering_task_t *current_active_task;  /**< Currently executing task or NULL */
     uint32_t watering_start_time;          /**< Timestamp when watering started */
     bool task_in_progress;                 /**< Flag indicating task is in progress */
+    bool task_paused;                      /**< Flag indicating task is paused */
+    uint32_t pause_start_time;             /**< Timestamp when pause started */
+    uint32_t total_paused_time;            /**< Total time spent paused (ms) */
 };
 
 /**
@@ -132,6 +135,13 @@ watering_error_t check_flow_anomalies(void);
 watering_error_t config_init(void);
 
 /**
+ * @brief Increment the error task counter
+ * 
+ * This function should be called whenever an error occurs during task processing
+ */
+void watering_increment_error_tasks(void);
+
+/**
  * @brief Load default configuration values
  * 
  * Used when settings subsystem is unavailable
@@ -222,5 +232,17 @@ void watering_log_init(int level);
 /* --- new error-reset helpers ----------------------------------------- */
 watering_error_t watering_clear_errors(void);
 void             flow_monitor_clear_errors(void);
+
+/**
+ * @brief Information about a watering task for status reporting
+ */
+typedef struct {
+    uint8_t channel_id;           /**< Channel ID for this task */
+    watering_mode_t task_type;    /**< Task type (duration or volume) */
+    uint16_t target_value;        /**< Target value (minutes or liters) */
+    uint32_t start_time;          /**< Task start timestamp */
+    bool is_active;               /**< True if task is currently running */
+    bool is_paused;               /**< True if task is paused */
+} watering_task_info_t;
 
 #endif // WATERING_INTERNAL_H

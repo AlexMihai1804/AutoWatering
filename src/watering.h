@@ -1243,6 +1243,19 @@ watering_error_t watering_set_channel_environment(uint8_t channel_id,
 int watering_get_pending_tasks_count(void);
 
 /**
+ * @brief Get the number of completed tasks
+ * 
+ * @return Number of completed tasks since system start
+ */
+int watering_get_completed_tasks_count(void);
+
+/**
+ * @brief Increment the completed tasks counter
+ * Internal function called when a task completes
+ */
+void watering_increment_completed_tasks_count(void);
+
+/**
  * @brief Clear all tasks from the task queue
  * 
  * @return WATERING_SUCCESS on success, error code on failure
@@ -1257,11 +1270,25 @@ int watering_clear_task_queue(void);
 bool watering_stop_current_task(void);
 
 /**
- * @brief Clear runtime errors and reset fault state
+ * @brief Pause the currently running task
  * 
- * @return WATERING_SUCCESS on success, error code on failure
+ * @return true if a task was paused, false if no task was running or task cannot be paused
  */
-watering_error_t watering_clear_errors(void);
+bool watering_pause_current_task(void);
+
+/**
+ * @brief Resume the currently paused task
+ * 
+ * @return true if a task was resumed, false if no task was paused or task cannot be resumed
+ */
+bool watering_resume_current_task(void);
+
+/**
+ * @brief Check if the current task is paused
+ * 
+ * @return true if current task is paused, false otherwise
+ */
+bool watering_is_current_task_paused(void);
 
 /**
  * @brief Get task queue status
@@ -1278,5 +1305,46 @@ watering_error_t watering_get_queue_status(uint8_t *pending_count, bool *active)
  * @return 0 on success, negative error code on failure
  */
 int watering_cancel_all_tasks(void);
+
+/**
+ * @brief Get the current running task
+ * 
+ * @return Pointer to current task or NULL if no task running
+ */
+watering_task_t *watering_get_current_task(void);
+
+/**
+ * @brief Get channel statistics for BLE API
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param total_volume_ml Pointer to store total volume in ml
+ * @param last_volume_ml Pointer to store last watering volume in ml
+ * @param watering_count Pointer to store total watering count
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_channel_statistics(uint8_t channel_id,
+                                                uint32_t *total_volume_ml,
+                                                uint32_t *last_volume_ml,
+                                                uint32_t *watering_count);
+
+/**
+ * @brief Update channel statistics after watering event
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param volume_ml Volume watered in ml
+ * @param timestamp Timestamp of watering event
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_update_channel_statistics(uint8_t channel_id,
+                                                   uint32_t volume_ml,
+                                                   uint32_t timestamp);
+
+/**
+ * @brief Reset channel statistics
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_reset_channel_statistics(uint8_t channel_id);
 
 #endif // WATERING_H

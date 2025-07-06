@@ -1,12 +1,15 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/pm/pm.h>
+#include <zephyr/logging/log.h>
 #include "flow_sensor.h"
 #include "watering.h"
 #include "watering_internal.h"
 #include "rtc.h"
 #include "bt_irrigation_service.h"   /* NEW */
 #include "watering_history.h"        /* Add history integration */
+
+LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
 
 /**
  * @file watering_tasks.c
@@ -20,10 +23,13 @@
 K_MSGQ_DEFINE(watering_tasks_queue, sizeof(watering_task_t), 10, 4);
 
 /** Current state of task execution */
-struct watering_task_state_t watering_task_state = {NULL, 0, false};
+struct watering_task_state_t watering_task_state = {NULL, 0, false, false, 0, 0};
 
 /** Global state of last completed task for BLE reporting */
 struct last_completed_task_t last_completed_task = {NULL, 0, 0, false};
+
+/** Error task tracking */
+static uint16_t error_task_count = 0;
 
 /** Flow pulse count at task start */
 uint32_t initial_pulse_count = 0;        /* was static, now global */
@@ -100,6 +106,9 @@ watering_error_t tasks_init(void) {
     watering_task_state.current_active_task = NULL;
     watering_task_state.watering_start_time = 0;
     watering_task_state.task_in_progress = false;
+    watering_task_state.task_paused = false;
+    watering_task_state.pause_start_time = 0;
+    watering_task_state.total_paused_time = 0;
     
     // Initialize last completed task state
     last_completed_task.task = NULL;
@@ -135,6 +144,7 @@ watering_error_t watering_add_task(watering_task_t *task) {
     
     if (k_msgq_put(&watering_tasks_queue, task, K_NO_WAIT) != 0) {
         LOG_ERROR("Watering queue is full", WATERING_ERROR_QUEUE_FULL);
+        watering_increment_error_tasks();  /* Track queue overflow errors */
         return WATERING_ERROR_QUEUE_FULL;
     }
     /* BLE notify – 0xFF ⇒ calculează intern */
@@ -283,7 +293,16 @@ bool watering_stop_current_task(void) {
     uint8_t channel_id = watering_task_state.current_active_task->channel - watering_channels;
     watering_channel_off(channel_id);
     
-    uint32_t duration_ms = k_uptime_get_32() - watering_task_state.watering_start_time;
+    // Calculate effective duration excluding paused time
+    uint32_t total_duration_ms = k_uptime_get_32() - watering_task_state.watering_start_time;
+    uint32_t current_pause_time = 0;
+    
+    // If currently paused, add current pause period
+    if (watering_task_state.task_paused) {
+        current_pause_time = k_uptime_get_32() - watering_task_state.pause_start_time;
+    }
+    
+    uint32_t duration_ms = total_duration_ms - watering_task_state.total_paused_time - current_pause_time;
     printk("Stopping watering for channel %d after %d seconds\n", 
            channel_id + 1, duration_ms / 1000);
     
@@ -305,6 +324,9 @@ bool watering_stop_current_task(void) {
     
     watering_task_state.current_active_task = NULL;
     watering_task_state.task_in_progress = false;
+    watering_task_state.task_paused = false;
+    watering_task_state.pause_start_time = 0;
+    watering_task_state.total_paused_time = 0;
     current_task_state = TASK_STATE_IDLE;
     
     k_mutex_unlock(&watering_state_mutex);
@@ -317,6 +339,9 @@ bool watering_stop_current_task(void) {
     bt_irrigation_history_notify_event(channel_id, WATERING_EVENT_COMPLETE, 
                                       k_uptime_get_32() / 1000, total_volume_ml);
     #endif
+    
+    /* Increment completed tasks counter */
+    watering_increment_completed_tasks_count();
     
     /* Notify BLE clients about task completion */
     #ifdef CONFIG_BT
@@ -340,6 +365,7 @@ int watering_check_tasks(void) {
     watering_error_t flow_check_result = check_flow_anomalies();
     
     if (flow_check_result != WATERING_SUCCESS && flow_check_result != WATERING_ERROR_BUSY) {
+        watering_increment_error_tasks();  /* Track flow anomaly errors */
         k_mutex_unlock(&watering_state_mutex);
         return -flow_check_result;
     }
@@ -399,6 +425,9 @@ int watering_check_tasks(void) {
             current_task_state = TASK_STATE_COMPLETED;
             
             k_mutex_unlock(&watering_state_mutex);
+            
+            /* Increment completed tasks counter */
+            watering_increment_completed_tasks_count();
             
             /* Notify BLE clients about task completion */
             #ifdef CONFIG_BT
@@ -952,15 +981,7 @@ int watering_get_pending_tasks_count(void) {
     return k_msgq_num_used_get(&watering_tasks_queue);
 }
 
-/**
- * @brief Structure for pending task information
- * Used to store information about tasks
- */
-typedef struct {
-    uint8_t channel_id;
-    uint8_t task_type;   // 0=duration, 1=volume
-    uint16_t value;      // minutes or liters
-} watering_task_info_t;
+
 
 /**
  * @brief Get information about pending tasks
@@ -970,8 +991,51 @@ typedef struct {
  * @return Number of tasks copied to buffer
  */
 int watering_get_pending_tasks_info(void *tasks_info, int max_tasks) {
-    printk("watering_get_pending_tasks_info function not yet fully implemented\n");
-    return 0;
+    if (!tasks_info || max_tasks <= 0) {
+        return 0;
+    }
+    
+    k_mutex_lock(&watering_state_mutex, K_FOREVER);
+    
+    int task_count = 0;
+    watering_task_info_t *info_array = (watering_task_info_t *)tasks_info;
+    
+    // For now, we only have one active task maximum since we use a simple message queue
+    // In a real implementation, we'd iterate through the message queue or task list
+    
+    // Check if there's a current active task
+    if (watering_task_state.current_active_task != NULL && task_count < max_tasks) {
+        watering_task_t *current_task = watering_task_state.current_active_task;
+        watering_channel_t *channel = current_task->channel;
+        
+        if (channel) {
+            info_array[task_count].channel_id = channel - watering_channels;
+            info_array[task_count].task_type = channel->watering_event.watering_mode;
+            
+            if (channel->watering_event.watering_mode == WATERING_BY_DURATION) {
+                info_array[task_count].target_value = channel->watering_event.watering.by_duration.duration_minutes;
+            } else {
+                info_array[task_count].target_value = channel->watering_event.watering.by_volume.volume_liters;
+            }
+            
+            info_array[task_count].start_time = watering_task_state.watering_start_time;
+            info_array[task_count].is_active = true;
+            info_array[task_count].is_paused = watering_task_state.task_paused;
+            
+            task_count++;
+        }
+    }
+    
+    // NOTE: Zephyr's k_msgq doesn't provide a way to inspect queued items without
+    // removing them from the queue. In a production system, you might:
+    // 1. Maintain a separate list of pending tasks
+    // 2. Use a custom queue implementation with inspection capability
+    // 3. Keep a counter of queued items
+    // For now, we only report the active task which is sufficient for most use cases
+    
+    k_mutex_unlock(&watering_state_mutex);
+    
+    return task_count;
 }
 
 /**
@@ -1019,18 +1083,27 @@ int watering_get_running_tasks_count(void) {
  * 
  * @return Number of completed tasks (for now just returns 1 if last task is valid)
  */
-int watering_get_completed_tasks_count(void) {
-    return last_completed_task.valid ? 1 : 0;
+// Note: watering_get_completed_tasks_count() is implemented in watering.c
+
+/**
+ * @brief Increment error task count
+ * 
+ * This function should be called when a task encounters an error
+ */
+void watering_increment_error_tasks(void) {
+    if (error_task_count < UINT16_MAX) {
+        error_task_count++;
+        LOG_WRN("Error task count incremented to %u", error_task_count);
+    }
 }
 
 /**
  * @brief Get the number of error tasks
  * 
- * @return Number of error tasks (stub - returns 0)
+ * @return Number of error tasks
  */
 int watering_get_error_tasks_count(void) {
-    // TODO: Implement error task tracking
-    return 0;
+    return error_task_count;
 }
 
 /**
@@ -1039,9 +1112,19 @@ int watering_get_error_tasks_count(void) {
  * @return Pointer to next task or NULL if no tasks pending
  */
 watering_task_t *watering_get_next_task(void) {
-    // TODO: Implement proper next task retrieval
-    // For now, return NULL as we can't peek into the message queue easily
-    return NULL;
+    /* Check if there are any messages in the queue */
+    if (k_msgq_num_used_get(&watering_tasks_queue) == 0) {
+        return NULL; /* No tasks pending */
+    }
+    
+    /* We can't easily peek into the message queue without removing items,
+     * so for now return a simple indication that there is a next task.
+     * In a real implementation, we might maintain a separate queue
+     * data structure that allows peeking. */
+    
+    /* For the BLE interface, we just need to know if there are pending tasks,
+     * which we can get from the queue count */
+    return (watering_task_t *)1; /* Non-NULL indicates there is a pending task */
 }
 
 /**
@@ -1069,31 +1152,132 @@ watering_error_t watering_clear_all_tasks(void) {
 }
 
 /**
- * @brief Clear error tasks (stub)
+ * @brief Clear error tasks
  * 
  * @return WATERING_SUCCESS on success
  */
 watering_error_t watering_clear_error_tasks(void) {
-    // TODO: Implement error task clearing
+    error_task_count = 0;
+    LOG_INF("Error tasks cleared");
     return WATERING_SUCCESS;
 }
 
 /**
- * @brief Pause all tasks (stub)
+ * @brief Pause all tasks
  * 
  * @return WATERING_SUCCESS on success
  */
 watering_error_t watering_pause_all_tasks(void) {
-    // TODO: Implement task pausing
+    /* Pause current task if running */
+    if (watering_task_state.task_in_progress) {
+        watering_pause_current_task();
+        LOG_INF("All tasks paused");
+    } else {
+        LOG_INF("No tasks to pause");
+    }
     return WATERING_SUCCESS;
 }
 
 /**
- * @brief Resume all tasks (stub)
+ * @brief Pause the currently running task
  * 
- * @return WATERING_SUCCESS on success
+ * @return true if a task was paused, false if no task was running or task cannot be paused
  */
-watering_error_t watering_resume_all_tasks(void) {
-    // TODO: Implement task resuming
-    return WATERING_SUCCESS;
+bool watering_pause_current_task(void) {
+    k_mutex_lock(&watering_state_mutex, K_FOREVER);
+    
+    // Check if there's an active task
+    if (watering_task_state.current_active_task == NULL || !watering_task_state.task_in_progress) {
+        k_mutex_unlock(&watering_state_mutex);
+        return false;
+    }
+    
+    // Check if task is already paused
+    if (watering_task_state.task_paused) {
+        k_mutex_unlock(&watering_state_mutex);
+        return false;
+    }
+    
+    // Pause the task
+    watering_task_state.task_paused = true;
+    watering_task_state.pause_start_time = k_uptime_get_32();
+    
+    // Get channel and close valve
+    watering_channel_t *channel = watering_task_state.current_active_task->channel;
+    uint8_t channel_id = channel - watering_channels;
+    
+    // Close valve to stop water flow
+    watering_error_t valve_err = watering_channel_off(channel_id);
+    if (valve_err != WATERING_SUCCESS) {
+        printk("Warning: Failed to close valve during pause for channel %d\n", channel_id);
+    }
+    
+    // Update system state
+    watering_error_t state_err = transition_to_state(WATERING_STATE_PAUSED);
+    if (state_err != WATERING_SUCCESS) {
+        printk("Warning: Failed to transition to paused state\n");
+    }
+    
+    k_mutex_unlock(&watering_state_mutex);
+    
+    printk("Task paused for channel %d\n", channel_id);
+    return true;
+}
+
+/**
+ * @brief Resume the currently paused task
+ * 
+ * @return true if a task was resumed, false if no task was paused or task cannot be resumed
+ */
+bool watering_resume_current_task(void) {
+    k_mutex_lock(&watering_state_mutex, K_FOREVER);
+    
+    // Check if there's a paused task
+    if (watering_task_state.current_active_task == NULL || !watering_task_state.task_paused) {
+        k_mutex_unlock(&watering_state_mutex);
+        return false;
+    }
+    
+    // Calculate how long we were paused and add to total
+    uint32_t pause_duration = k_uptime_get_32() - watering_task_state.pause_start_time;
+    watering_task_state.total_paused_time += pause_duration;
+    
+    // Resume the task
+    watering_task_state.task_paused = false;
+    watering_task_state.pause_start_time = 0;
+    
+    // Get channel and reopen valve
+    watering_channel_t *channel = watering_task_state.current_active_task->channel;
+    uint8_t channel_id = channel - watering_channels;
+    
+    // Reopen valve to resume water flow
+    watering_error_t valve_err = watering_channel_on(channel_id);
+    if (valve_err != WATERING_SUCCESS) {
+        printk("Error: Failed to reopen valve during resume for channel %d\n", channel_id);
+        k_mutex_unlock(&watering_state_mutex);
+        return false;
+    }
+    
+    // Update system state
+    watering_error_t state_err = transition_to_state(WATERING_STATE_WATERING);
+    if (state_err != WATERING_SUCCESS) {
+        printk("Warning: Failed to transition to watering state\n");
+    }
+    
+    k_mutex_unlock(&watering_state_mutex);
+    
+    printk("Task resumed for channel %d (paused for %u ms)\n", channel_id, pause_duration);
+    return true;
+}
+
+/**
+ * @brief Check if the current task is paused
+ * 
+ * @return true if current task is paused, false otherwise
+ */
+bool watering_is_current_task_paused(void) {
+    k_mutex_lock(&watering_state_mutex, K_FOREVER);
+    bool paused = watering_task_state.task_paused;
+    k_mutex_unlock(&watering_state_mutex);
+    return paused;
 }
