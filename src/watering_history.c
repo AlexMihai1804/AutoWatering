@@ -69,7 +69,11 @@ static uint32_t calculate_storage_usage(void);
  * @brief Initialize History subsystem
  */
 watering_error_t watering_history_init(void) {
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    // Use timeout instead of K_FOREVER to prevent system freeze
+    if (k_mutex_lock(&history_mutex, K_MSEC(500)) != 0) {
+        printk("History init failed: mutex timeout\n");
+        return WATERING_ERROR_TIMEOUT;
+    }
     
     // Initialize arrays
     memset(detailed_events, 0, sizeof(detailed_events));
@@ -139,7 +143,11 @@ watering_error_t watering_history_init(void) {
  * @brief Deinitialize History subsystem
  */
 watering_error_t watering_history_deinit(void) {
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    // Use timeout instead of K_FOREVER to prevent system freeze
+    if (k_mutex_lock(&history_mutex, K_MSEC(100)) != 0) {
+        printk("History deinit failed: mutex timeout\n");
+        return WATERING_ERROR_TIMEOUT;
+    }
     
     // Save current rotation info
     save_rotation_info();
@@ -164,7 +172,12 @@ watering_error_t watering_history_add_event(const history_event_t *event) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    // Use timeout instead of K_FOREVER to prevent system freeze
+    if (k_mutex_lock(&history_mutex, K_MSEC(100)) != 0) {
+        // If we can't get the mutex quickly, drop the event rather than hanging
+        printk("History add event failed: mutex timeout\n");
+        return WATERING_ERROR_TIMEOUT;
+    }
     
     // Extract channel from event (assuming it's encoded in reserved field)
     uint8_t channel = event->reserved[0];
@@ -455,7 +468,7 @@ watering_error_t history_insights_update(const insights_t *insights) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     current_insights = *insights;
     
@@ -480,7 +493,7 @@ watering_error_t history_settings_get(history_settings_t *settings) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     *settings = current_settings;
     k_mutex_unlock(&history_mutex);
     
@@ -495,7 +508,7 @@ watering_error_t history_settings_set(const history_settings_t *settings) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     current_settings = *settings;
     
@@ -671,7 +684,11 @@ watering_error_t watering_history_query_range(uint8_t channel_id, uint32_t start
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    // Use timeout instead of K_FOREVER to prevent system freeze
+    if (k_mutex_lock(&history_mutex, K_MSEC(100)) != 0) {
+        *count = 0;
+        return WATERING_SUCCESS;
+    }
     
     *count = 0;
     uint16_t max_results = 10; /* Limit results to avoid overflow */
@@ -702,7 +719,12 @@ watering_error_t watering_history_query_page(uint8_t channel_id, uint16_t page_i
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    // Use timeout instead of K_FOREVER to prevent system freeze
+    if (k_mutex_lock(&history_mutex, K_MSEC(100)) != 0) {
+        // If we can't get the mutex quickly, return empty result instead of hanging
+        *count = 0;
+        return WATERING_SUCCESS;
+    }
     
     *count = 0;
     const uint16_t events_per_page = 10;
@@ -746,7 +768,7 @@ watering_error_t watering_history_aggregate_daily(uint16_t day_index, uint16_t y
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     // Initialize daily stats entry if needed
     if (daily_stats[day_index].day_epoch == 0) {
@@ -771,7 +793,7 @@ watering_error_t watering_history_aggregate_monthly(uint8_t month, uint16_t year
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     // Find or create monthly stats entry
     uint8_t month_index = (month - 1) % MONTHLY_STATS_MONTHS;
@@ -796,7 +818,7 @@ watering_error_t watering_history_aggregate_annual(uint16_t year) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     // Find or create annual stats entry
     uint8_t year_index = (year - 2020) % ANNUAL_STATS_YEARS;
@@ -828,7 +850,7 @@ watering_error_t watering_history_get_daily_stats(uint8_t channel_id, uint16_t s
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     *count = 0;
     uint16_t max_results = 10; // Limit to prevent overflow
@@ -861,7 +883,7 @@ watering_error_t watering_history_get_monthly_stats(uint8_t channel_id, uint8_t 
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     *count = 0;
     uint16_t max_results = 12; // One year maximum
@@ -893,7 +915,7 @@ watering_error_t watering_history_get_annual_stats(uint8_t channel_id, uint16_t 
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     *count = 0;
     uint16_t max_results = 10; // Limit to prevent overflow
@@ -916,7 +938,7 @@ watering_error_t watering_history_get_annual_stats(uint8_t channel_id, uint16_t 
 }
 
 watering_error_t watering_history_rotate_old_data(void) {
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     LOG_INF("Starting data rotation for old history entries");
     
@@ -948,7 +970,7 @@ watering_error_t watering_history_rotate_old_data(void) {
 }
 
 watering_error_t watering_history_cleanup_expired(void) {
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     LOG_INF("Cleaning up expired history entries");
     
@@ -986,7 +1008,7 @@ watering_error_t watering_history_get_storage_info(storage_requirements_t *info)
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     // Calculate storage usage in bytes, then convert to KB
     size_t detailed_size = MAX_CHANNELS * DETAILED_EVENTS_PER_CHANNEL * sizeof(history_event_t);
@@ -1006,7 +1028,7 @@ watering_error_t watering_history_get_storage_info(storage_requirements_t *info)
 }
 
 watering_error_t watering_history_update_cache(void) {
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     LOG_DBG("Updating history cache");
     
@@ -1020,7 +1042,7 @@ watering_error_t watering_history_update_cache(void) {
 }
 
 watering_error_t watering_history_invalidate_cache(void) {
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     LOG_DBG("Invalidating history cache");
     
@@ -1038,7 +1060,7 @@ watering_error_t watering_history_get_recent_daily_volumes(uint8_t channel_id, u
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     *count = 0;
     uint16_t max_days = (days_back > DAILY_STATS_DAYS) ? DAILY_STATS_DAYS : days_back;
@@ -1070,7 +1092,7 @@ watering_error_t watering_history_get_monthly_trends(uint8_t channel_id, uint16_
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     *count = 0;
     uint16_t current_year = get_current_year();
@@ -1122,7 +1144,7 @@ watering_error_t watering_history_get_annual_overview(uint8_t channel_id, uint16
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     *count = 0;
     uint16_t current_year = get_current_year();
@@ -1151,7 +1173,7 @@ watering_error_t watering_history_compare_channels(uint32_t period_days, channel
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     *channel_count = 0;
     uint32_t current_time = get_current_timestamp();
@@ -1266,7 +1288,7 @@ watering_error_t watering_history_get_channel_efficiency(uint8_t channel_id, uin
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     uint32_t current_time = get_current_timestamp();
     uint32_t start_period = current_time - (period_days * 24 * 3600);
@@ -1334,7 +1356,7 @@ watering_error_t watering_history_export_csv(uint8_t channel_id, uint32_t start_
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&history_mutex, K_FOREVER);
+    k_mutex_lock(&history_mutex, K_MSEC(100));
     
     uint16_t pos = 0;
     

@@ -11,6 +11,11 @@
  * 
  * This header defines the public API and data structures for controlling 
  * a multi-channel irrigation system with flow monitoring capabilities.
+ * 
+ * PERFORMANCE IMPROVEMENTS:
+ * - Removed throttling delays for fast history channel switching
+ * - Added mutex timeouts to prevent system freezes
+ * - Optimized cache timeouts for responsive channel changes
  */
 
 /** Number of available watering channels in the system */
@@ -522,7 +527,7 @@ typedef enum {
  * @brief Custom plant configuration for PLANT_TYPE_OTHER
  */
 typedef struct {
-    char custom_name[32];       /**< Custom plant name (e.g. "Hibiscus rosa-sinensis") */
+    char custom_name[32];       /**< CUSTOM PLANT NAME: Specific plant species (e.g., "Hibiscus rosa-sinensis") - 32 bytes */
     float water_need_factor;    /**< Water need multiplier (0.1-5.0, default 1.0) */
     uint8_t irrigation_freq;    /**< Recommended irrigation frequency (days between watering) */
     bool prefer_area_based;     /**< True if plant prefers m² measurement, false for plant count */
@@ -630,7 +635,7 @@ typedef struct watering_event_t {
 typedef struct {
     watering_event_t watering_event;  /**< Configuration for automatic scheduling */
     uint32_t last_watering_time;      /**< Timestamp of last watering event */
-    char name[64];                    /**< User-friendly name for the channel */
+    char name[64];                    /**< CHANNEL NAME: User-friendly name for the channel (e.g., "Front Garden") - 64 bytes */
     struct gpio_dt_spec valve;        /**< GPIO specification for the valve control */
     bool is_active;                   /**< Whether this channel is currently active */
     

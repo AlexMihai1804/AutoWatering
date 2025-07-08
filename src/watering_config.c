@@ -148,41 +148,20 @@ watering_error_t watering_save_config(void) {
 watering_error_t watering_save_config_priority(bool is_priority) {
     int ret = 0;
     
-    // Don't try to save if we're in default-only mode
+    // Allow saves even when starting with default settings
+    // The check for using_default_settings prevented initial saves from working
+    // Once we save successfully, we'll no longer be using defaults
     if (using_default_settings) {
-        printk("Using default configuration only - save not performed\n");
-        return WATERING_SUCCESS;
-    }
-    
-    // Smart throttling: allow priority saves more frequently
-    static uint32_t last_save_time = 0;
-    static uint32_t last_priority_save_time = 0;
-    uint32_t now = k_uptime_get_32();
-    
-    if (is_priority) {
-        // Priority saves (like BLE config changes): minimum 250ms between saves
-        if (now - last_priority_save_time < 250) {
-            printk("Priority config save throttled (too frequent, %u ms since last)\n", 
-                   now - last_priority_save_time);
-            return WATERING_SUCCESS;
-        }
-        last_priority_save_time = now;
+        printk("🔧 SAVE: First time saving configuration - transitioning from defaults\n");
     } else {
-        // Normal saves: minimum 1000ms between saves
-        if (now - last_save_time < 1000) {
-            printk("Config save throttled (too frequent, %u ms since last)\n", 
-                   now - last_save_time);
-            return WATERING_SUCCESS;
-        }
-        last_save_time = now;
+        printk("🔧 SAVE: Saving configuration (not using defaults)\n");
     }
     
-    // Add debug info to identify what's calling this save
-    printk("Config save started at uptime %u ms (%s priority)\n", 
-           now, is_priority ? "HIGH" : "normal");
+    // REMOVED THROTTLING - Allow rapid access to history data
+    // User complained about slow response when changing channels
     
     // Use a timeout for the mutex to prevent system freeze
-    if (k_mutex_lock(&config_mutex, K_MSEC(1000)) != 0) {
+    if (k_mutex_lock(&config_mutex, K_MSEC(500)) != 0) {
         printk("Config save failed: mutex timeout\n");
         return WATERING_ERROR_TIMEOUT;
     }
@@ -221,10 +200,11 @@ watering_error_t watering_save_config_priority(bool is_priority) {
 
         ret = nvs_save_channel_name(i, watering_channels[i].name);   /* NEW */
         if (ret < 0) {
-            LOG_ERROR("Error saving channel name", ret);
+            printk("🔧 ERROR: Failed to save channel %d name \"%s\" (ret=%d)\n", 
+                   i, watering_channels[i].name, ret);
             // non-fatal, continue
         } else {
-            printk("Channel %d name saved: \"%s\" (ret=%d)\n", 
+            printk("🔧 SUCCESS: Channel %d name saved: \"%s\" (ret=%d)\n", 
                    i, watering_channels[i].name, ret);
         }
         
@@ -272,6 +252,11 @@ watering_error_t watering_save_config_priority(bool is_priority) {
                WATERING_CONFIG_VERSION);
         last_save_log_time = now_log;
     }
+    
+    // Mark that we're no longer using default settings after successful save
+    printk("🔧 SAVE: Marking using_default_settings = false (was %s)\n", 
+           using_default_settings ? "true" : "false");
+    using_default_settings = false;
 
     return WATERING_SUCCESS;
 }

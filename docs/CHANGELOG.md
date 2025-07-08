@@ -5,6 +5,39 @@ All notable changes to the AutoWatering project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2025-01-13 - Universal BLE Fragmentation Protocol
+
+### Major BLE Protocol Enhancement
+
+This release introduces a unified, extensible fragmentation protocol for all large BLE writes, replacing the previous inconsistent approach with a universal solution.
+
+#### Added
+- **Universal Fragmentation Protocol**: New consistent protocol for all large BLE writes (>20 bytes)
+- **Unified Header Format**: Standard `[channel_id][frag_type][size_low][size_high][data...]` header
+- **Type-Specific Handling**: Support for multiple data types via `frag_type` field:
+  - `0x01` = Channel name updates only
+  - `0x02` = Complete channel configuration (76 bytes)  
+  - `0x03-0xFF` = Reserved for future extensions
+- **Enhanced Client Functions**: New `writeChannelFragmented()` function for universal large writes
+- **Improved Documentation**: Complete update of BLE API documentation with new protocol
+
+#### Changed
+- **Fragmentation Buffer**: Replaced `name_frag` with universal `channel_frag` buffer in firmware
+- **Write Logic**: Updated `write_channel_config()` to handle both name and full-structure writes
+- **Client Implementation**: Enhanced BLE client to use new fragmentation protocol for all large writes
+- **Documentation**: Updated all BLE documentation to reflect universal protocol
+
+#### Fixed
+- **Inconsistent Protocols**: Eliminated confusion between name-only and full-structure writes
+- **Large Write Reliability**: Improved reliability for 76-byte channel configuration writes
+- **Web Bluetooth Compatibility**: Enhanced support for 20-byte MTU limitations
+- **Protocol Extensibility**: Added framework for future large data structures
+
+#### Backward Compatibility
+- **Legacy Support**: Maintains compatibility with existing name-only fragmentation
+- **Graceful Migration**: Existing clients continue to work during transition
+- **Clear Migration Path**: Documentation provides clear upgrade instructions
+
 ## [2.0.0] - 2025-01-13 - Production Release
 
 ### Complete System Redesign and Optimization
