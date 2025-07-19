@@ -3,6 +3,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/drivers/gpio.h>
+#include <stdlib.h>  /* for abs() function */
 
 #include "watering.h"
 #include "watering_internal.h"
@@ -11,10 +12,10 @@
 
 /**
  * @file valve_control.c
- * @brief Implementation of irrigation valve control
+ * @brief Implementation of irrigation valve control with master valve support
  * 
- * This file manages the hardware interface for valve control
- * and their activation/deactivation operations.
+ * This file manages the hardware interface for valve control,
+ * including intelligent master valve timing and overlapping task logic.
  */
 
 // Define timeouts for operations
@@ -22,6 +23,7 @@
 #define MAX_VALVE_INIT_RETRIES 2
 
 /** GPIO device specifications for all valves, retrieved from devicetree */
+static const struct gpio_dt_spec master_valve = GPIO_DT_SPEC_GET(DT_PATH(valves, master_valve), gpios);
 static const struct gpio_dt_spec valve1 = GPIO_DT_SPEC_GET(DT_PATH(valves, valve_1), gpios);
 static const struct gpio_dt_spec valve2 = GPIO_DT_SPEC_GET(DT_PATH(valves, valve_2), gpios);
 static const struct gpio_dt_spec valve3 = GPIO_DT_SPEC_GET(DT_PATH(valves, valve_3), gpios);
@@ -39,6 +41,30 @@ static int active_valves_count = 0;
 
 // Flags
 static int valves_ready = 0;   /* count of valves configured */
+
+/** Master valve configuration and state */
+static master_valve_config_t master_config = {
+    .enabled = true,
+    .pre_start_delay_sec = 3,     // Open master 3 seconds before zone valve
+    .post_stop_delay_sec = 2,     // Keep master open 2 seconds after zone valve closes
+    .overlap_grace_sec = 5,       // 5-second grace period between consecutive tasks
+    .auto_management = true,      // Automatically manage master valve
+    .is_active = false
+};
+
+/** Master valve timer for delayed operations */
+static struct k_work_delayable master_valve_work;
+
+/** State tracking for master valve scheduling */
+static struct {
+    uint32_t next_task_start_time;     // When next task is scheduled to start
+    bool has_pending_task;             // Whether there's a task waiting
+    uint32_t current_task_end_time;    // When current task should end
+} master_valve_schedule = {0};
+
+/* Forward declarations for master valve functions */
+static watering_error_t master_valve_open(void);
+static watering_error_t master_valve_close(void);
 
 /**
  * @brief Check if another valve can be safely activated
@@ -80,11 +106,93 @@ static inline int valve_set_state(const struct gpio_dt_spec *valve,
 }
 
 /**
- * @brief Initialize all valve hardware
+ * @brief Master valve work handler for delayed operations
+ */
+static void master_valve_work_handler(struct k_work *work)
+{
+    struct k_work_delayable *delayable_work = k_work_delayable_from_work(work);
+    ARG_UNUSED(delayable_work);
+    
+    // Check if we should close master valve due to no more pending tasks
+    uint32_t now = k_uptime_get_32();
+    
+    if (master_config.is_active && 
+        (!master_valve_schedule.has_pending_task || 
+         now > master_valve_schedule.next_task_start_time + (master_config.overlap_grace_sec * 1000))) {
+        
+        printk("Master valve: Closing due to no pending tasks within grace period\n");
+        master_valve_close();
+    }
+}
+
+/**
+ * @brief Open master valve with BLE notification
+ */
+static watering_error_t master_valve_open(void)
+{
+    if (!master_config.enabled || master_config.is_active) {
+        return WATERING_SUCCESS; // Already open or disabled
+    }
+    
+    if (!gpio_spec_ready(&master_config.valve)) {
+        printk("Master valve GPIO not ready\n");
+        return WATERING_ERROR_HARDWARE;
+    }
+    
+    int ret = valve_set_state(&master_config.valve, true);
+    if (ret != 0) {
+        printk("Failed to activate master valve: %d\n", ret);
+        return WATERING_ERROR_HARDWARE;
+    }
+    
+    master_config.is_active = true;
+    printk("Master valve OPENED\n");
+    
+    // Send BLE notification (use channel_id = 0xFF for master valve)
+    bt_irrigation_valve_status_update(0xFF, true);
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Close master valve with BLE notification
+ */
+static watering_error_t master_valve_close(void)
+{
+    if (!master_config.enabled || !master_config.is_active) {
+        return WATERING_SUCCESS; // Already closed or disabled
+    }
+    
+    if (!gpio_spec_ready(&master_config.valve)) {
+        printk("Master valve GPIO not ready\n");
+        return WATERING_ERROR_HARDWARE;
+    }
+    
+    int ret = valve_set_state(&master_config.valve, false);
+    if (ret != 0) {
+        printk("Failed to deactivate master valve: %d\n", ret);
+        return WATERING_ERROR_HARDWARE;
+    }
+    
+    master_config.is_active = false;
+    printk("Master valve CLOSED\n");
+    
+    // Send BLE notification (use channel_id = 0xFF for master valve)
+    bt_irrigation_valve_status_update(0xFF, false);
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Initialize all valve hardware including master valve
  * 
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t valve_init(void) {
+    // Initialize master valve configuration
+    master_config.valve = master_valve;
+    k_work_init_delayable(&master_valve_work, master_valve_work_handler);
+    
     // Assign GPIO specifications to each channel
     watering_channels[0].valve = valve1;
     watering_channels[1].valve = valve2;
@@ -99,6 +207,21 @@ watering_error_t valve_init(void) {
     valves_ready = 0;
     
     printk("Starting valve initialization...\n");
+    
+    // Initialize master valve first
+    printk("Initializing master valve... ");
+    if (gpio_spec_ready(&master_config.valve)) {
+        int ret = gpio_pin_configure_dt(&master_config.valve, GPIO_OUTPUT_INACTIVE);
+        if (ret == 0) {
+            valve_set_state(&master_config.valve, false);
+            master_config.is_active = false;
+            printk("SUCCESS\n");
+        } else {
+            printk("FAILED (error %d)\n", ret);
+        }
+    } else {
+        printk("SKIPPED (GPIO device not ready)\n");
+    }
     
     // Use safer approach that initializes all valves, but with protections
     printk("Using progressive, sequential valve initialization\n");
@@ -153,7 +276,7 @@ watering_error_t valve_init(void) {
 }
 
 /**
- * @brief Activate a specific watering channel's valve
+ * @brief Activate a specific watering channel's valve with master valve logic
  */
 watering_error_t watering_channel_on(uint8_t channel_id) {
     // Validate channel ID
@@ -186,6 +309,20 @@ watering_error_t watering_channel_on(uint8_t channel_id) {
     printk("Activating channel %d (%s) on GPIO pin %d\n", 
            channel_id + 1, channel->name, channel->valve.pin);
     
+    // Master valve logic: Open master valve with pre-start delay
+    if (master_config.enabled && master_config.auto_management) {
+        if (master_config.pre_start_delay_sec > 0) {
+            // Open master valve BEFORE zone valve
+            watering_error_t master_err = master_valve_open();
+            if (master_err != WATERING_SUCCESS) {
+                printk("Warning: Failed to open master valve: %d\n", master_err);
+            } else {
+                // Wait for pre-start delay
+                k_sleep(K_MSEC(master_config.pre_start_delay_sec * 1000));
+            }
+        }
+    }
+    
     // Add timeout protection for the GPIO operation
     uint32_t start = k_uptime_get_32();
     int ret;
@@ -201,6 +338,20 @@ watering_error_t watering_channel_on(uint8_t channel_id) {
     channel->is_active = true;
     active_valves_count++;
     
+    // Master valve logic: Open master valve AFTER zone valve if delay is negative
+    if (master_config.enabled && master_config.auto_management) {
+        if (master_config.pre_start_delay_sec <= 0) {
+            // Delay is 0 or negative - open master valve now or after delay
+            if (master_config.pre_start_delay_sec < 0) {
+                k_sleep(K_MSEC(abs(master_config.pre_start_delay_sec) * 1000));
+            }
+            watering_error_t master_err = master_valve_open();
+            if (master_err != WATERING_SUCCESS) {
+                printk("Warning: Failed to open master valve: %d\n", master_err);
+            }
+        }
+    }
+    
     printk("Channel %d activated - sending BLE notification\n", channel_id);
     // --- BLE notify ---------------------------------------------------
     bt_irrigation_valve_status_update(channel_id, true);
@@ -214,7 +365,7 @@ watering_error_t watering_channel_on(uint8_t channel_id) {
 }
 
 /**
- * @brief Deactivate a specific watering channel's valve
+ * @brief Deactivate a specific watering channel's valve with master valve logic
  */
 watering_error_t watering_channel_off(uint8_t channel_id) {
     // Validate channel ID
@@ -231,6 +382,20 @@ watering_error_t watering_channel_off(uint8_t channel_id) {
     
     printk("Deactivating channel %d on GPIO pin %d\n", 
            channel_id + 1, channel->valve.pin);
+    
+    // Master valve logic: Close master valve BEFORE zone valve if delay is negative
+    if (master_config.enabled && master_config.auto_management) {
+        if (master_config.post_stop_delay_sec < 0) {
+            // Close master valve BEFORE zone valve
+            watering_error_t master_err = master_valve_close();
+            if (master_err != WATERING_SUCCESS) {
+                printk("Warning: Failed to close master valve: %d\n", master_err);
+            } else {
+                // Wait for delay
+                k_sleep(K_MSEC(abs(master_config.post_stop_delay_sec) * 1000));
+            }
+        }
+    }
     
     // Add timeout protection
     uint32_t start = k_uptime_get_32();
@@ -260,6 +425,37 @@ watering_error_t watering_channel_off(uint8_t channel_id) {
         }
     }
     
+    // Master valve logic: Handle post-stop delay and overlapping tasks
+    if (master_config.enabled && master_config.auto_management) {
+        if (!any_active) {
+            // No more active valves
+            if (master_valve_schedule.has_pending_task) {
+                uint32_t now = k_uptime_get_32();
+                uint32_t time_until_next = master_valve_schedule.next_task_start_time - now;
+                
+                if (time_until_next <= (master_config.overlap_grace_sec * 1000)) {
+                    // Next task is within grace period - keep master valve open
+                    printk("Master valve: Keeping open for next task in %u ms\n", time_until_next);
+                    k_work_schedule(&master_valve_work, K_MSEC(time_until_next + (master_config.overlap_grace_sec * 1000)));
+                } else {
+                    // Next task is too far away - close master valve after delay
+                    if (master_config.post_stop_delay_sec > 0) {
+                        k_work_schedule(&master_valve_work, K_MSEC(master_config.post_stop_delay_sec * 1000));
+                    } else {
+                        master_valve_close();
+                    }
+                }
+            } else {
+                // No pending tasks - close master valve after delay
+                if (master_config.post_stop_delay_sec > 0) {
+                    k_work_schedule(&master_valve_work, K_MSEC(master_config.post_stop_delay_sec * 1000));
+                } else {
+                    master_valve_close();
+                }
+            }
+        }
+    }
+    
     // If no channels are active and we were in watering state, transition to idle
     if (!any_active && system_state == WATERING_STATE_WATERING) {
         transition_to_state(WATERING_STATE_IDLE);
@@ -271,12 +467,12 @@ watering_error_t watering_channel_off(uint8_t channel_id) {
     if (!any_active) {
         reset_pulse_count();
     }
-
+    
     return WATERING_SUCCESS;
 }
 
 /**
- * @brief Close all valves
+ * @brief Close all valves including master valve
  * 
  * Safety function to ensure all valves are closed
  * 
@@ -292,5 +488,132 @@ watering_error_t valve_close_all(void) {
         }
     }
     
+    // Also close master valve
+    if (master_config.enabled) {
+        watering_error_t master_err = master_valve_close();
+        if (master_err != WATERING_SUCCESS) {
+            result = master_err;
+        }
+    }
+    
     return result;
+}
+
+/**
+ * @brief Set master valve configuration
+ * 
+ * @param config Pointer to master valve configuration
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t master_valve_set_config(const master_valve_config_t *config) {
+    if (!config) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Update configuration
+    master_config.enabled = config->enabled;
+    master_config.pre_start_delay_sec = config->pre_start_delay_sec;
+    master_config.post_stop_delay_sec = config->post_stop_delay_sec;
+    master_config.overlap_grace_sec = config->overlap_grace_sec;
+    master_config.auto_management = config->auto_management;
+    
+    printk("Master valve config updated: enabled=%d, pre_delay=%d, post_delay=%d, grace=%d\n",
+           master_config.enabled, master_config.pre_start_delay_sec, 
+           master_config.post_stop_delay_sec, master_config.overlap_grace_sec);
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get master valve configuration
+ * 
+ * @param config Pointer to store master valve configuration
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t master_valve_get_config(master_valve_config_t *config) {
+    if (!config) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    *config = master_config;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Notify master valve system about upcoming task
+ * 
+ * This allows the master valve logic to prepare for overlapping tasks
+ * 
+ * @param start_time When the next task will start (k_uptime_get_32() format)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t master_valve_notify_upcoming_task(uint32_t start_time) {
+    master_valve_schedule.next_task_start_time = start_time;
+    master_valve_schedule.has_pending_task = true;
+    
+    printk("Master valve: Notified of upcoming task at %u\n", start_time);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Clear pending task notification
+ * 
+ * Called when a scheduled task is cancelled or completed
+ */
+void master_valve_clear_pending_task(void) {
+    master_valve_schedule.has_pending_task = false;
+    master_valve_schedule.next_task_start_time = 0;
+}
+
+/**
+ * @brief Manually open master valve (for BLE control)
+ * 
+ * This function allows manual control of the master valve via BLE.
+ * Only works when auto_management is disabled.
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t master_valve_manual_open(void) {
+    if (!master_config.enabled) {
+        printk("Master valve is disabled\n");
+        return WATERING_ERROR_CONFIG;
+    }
+    
+    if (master_config.auto_management) {
+        printk("Master valve is in automatic mode - manual control disabled\n");
+        return WATERING_ERROR_BUSY;
+    }
+    
+    return master_valve_open();
+}
+
+/**
+ * @brief Manually close master valve (for BLE control)
+ * 
+ * This function allows manual control of the master valve via BLE.
+ * Only works when auto_management is disabled.
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t master_valve_manual_close(void) {
+    if (!master_config.enabled) {
+        printk("Master valve is disabled\n");
+        return WATERING_ERROR_CONFIG;
+    }
+    
+    if (master_config.auto_management) {
+        printk("Master valve is in automatic mode - manual control disabled\n");
+        return WATERING_ERROR_BUSY;
+    }
+    
+    return master_valve_close();
+}
+
+/**
+ * @brief Get current master valve state
+ * 
+ * @return true if master valve is open, false if closed
+ */
+bool master_valve_is_open(void) {
+    return master_config.enabled && master_config.is_active;
 }

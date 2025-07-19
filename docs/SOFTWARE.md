@@ -98,6 +98,35 @@ The system monitors water flow to:
 - Trigger alerts for potential issues
 - Support calibration operations
 
+### 🚀 Master Valve Intelligence
+
+The master valve system provides intelligent water pressure management:
+
+#### Core Features
+- **Automatic Timing**: Configurable pre/post delays for optimal pressure control
+- **Overlap Detection**: Smart management of consecutive watering tasks
+- **Dual Modes**: Automatic management or manual BLE control
+- **Real-time Status**: Live monitoring via BLE notifications
+
+#### Configuration Structure
+```c
+typedef struct {
+    bool enabled;                    // Master valve system enable/disable
+    int16_t pre_start_delay_sec;     // Delay before zone valve opens (-255 to +255)
+    int16_t post_stop_delay_sec;     // Delay after zone valve closes (-255 to +255)
+    uint8_t overlap_grace_sec;       // Grace period for consecutive tasks (0-255)
+    bool auto_management;            // Automatic vs manual control
+    bool is_active;                  // Current state (read-only)
+    struct gpio_dt_spec valve;       // GPIO specification for hardware control
+} master_valve_config_t;
+```
+
+#### Timing Logic
+- **Positive delays**: Master valve opens/closes BEFORE zone valve
+- **Negative delays**: Master valve opens/closes AFTER zone valve
+- **Overlap detection**: Keeps master valve open if next task starts within grace period
+- **Emergency closure**: Automatic closure on system shutdown or errors
+
 ## Code Examples
 
 ### System Initialization
@@ -168,6 +197,50 @@ k_sleep(K_SECONDS(10));
 watering_channel_off(3);
 ```
 
+### 🚀 Master Valve Control
+
+```c
+// Configure master valve
+master_valve_config_t config = {
+    .enabled = true,
+    .pre_start_delay_sec = 3,      // Open 3 seconds before zone valve
+    .post_stop_delay_sec = 2,      // Stay open 2 seconds after zone valve
+    .overlap_grace_sec = 5,        // 5-second grace period for consecutive tasks
+    .auto_management = true        // Automatic control mode
+};
+master_valve_set_config(&config);
+
+// Get current configuration
+master_valve_config_t current_config;
+master_valve_get_config(&current_config);
+printk("Master valve enabled: %s\n", current_config.enabled ? "Yes" : "No");
+
+// Manual control (requires auto_management = false)
+config.auto_management = false;
+master_valve_set_config(&config);
+
+// Manual open/close
+watering_error_t err = master_valve_manual_open();
+if (err == WATERING_SUCCESS) {
+    printk("Master valve opened manually\n");
+}
+
+k_sleep(K_SECONDS(10));
+
+err = master_valve_manual_close();
+if (err == WATERING_SUCCESS) {
+    printk("Master valve closed manually\n");
+}
+
+// Check current state
+bool is_open = master_valve_is_open();
+printk("Master valve is %s\n", is_open ? "open" : "closed");
+
+// Notify about upcoming task (for overlap detection)
+uint32_t start_time = k_uptime_get_32() + 30000;  // 30 seconds from now
+master_valve_notify_upcoming_task(start_time);
+```
+
 ### Flow Sensor Calibration
 
 ```c
@@ -211,7 +284,7 @@ bt_irrigation_system_status_update(WATERING_STATUS_OK);
 bt_irrigation_alarm_notify(alarm_code, alarm_data);
 ```
 
-For detailed information about the Bluetooth API, see the [Bluetooth API Documentation](BLUETOOTH.md).
+For detailed information about the Bluetooth API, see the [BLE Documentation](ble/README.md).
 
 ### Error Handling
 
@@ -248,105 +321,35 @@ The watering system has the following states:
 
 The AutoWatering system includes comprehensive growing environment configuration that enables intelligent, plant-specific irrigation control. This system allows precise setup for different plant types, soil conditions, irrigation methods, coverage measurements, and sun exposure.
 
-### Plant Type Support
+**📖 For complete plant type lists and detailed specifications, see [Plant Types Documentation](PLANT_TYPES.md).**
 
-The system supports 26 predefined plant types plus custom plants:
+### Key Configuration Categories
+
+The system supports the following configuration categories:
+
+- **Plant Types**: 26+ predefined types plus custom plants (full list in [PLANT_TYPES.md](PLANT_TYPES.md))
+- **Soil Types**: 8 soil classifications (Loamy, Clay, Sandy, Silty, Peat, Chalk, Potting Mix, Hydroponic)
+- **Irrigation Methods**: 6 methods (Drip, Sprinkler, Soaker, Mist, Flood, Subsurface)
+- **Coverage Measurement**: Area-based (m²) or plant count-based
+- **Sun Exposure**: Percentage of direct sunlight (0-100%)
+
+### Basic API Usage
 
 ```c
-typedef enum {
-    PLANT_TYPE_CUSTOM = 0,        // User-defined custom plants
-    PLANT_TYPE_TOMATO = 1,        // High water needs, deep roots
-    PLANT_TYPE_LETTUCE = 2,       // Shallow roots, frequent watering
-    PLANT_TYPE_BASIL = 3,         // Moderate water, likes warmth
-    PLANT_TYPE_PEPPER = 4,        // Similar to tomato, heat-loving
-    PLANT_TYPE_SPINACH = 5,       // Cool weather, steady moisture
-    PLANT_TYPE_CILANTRO = 6,      // Quick-growing, light watering
-    PLANT_TYPE_MINT = 7,          // Loves water, spreads quickly
-    PLANT_TYPE_ROSEMARY = 8,      // Drought-tolerant, minimal water
-    PLANT_TYPE_STRAWBERRY = 9,    // Shallow roots, consistent moisture
-    PLANT_TYPE_CUCUMBER = 10,     // High water needs, regular feeding
-    // ... and 15 more predefined types
-    PLANT_TYPE_COUNT
-} watering_plant_type_t;
+// Configure a channel for tomatoes with drip irrigation
+watering_set_plant_type(0, PLANT_TYPE_TOMATO);
+watering_set_soil_type(0, SOIL_TYPE_LOAMY);
+watering_set_irrigation_method(0, IRRIGATION_METHOD_DRIP);
+
+// Set coverage (10 square meters)
+watering_coverage_t coverage = {
+    .use_area = true,
+    .area.area_m2 = 10.0
+};
+watering_set_coverage(0, &coverage);
 ```
 
-### Soil Type Classification
-
-Eight soil types are supported to optimize watering patterns:
-
-```c
-typedef enum {
-    SOIL_TYPE_LOAMY = 0,      // Balanced soil, good drainage and retention
-    SOIL_TYPE_CLAY = 1,       // Heavy soil, retains water longer
-    SOIL_TYPE_SANDY = 2,      // Light soil, drains quickly
-    SOIL_TYPE_SILTY = 3,      // Fine particles, moderate drainage
-    SOIL_TYPE_PEAT = 4,       // Organic soil, retains moisture well
-    SOIL_TYPE_CHALK = 5,      // Alkaline soil, drains well
-    SOIL_TYPE_POTTING_MIX = 6, // Commercial potting mix
-    SOIL_TYPE_HYDROPONIC = 7,  // Soilless growing medium
-    SOIL_TYPE_COUNT
-} watering_soil_type_t;
-```
-
-### Irrigation Methods
-
-Six irrigation methods are supported:
-
-```c
-typedef enum {
-    IRRIGATION_METHOD_DRIP = 0,     // Targeted drip irrigation
-    IRRIGATION_METHOD_SPRINKLER = 1, // Overhead sprinkler system
-    IRRIGATION_METHOD_SOAKER = 2,   // Soaker hose system
-    IRRIGATION_METHOD_MIST = 3,     // Misting system for delicate plants
-    IRRIGATION_METHOD_FLOOD = 4,    // Flood/basin irrigation
-    IRRIGATION_METHOD_SUBSURFACE = 5, // Subsurface drip irrigation
-    IRRIGATION_METHOD_COUNT
-} watering_irrigation_method_t;
-```
-
-### Coverage Configuration
-
-Flexible coverage measurement supports both area and plant count:
-
-```c
-typedef struct {
-    bool use_area;                  // True for area-based, false for plant count
-    union {
-        struct {
-            float area_m2;          // Coverage area in square meters
-        } area;
-        struct {
-            uint16_t count;         // Number of plants
-        } plants;
-    };
-} watering_coverage_t;
-```
-
-### Custom Plant Support
-
-For plants not in the predefined list:
-
-```c
-typedef struct {
-    char custom_name[32];           // Custom plant name
-    float water_need_factor;        // Water requirement multiplier (0.5-3.0)
-    uint8_t irrigation_freq;        // Recommended irrigation frequency (days)
-    bool prefer_area_based;         // Preferred measurement method
-} watering_custom_plant_t;
-```
-
-### Growing Environment API
-
-Key functions for environment configuration:
-
-```c
-// Plant type configuration
-watering_error_t watering_set_plant_type(uint8_t channel_id, watering_plant_type_t plant_type);
-watering_error_t watering_get_plant_type(uint8_t channel_id, watering_plant_type_t *plant_type);
-
-// Soil and irrigation method
-watering_error_t watering_set_soil_type(uint8_t channel_id, watering_soil_type_t soil_type);
-watering_error_t watering_set_irrigation_method(uint8_t channel_id, watering_irrigation_method_t method);
+**📖 For detailed API documentation and complete configuration examples, see [Plant Types Documentation](PLANT_TYPES.md).**
 
 // Coverage configuration
 watering_error_t watering_set_coverage_area(uint8_t channel_id, float area_m2);
@@ -759,7 +762,7 @@ The history system is optimized for:
 ## Next Steps
 
 - Explore the hardware setup in the [Hardware Guide](HARDWARE.md)
-- Learn about the comprehensive Bluetooth interface in the [Bluetooth API Documentation](BLUETOOTH.md)
+- Learn about the comprehensive Bluetooth interface in the [BLE Documentation](ble/README.md)
 - Check out common issues and solutions in the [Troubleshooting Guide](TROUBLESHOOTING.md)
 - Contribute to the project using the [Contributing Guide](CONTRIBUTING.md)
 
@@ -768,3 +771,294 @@ The history system is optimized for:
 This software guide is current as of June 2025 and documents firmware version 1.6 with full Bluetooth API support.
 
 [Back to main README](../README.md)
+
+## BLE Protocol Implementation
+
+### Overview
+
+The AutoWatering system implements a comprehensive Bluetooth Low Energy (BLE) protocol for remote configuration and monitoring. The implementation includes 15 characteristics with sophisticated fragmentation protocols for large data structures.
+
+### Service Architecture
+
+```c
+// Main BLE service UUID
+#define BT_UUID_IRRIGATION_SERVICE BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdef0)
+
+// Service structure with 15 characteristics
+static struct bt_gatt_attr irrigation_service_attrs[] = {
+    BT_GATT_PRIMARY_SERVICE(BT_UUID_IRRIGATION_SERVICE),
+    
+    // Status and control characteristics
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_STATUS, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_VALVE_STATUS, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_FLOW, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_CURRENT_TASK, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_TASK_QUEUE, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_SCHEDULE, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_CALIBRATION, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_HISTORY, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_ALARM, ...),
+    
+    // Configuration characteristics (require fragmentation)
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_CHANNEL_CONFIG, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_GROWING_ENV, ...),
+    
+    // Other characteristics
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_DEVICE_INFO, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_SETTINGS, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_NTP_SYNC, ...),
+    BT_GATT_CHARACTERISTIC(BT_UUID_IRRIGATION_NAME_FIELDS, ...)
+};
+```
+
+### Large Data Fragmentation
+
+Two characteristics use large data structures that exceed the 20-byte BLE MTU limit:
+
+#### Channel Configuration (76 bytes)
+```c
+struct channel_config {
+    uint8_t channel_id;
+    char name[16];
+    uint8_t enabled;
+    uint8_t watering_mode;
+    uint32_t watering_duration;
+    uint16_t watering_volume;
+    uint8_t schedule_enabled;
+    uint8_t schedule_type;
+    uint8_t schedule_days;
+    uint8_t schedule_hour;
+    uint8_t schedule_minute;
+    uint8_t schedule_watering_mode;
+    uint32_t schedule_value;
+    uint8_t auto_retry_enabled;
+    uint8_t retry_count;
+    uint16_t retry_interval;
+    uint8_t flow_monitoring_enabled;
+    uint16_t expected_flow_rate;
+    uint8_t flow_timeout;
+    uint8_t valve_type;
+    uint8_t valve_open_time;
+    uint8_t valve_close_time;
+    uint8_t moisture_sensor_enabled;
+    uint16_t moisture_threshold;
+    uint8_t moisture_check_interval;
+    uint8_t rain_sensor_enabled;
+    uint8_t skip_if_rain;
+    uint8_t reserved[12];
+} __attribute__((packed));
+```
+
+**Protocol**: Uses little-endian universal fragmentation protocol:
+```c
+// Step 1: Channel selection (1 byte)
+static ssize_t channel_config_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                   const void *buf, uint16_t len, uint16_t offset,
+                                   uint8_t flags)
+{
+    if (len == 1) {
+        // Channel selection
+        selected_channel = ((const uint8_t *)buf)[0];
+        return len;
+    }
+    
+    // Step 2: Fragmented data with frag_type=2
+    const uint8_t *data = (const uint8_t *)buf;
+    uint8_t frag_type = data[0];
+    
+    if (frag_type == 2) {
+        if (frag_state == FRAG_IDLE) {
+            // First fragment: [2][size_low][size_high][data...]
+            uint16_t total_size = data[1] | (data[2] << 8);  // Little-endian
+            // Initialize fragmentation...
+        } else {
+            // Subsequent fragments: [2][data...]
+            // Append data...
+        }
+    }
+    
+    return len;
+}
+```
+
+#### Growing Environment (50 bytes)
+```c
+struct growing_environment {
+    uint8_t channel_id;
+    uint8_t plant_type;
+    uint16_t specific_plant;
+    uint8_t soil_type;
+    uint8_t irrigation_method;
+    uint8_t coverage_type;
+    float coverage_area;
+    uint16_t plant_count;
+    uint8_t sun_exposure;
+    uint8_t location_type;
+    uint8_t season;
+    uint8_t climate_zone;
+    uint8_t auto_adjust_enabled;
+    float water_need_factor;
+    uint8_t irrigation_frequency;
+    uint8_t prefer_area_based;
+    char custom_name[16];
+    uint8_t reserved[8];
+} __attribute__((packed));
+```
+
+**Protocol**: Uses big-endian custom fragmentation protocol:
+```c
+static ssize_t growing_env_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                const void *buf, uint16_t len, uint16_t offset,
+                                uint8_t flags)
+{
+    const uint8_t *data = (const uint8_t *)buf;
+    
+    // Format: [channel_id][frag_type=2][size_high][size_low][data...]
+    uint8_t channel_id = data[0];
+    uint8_t frag_type = data[1];
+    
+    if (frag_type == 2) {
+        if (frag_state == FRAG_IDLE) {
+            // First fragment: [channel_id][2][size_high][size_low][data...]
+            uint16_t total_size = (data[2] << 8) | data[3];  // Big-endian
+            growing_env_channel = channel_id;
+            // Initialize fragmentation...
+        } else {
+            // Subsequent fragments: [channel_id][2][data...]
+            // Append data...
+        }
+    }
+    
+    return len;
+}
+```
+
+### Key Implementation Differences
+
+**Channel Selection**:
+- **Channel Configuration**: Explicit 1-byte selection protocol
+- **Growing Environment**: Implicit (uses channel_id from last write)
+
+**Fragmentation Endianness**:
+- **Channel Configuration**: Little-endian size field
+- **Growing Environment**: Big-endian size field
+
+**Fragment Structure**:
+- **Channel Config**: `[frag_type][size_low][size_high][data...]`
+- **Growing Environment**: `[channel_id][frag_type][size_high][size_low][data...]`
+
+### Notification System
+
+The system includes a sophisticated notification throttling mechanism:
+
+```c
+// Notification throttling with background worker
+static void bt_notification_work_handler(struct k_work *work)
+{
+    // Process queued notifications with 100ms minimum interval
+    while (notification_queue_has_pending()) {
+        struct notification_item *item = notification_queue_dequeue();
+        
+        // Send notification with error handling
+        int err = bt_gatt_notify(item->conn, item->attr, item->data, item->len);
+        
+        if (err == 0) {
+            // Success - update last notification time
+            last_notification_time = k_uptime_get();
+        } else {
+            // Error - requeue for retry
+            notification_queue_requeue(item);
+        }
+        
+        // Enforce minimum interval
+        k_sleep(K_MSEC(100));
+    }
+}
+```
+
+### Error Handling
+
+Comprehensive error handling throughout the BLE stack:
+
+```c
+// Error codes returned by BLE operations
+#define BT_IRRIGATION_SUCCESS           0
+#define BT_IRRIGATION_ERROR_INVALID     -1
+#define BT_IRRIGATION_ERROR_BUSY        -2
+#define BT_IRRIGATION_ERROR_TIMEOUT     -3
+#define BT_IRRIGATION_ERROR_FRAGMENTATION -4
+
+// Error recovery mechanisms
+static void bt_error_recovery(int error_code)
+{
+    switch (error_code) {
+        case BT_IRRIGATION_ERROR_FRAGMENTATION:
+            // Reset fragmentation state
+            frag_state = FRAG_IDLE;
+            frag_buffer_pos = 0;
+            break;
+            
+        case BT_IRRIGATION_ERROR_TIMEOUT:
+            // Restart advertising
+            bt_advertising_restart();
+            break;
+    }
+}
+```
+
+### Memory Management
+
+Optimized memory usage for BLE operations:
+
+```c
+// Buffer configuration for BLE reliability
+CONFIG_BT_BUF_ACL_RX_SIZE=251         // Increased RX buffer size
+CONFIG_BT_BUF_ACL_TX_SIZE=251         // Increased TX buffer size
+CONFIG_BT_L2CAP_TX_BUF_COUNT=8        // More L2CAP buffers
+CONFIG_BT_ATT_TX_COUNT=8              // More ATT buffers
+
+// Memory pools for fragmentation
+static uint8_t frag_buffer[128];      // Shared fragmentation buffer
+static struct k_mem_pool bt_pool;     // Dynamic allocation pool
+```
+
+### Connection Management
+
+Robust connection handling with automatic recovery:
+
+```c
+// Connection event handlers
+static void bt_connected(struct bt_conn *conn, uint8_t err)
+{
+    if (err) {
+        LOG_ERR("Connection failed: %d", err);
+        return;
+    }
+    
+    LOG_INF("Connected");
+    current_conn = bt_conn_ref(conn);
+    
+    // Initialize connection-specific state
+    frag_state = FRAG_IDLE;
+    notification_queue_clear();
+}
+
+static void bt_disconnected(struct bt_conn *conn, uint8_t reason)
+{
+    LOG_INF("Disconnected: %d", reason);
+    
+    if (current_conn) {
+        bt_conn_unref(current_conn);
+        current_conn = NULL;
+    }
+    
+    // Reset fragmentation state
+    frag_state = FRAG_IDLE;
+    frag_buffer_pos = 0;
+    
+    // Schedule advertising restart
+    k_work_schedule(&advertising_restart_work, K_SECONDS(5));
+}
+```
+
+For complete BLE protocol specifications and client implementation examples, see [BLE_DOCUMENTATION_COMPLETE.md](BLE_DOCUMENTATION_COMPLETE.md).

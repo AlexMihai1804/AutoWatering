@@ -188,52 +188,17 @@ watering_error_t watering_save_config_priority(bool is_priority) {
         return WATERING_ERROR_STORAGE;
     }
     
-    // Save each channel's configuration
+    // Save each channel's configuration (COMPLETE CHANNEL, not just watering_event)
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
-        ret = nvs_save_channel_config(i, &watering_channels[i].watering_event, 
-                                     sizeof(watering_event_t));
+        ret = nvs_save_channel_config(i, &watering_channels[i], 
+                                     sizeof(watering_channel_t));
         if (ret < 0) {
             LOG_ERROR("Error saving channel configuration", ret);
             k_mutex_unlock(&config_mutex);
             return WATERING_ERROR_STORAGE;
         }
-
-        ret = nvs_save_channel_name(i, watering_channels[i].name);   /* NEW */
-        if (ret < 0) {
-            printk("🔧 ERROR: Failed to save channel %d name \"%s\" (ret=%d)\n", 
-                   i, watering_channels[i].name, ret);
-            // non-fatal, continue
-        } else {
-            printk("🔧 SUCCESS: Channel %d name saved: \"%s\" (ret=%d)\n", 
-                   i, watering_channels[i].name, ret);
-        }
         
-        // Save new plant and growing environment fields
-        // Create a structure to save the extended channel data
-        struct {
-            plant_type_t plant_type;
-            plant_info_t plant_info;
-            soil_type_t soil_type;
-            irrigation_method_t irrigation_method;
-            channel_coverage_t coverage;
-            uint8_t sun_percentage;
-            custom_plant_config_t custom_plant;
-        } channel_env_data;
-        
-        channel_env_data.plant_type = watering_channels[i].plant_type;
-        channel_env_data.plant_info = watering_channels[i].plant_info;
-        channel_env_data.soil_type = watering_channels[i].soil_type;
-        channel_env_data.irrigation_method = watering_channels[i].irrigation_method;
-        channel_env_data.coverage = watering_channels[i].coverage;
-        channel_env_data.sun_percentage = watering_channels[i].sun_percentage;
-        channel_env_data.custom_plant = watering_channels[i].custom_plant;
-        
-        // Save extended data using channel-specific ID
-        ret = nvs_config_write(400 + i, &channel_env_data, sizeof(channel_env_data));
-        if (ret < 0) {
-            LOG_ERROR("Error saving channel environment data", ret);
-            // non-fatal, continue
-        }
+        printk("🔧 SUCCESS: Complete channel %d configuration saved\n", i);
     }
     
     // Save days_since_start to persistent storage
@@ -418,59 +383,31 @@ watering_error_t watering_load_config(void) {
         LOG_ERROR("Error reading calibration", ret);
     }
     
-    // Load each channel's configuration
+    // Load each channel's configuration (COMPLETE CHANNEL, not just watering_event)
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
-        // Load channel configuration
-        ret = nvs_load_channel_config(i, &watering_channels[i].watering_event, 
-                               sizeof(watering_channels[i].watering_event));
+        // First load the complete channel configuration  
+        ret = nvs_load_channel_config(i, &watering_channels[i], 
+                               sizeof(watering_channel_t));
         if (ret >= 0) {
-            printk("Channel %d configuration loaded\n", i + 1);
+            printk("Channel %d configuration loaded (complete)\n", i + 1);
             loaded_configs++;
-        } else if (ret != -ENOENT) {
+        } else if (ret == -ENOENT) {
+            // If no saved config exists, try to load just the old watering_event for backward compatibility
+            ret = nvs_load_channel_config(i, &watering_channels[i].watering_event, 
+                                   sizeof(watering_event_t));
+            if (ret >= 0) {
+                printk("Channel %d legacy configuration loaded (watering_event only)\n", i + 1);
+                loaded_configs++;
+            } else {
+                printk("Channel %d no configuration found, using defaults\n", i + 1);
+            }
+        } else {
             LOG_ERROR("Error reading channel configuration", ret);
         }
-
-        ret = nvs_load_channel_name(i,
-                    watering_channels[i].name,
-                    sizeof(watering_channels[i].name));              /* NEW */
-        if (ret >= 0) {
-            printk("Channel %d name loaded: \"%s\" (len=%d)\n", 
-                   i, watering_channels[i].name, ret);
-        } else if (ret == -ENOENT) {
-            printk("Channel %d name not found in NVS, keeping default: \"%s\"\n", 
-                   i, watering_channels[i].name);
-        } else {
-            LOG_ERROR("Error reading channel name", ret);
-        }
         
-        // Load new plant and growing environment fields
-        struct {
-            plant_type_t plant_type;
-            plant_info_t plant_info;
-            soil_type_t soil_type;
-            irrigation_method_t irrigation_method;
-            channel_coverage_t coverage;
-            uint8_t sun_percentage;
-            custom_plant_config_t custom_plant;
-        } channel_env_data;
-        
-        ret = nvs_config_read(400 + i, &channel_env_data, sizeof(channel_env_data));
-        if (ret >= 0) {
-            watering_channels[i].plant_type = channel_env_data.plant_type;
-            watering_channels[i].plant_info = channel_env_data.plant_info;
-            watering_channels[i].soil_type = channel_env_data.soil_type;
-            watering_channels[i].irrigation_method = channel_env_data.irrigation_method;
-            watering_channels[i].coverage = channel_env_data.coverage;
-            watering_channels[i].sun_percentage = channel_env_data.sun_percentage;
-            watering_channels[i].custom_plant = channel_env_data.custom_plant;
-            printk("Channel %d environment data loaded (plant_type=%d, specific=%d)\n", 
-                   i + 1, watering_channels[i].plant_type, 
-                   watering_channels[i].plant_info.specific.vegetable);
-        } else if (ret == -ENOENT) {
-            /* Use default values already set in load_default_config */
-        } else {
-            LOG_ERROR("Error reading channel environment data", ret);
-        }
+        /* NOTE: Channel name and environment data are now part of the complete 
+         * channel configuration loaded above. Legacy separate loading is no 
+         * longer needed for new configurations. */
     }
     
     // Load days_since_start counter

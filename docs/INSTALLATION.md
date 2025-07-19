@@ -147,7 +147,7 @@ After successful installation:
 
 - Configure your hardware following the [Hardware Guide](HARDWARE.md)
 - Learn about the software architecture in the [Software Guide](SOFTWARE.md)
-- Set up remote control using the [Bluetooth API Documentation](BLUETOOTH.md)
+- Set up remote control using the [BLE Documentation](ble/README.md)
 - Test the system with the examples in the documentation
 - Check [Troubleshooting Guide](TROUBLESHOOTING.md) if you encounter issues
 

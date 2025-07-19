@@ -59,15 +59,16 @@ This guide provides detailed information about the hardware components, connecti
 
 | Component | GPIO Pin | Description |
 |-----------|----------|-------------|
-| Flow Sensor | GPIO0_6 | Interrupt-capable input pin |
-| Valve 1 | GPIO0_9 | Output to relay 1 |
-| Valve 2 | GPIO0_10 | Output to relay 2 |
-| Valve 3 | GPIO1_11 | Output to relay 3 |
-| Valve 4 | GPIO1_13 | Output to relay 4 |
-| Valve 5 | GPIO1_15 | Output to relay 5 |
-| Valve 6 | GPIO0_2 | Output to relay 6 |
-| Valve 7 | GPIO0_29 | Output to relay 7 |
-| Valve 8 | GPIO0_31 | Output to relay 8 |
+| Flow Sensor | P0.6 | Interrupt-capable input pin |
+| **🚀 Master Valve** | **P0.8** | **Main water supply control** |
+| Valve 1 | P0.17 | Output to relay 1 |
+| Valve 2 | P0.20 | Output to relay 2 |
+| Valve 3 | P0.22 | Output to relay 3 |
+| Valve 4 | P0.24 | Output to relay 4 |
+| Valve 5 | P1.0 | Output to relay 5 |
+| Valve 6 | P0.11 | Output to relay 6 |
+| Valve 7 | P1.4 | Output to relay 7 |
+| Valve 8 | P1.6 | Output to relay 8 |
 
 ### I2C Connections for DS3231 RTC
 
@@ -116,6 +117,42 @@ This guide provides detailed information about the hardware components, connecti
    - Current consumption: 200-500mA per valve
    - Operating pressure: Up to 10 bar (varies by model)
    - Thread size: Typically 1/2" or 3/4" BSP/NPT
+
+## 🚀 Master Valve Installation
+
+The master valve controls the main water supply to all zone valves, providing intelligent water pressure management.
+
+1. **Master Valve Placement**:
+   - Install the master valve on the main water supply line
+   - Position **before** the flow sensor and zone valves
+   - Ensure it can control water flow to the entire irrigation system
+   - Install after any main shutoff valves but before distribution manifold
+
+2. **Electrical Connections**:
+   - Connect master valve to GPIO P0.8 via relay module
+   - Use the same 12V power supply as zone valves
+   - Connect to relay channel dedicated for master valve (typically channel 9)
+
+3. **Master Valve Benefits**:
+   - **Pressure Protection**: Prevents pressure spikes when zone valves open/close
+   - **Water Conservation**: Eliminates residual pressure bleeding
+   - **System Safety**: Central shutoff capability for emergencies
+   - **Timing Control**: Intelligent pre/post delays for optimal water pressure
+   - **Overlap Prevention**: Smart management of consecutive watering tasks
+
+4. **Configuration Options**:
+   - **Pre-start delay**: 0-255 seconds (default: 3s) - Opens before zone valve
+   - **Post-stop delay**: 0-255 seconds (default: 2s) - Stays open after zone valve
+   - **Overlap grace**: 0-255 seconds (default: 5s) - Prevents unnecessary cycling
+   - **Auto vs Manual**: Automatic task management or manual BLE control
+
+5. **Wiring Diagram**:
+```
+Main Water ─── Master Valve ─── Flow Sensor ─── Zone Valves ─── Irrigation
+Supply              ↑                                 ↑
+                GPIO P0.8                         GPIO P0.17-P1.6
+                (Relay Ch9)                       (Relay Ch1-8)
+```
 
 ## Power Requirements
 
@@ -319,7 +356,7 @@ After hardware setup:
 
 - Follow the [Installation Guide](INSTALLATION.md) to build and flash the firmware
 - Configure the software using the [Software Guide](SOFTWARE.md)
-- Set up remote monitoring with the [Bluetooth API](BLUETOOTH.md)
+- Set up remote monitoring with the [BLE API](ble/README.md)
 - Test your installation and troubleshoot any issues using the [Troubleshooting Guide](TROUBLESHOOTING.md)
 
 ## Documentation Version

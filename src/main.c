@@ -9,6 +9,7 @@
 #include "watering.h"
 #include "watering_internal.h"
 #include "rtc.h"
+#include "timezone.h"  // Add timezone support
 #ifdef CONFIG_BT
 #include "bt_irrigation_service.h"
 #endif
@@ -288,6 +289,14 @@ int main(void) {
         printk("WARNING: RTC init failed (%d) – using uptime fallback\n", ret);
     } else {
         set_default_rtc_time();
+    }
+    
+    // Initialize timezone after RTC and NVS are ready
+    ret = timezone_init();
+    if (ret != 0) {
+        printk("WARNING: Timezone init failed (%d) – using default UTC+2\n", ret);
+    } else {
+        printk("Timezone initialization successful\n");
     }
     printk("Starting watering subsystem init...\n");
     ret = watering_init_wrapper();

@@ -327,7 +327,7 @@ This guide provides solutions for common issues that may occur when setting up o
 4. **MTU Issues**:
    - For web browsers: Use fragmented writes for large structures
    - For mobile apps: Negotiate larger MTU after connection
-   - See [Bluetooth API Documentation](BLUETOOTH.md) for MTU handling
+   - See [BLE Documentation](ble/README.md) for MTU handling
 
 5. **Connection Parameters**:
    - Use recommended connection parameters (30-50ms interval)
@@ -716,7 +716,7 @@ If you need to reset the system to factory defaults:
 If you continue to experience issues:
 
 1. **Check Documentation**:
-   - Review the [Bluetooth API Documentation](BLUETOOTH.md) for interface issues
+   - Review the [BLE Documentation](ble/README.md) for interface issues
    - Check the [Hardware Guide](HARDWARE.md) for wiring problems
    - Consult the [Software Guide](SOFTWARE.md) for configuration questions
 
@@ -808,3 +808,148 @@ struct {
 - Updated structure size is 24 bytes (previously 22 bytes)
 - Parse `channel_id` and `event_type` fields for complete event information
 - Use correct history UUID: `…efc` not `…ef8`
+
+## BLE Protocol Issues
+
+### Large Data Fragmentation (Channel Configuration & Growing Environment)
+
+**Symptoms**: Writes to Channel Configuration or Growing Environment characteristics fail, appear to succeed but don't update the device, or only partially write data.
+
+**Root Cause**: These characteristics use large data structures (76 bytes for Channel Config, 50 bytes for Growing Environment) that exceed the 20-byte BLE MTU limit and require fragmentation protocols.
+
+**Solutions**:
+
+1. **Use Proper Fragmentation for Channel Configuration**:
+   ```python
+   # Channel Configuration uses little-endian fragmentation
+   # Structure: 76 bytes total
+   def write_channel_config_fragmented(client, channel_id, config_data):
+       # Step 1: Select channel (1 byte)
+       await client.write_gatt_char(CHANNEL_CONFIG_UUID, bytes([channel_id]))
+       
+       # Step 2: Send fragmented data
+       data_size = len(config_data)  # Should be 76 bytes
+       size_bytes = struct.pack("<H", data_size)  # Little-endian
+       
+       # First fragment: [frag_type=2][size_low][size_high][data...]
+       first_fragment = bytes([2]) + size_bytes + config_data[:17]
+       await client.write_gatt_char(CHANNEL_CONFIG_UUID, first_fragment)
+       
+       # Subsequent fragments: [frag_type=2][data...]
+       offset = 17
+       while offset < len(config_data):
+           fragment_data = config_data[offset:offset+19]
+           fragment = bytes([2]) + fragment_data
+           await client.write_gatt_char(CHANNEL_CONFIG_UUID, fragment)
+           offset += 19
+   ```
+
+2. **Use Proper Fragmentation for Growing Environment**:
+   ```python
+   # Growing Environment uses big-endian fragmentation and different protocol
+   # Structure: 50 bytes total
+   def write_growing_env_fragmented(client, channel_id, env_data):
+       # No channel selection - uses last written channel_id
+       data_size = len(env_data)  # Should be 50 bytes
+       size_high = (data_size >> 8) & 0xFF
+       size_low = data_size & 0xFF
+       
+       # First fragment: [channel_id][frag_type=2][size_high][size_low][data...]
+       first_fragment = bytes([channel_id, 2, size_high, size_low]) + env_data[:16]
+       await client.write_gatt_char(GROWING_ENV_UUID, first_fragment)
+       
+       # Subsequent fragments: [channel_id][frag_type=2][data...]
+       offset = 16
+       while offset < len(env_data):
+           fragment_data = env_data[offset:offset+18]
+           fragment = bytes([channel_id, 2]) + fragment_data
+           await client.write_gatt_char(GROWING_ENV_UUID, fragment)
+           offset += 18
+   ```
+
+**Common Mistakes**:
+- Using the same fragmentation protocol for both characteristics (they're different!)
+- Mixing up endianness (Channel Config: little-endian, Growing Env: big-endian)
+- Not sending channel selection for Channel Configuration
+- Trying to send channel selection for Growing Environment (not supported)
+- Exceeding 20-byte MTU without fragmentation
+
+### Channel Selection Issues
+
+**Symptoms**: Reading Channel Configuration returns data for wrong channel, or Growing Environment reads return unexpected data.
+
+**Solutions**:
+
+1. **Channel Configuration - Explicit Selection Required**:
+   ```python
+   # Always select channel before reading
+   await client.write_gatt_char(CHANNEL_CONFIG_UUID, bytes([channel_id]))
+   # Now read returns data for the selected channel
+   data = await client.read_gatt_char(CHANNEL_CONFIG_UUID)
+   ```
+
+2. **Growing Environment - Implicit Selection**:
+   ```python
+   # No explicit selection protocol - uses last written channel
+   # To read channel 3, you must have previously written to channel 3
+   # Or write an empty/minimal update to set the channel:
+   minimal_data = bytes(50)  # 50-byte structure with zeros
+   await write_growing_env_fragmented(client, 3, minimal_data)
+   # Now reads will return data for channel 3
+   data = await client.read_gatt_char(GROWING_ENV_UUID)
+   ```
+
+**Warning**: Growing Environment does NOT have a 1-byte channel selection protocol like Channel Configuration. Attempting to write a single byte will be interpreted as the start of fragmented data.
+
+### MTU Negotiation Issues
+
+**Symptoms**: Fragmentation fails even when implemented correctly.
+
+**Solutions**:
+
+1. **Check MTU Size**:
+   ```python
+   # In most BLE implementations, check current MTU
+   current_mtu = await client.get_mtu()
+   print(f"Current MTU: {current_mtu}")
+   # Should be 23 (20 bytes data + 3 bytes overhead) for standard BLE
+   ```
+
+2. **Account for ATT Overhead**:
+   - Total MTU includes 3 bytes of ATT protocol overhead
+   - For writing: 20 bytes maximum data per operation
+   - Fragmentation protocols account for this automatically
+
+### Data Structure Size Mismatches
+
+**Symptoms**: Partial data writes, unexpected behavior after configuration updates.
+
+**Verification**:
+```python
+# Verify expected structure sizes
+CHANNEL_CONFIG_SIZE = 76  # bytes
+GROWING_ENV_SIZE = 50     # bytes
+
+def verify_structure_size(data, expected_size, name):
+    if len(data) != expected_size:
+        raise ValueError(f"{name} data must be exactly {expected_size} bytes, got {len(data)}")
+```
+
+**Solution**: Always ensure your data structures match the exact sizes expected by the firmware:
+- Channel Configuration: 76 bytes (verified by manual structure layout)
+- Growing Environment: 50 bytes (verified by manual structure layout)
+
+### BLE Service Discovery Issues
+
+**Symptoms**: Cannot find characteristics, service appears incomplete.
+
+**Solutions**:
+
+1. **Complete Service UUID**: `12345678-1234-5678-1234-56789abcdef0`
+
+2. **Verify All Characteristics Present**:
+   - 15 total characteristics should be discovered
+   - Check that both Channel Configuration and Growing Environment UUIDs are found
+   - Some BLE clients cache service information - clear cache if missing characteristics
+
+**Related Documentation**: See `BLE_DOCUMENTATION_COMPLETE.md` for complete protocol specifications and examples.

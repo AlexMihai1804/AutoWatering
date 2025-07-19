@@ -6,6 +6,7 @@
 #include "watering.h"
 #include "watering_internal.h"
 #include "rtc.h"
+#include "timezone.h"               /* Add timezone support for local time scheduling */
 #include "bt_irrigation_service.h"   /* NEW */
 #include "watering_history.h"        /* Add history integration */
 
@@ -152,6 +153,11 @@ watering_error_t watering_add_task(watering_task_t *task) {
         watering_increment_error_tasks();  /* Track queue overflow errors */
         return WATERING_ERROR_QUEUE_FULL;
     }
+    
+    // Notify master valve about upcoming task for intelligent scheduling
+    uint32_t task_start_time = k_uptime_get_32() + 1000; // Assuming task starts soon (1 second)
+    master_valve_notify_upcoming_task(task_start_time);
+    
     /* BLE notify – 0xFF ⇒ calculează intern */
     bt_irrigation_queue_status_update(0xFF);
     
@@ -348,9 +354,9 @@ bool watering_stop_current_task(void) {
     #ifdef CONFIG_BT
     watering_history_record_task_complete(channel_id, actual_value, total_volume_ml, WATERING_SUCCESS_COMPLETE);
     
-    // Notify BLE clients about history event
+    // Notify BLE clients about history event using RTC timestamp
     bt_irrigation_history_notify_event(channel_id, WATERING_EVENT_COMPLETE, 
-                                      k_uptime_get_32() / 1000, total_volume_ml);
+                                      timezone_get_unix_utc(), total_volume_ml);
     #endif
     
     /* Increment completed tasks counter */
@@ -657,12 +663,27 @@ static void scheduler_task_fn(void *p1, void *p2, void *p3) {
     
     rtc_datetime_t now;
     if (rtc_status == 0 && rtc_datetime_get(&now) == 0) {
-        current_hour = now.hour;
-        current_minute = now.minute;
-        current_day_of_week = now.day_of_week;
-        last_day = now.day;
-        printk("Current time from RTC: %02d:%02d, day %d\n", 
-               current_hour, current_minute, current_day_of_week);
+        /* TIMEZONE FIX: Convert RTC time (UTC) to local time for scheduling */
+        uint32_t utc_timestamp = timezone_rtc_to_unix_utc(&now);
+        rtc_datetime_t local_time;
+        
+        /* Convert UTC to local time using timezone configuration */
+        if (timezone_unix_to_rtc_local(utc_timestamp, &local_time) == 0) {
+            current_hour = local_time.hour;
+            current_minute = local_time.minute;
+            current_day_of_week = local_time.day_of_week;
+            last_day = local_time.day;
+            printk("Current time from RTC (LOCAL): %02d:%02d, day %d [UTC was %02d:%02d]\n", 
+                   current_hour, current_minute, current_day_of_week, now.hour, now.minute);
+        } else {
+            /* Fallback to UTC if timezone conversion fails */
+            current_hour = now.hour;
+            current_minute = now.minute;
+            current_day_of_week = now.day_of_week;
+            last_day = now.day;
+            printk("Current time from RTC (UTC fallback): %02d:%02d, day %d\n", 
+                   current_hour, current_minute, current_day_of_week);
+        }
     } else {
         printk("Using system time as fallback\n");
         current_hour = 12;
@@ -678,9 +699,21 @@ static void scheduler_task_fn(void *p1, void *p2, void *p3) {
         
         if (rtc_status == 0) {
             if (rtc_datetime_get(&now) == 0) {
-                current_hour = now.hour;
-                current_minute = now.minute;
-                current_day_of_week = now.day_of_week;
+                /* TIMEZONE FIX: Convert RTC time (UTC) to local time for scheduling */
+                uint32_t utc_timestamp = timezone_rtc_to_unix_utc(&now);
+                rtc_datetime_t local_time;
+                
+                /* Convert UTC to local time using timezone configuration */
+                if (timezone_unix_to_rtc_local(utc_timestamp, &local_time) == 0) {
+                    current_hour = local_time.hour;
+                    current_minute = local_time.minute;
+                    current_day_of_week = local_time.day_of_week;
+                } else {
+                    /* Fallback to UTC if timezone conversion fails */
+                    current_hour = now.hour;
+                    current_minute = now.minute;
+                    current_day_of_week = now.day_of_week;
+                }
                 rtc_read_success = true;
                 
                 if (rtc_error_count > 0) {
@@ -761,6 +794,9 @@ watering_error_t watering_scheduler_run(void) {
         }
         
         bool should_run = false;
+        /* TIMEZONE FIX: Both times are now in LOCAL TIME for proper scheduling */
+        /* current_hour/current_minute = RTC time converted to local timezone */
+        /* event->start_time.hour/minute = user-configured local time */
         if (event->start_time.hour == current_hour && event->start_time.minute == current_minute) {
             if (event->schedule_type == SCHEDULE_DAILY) {
                 if (event->schedule.daily.days_of_week & (1 << current_day_of_week)) {
@@ -800,7 +836,8 @@ watering_error_t watering_scheduler_run(void) {
             
             watering_error_t result = watering_add_task(&new_task);
             if (result == WATERING_SUCCESS) {
-                channel->last_watering_time = k_uptime_get_32();
+                /* Use RTC timestamp for persistent last watering time tracking */
+                channel->last_watering_time = timezone_get_unix_utc();
                 printk("Watering schedule added for channel %d (added to task queue)\n", i + 1);
             } else {
                 printk("Failed to add scheduled task for channel %d: error %d\n", i + 1, result);

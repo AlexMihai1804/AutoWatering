@@ -241,11 +241,89 @@ static void flow_monitor_fn(void *p1, void *p2, void *p3) {
     
     printk("Flow sensor monitoring task started\n");
     
+    // Timer pentru notificările periodice de progres
+    static uint32_t last_progress_notification_time = 0;
+    static uint32_t last_significant_progress = 0xFFFFFFFF; // Pentru detectarea schimbărilor semnificative
+    static watering_task_t *last_monitored_task = NULL;     // Pentru detectarea completion-ului
+    static bool last_task_in_progress = false;              // Pentru detectarea tranziției
+    
     while (!exit_tasks) {
         uint32_t pulses = get_pulse_count();
+        uint32_t now_ms = k_uptime_get_32();
+
+        // Verifică dacă există un task activ pentru notificări de progres
+        watering_task_t *current_task = watering_get_current_task();
+        bool should_send_progress_update = false;
+        bool task_just_completed = false;
+        
+        // Detectează completion-ul task-ului
+        if (last_task_in_progress && (!watering_task_state.task_in_progress || current_task == NULL)) {
+            task_just_completed = true;
+            printk("🎉 Task completion detected! Sending final notification.\n");
+        }
+        
+        // Actualizează starea monitorizată
+        last_monitored_task = current_task;
+        last_task_in_progress = watering_task_state.task_in_progress;
+        
+        // Trimite notificări de progres la fiecare 2 secunde dacă există task activ
+        if (current_task && watering_task_state.task_in_progress && !watering_task_state.task_paused) {
+            // Calculează progresul curent
+            uint32_t elapsed_ms = now_ms - watering_task_state.watering_start_time;
+            
+            // Scade timpul pauzat din timpul total
+            if (watering_task_state.total_paused_time > 0) {
+                elapsed_ms -= watering_task_state.total_paused_time;
+            }
+            
+            uint32_t current_progress = 0;
+            
+            if (current_task->channel->watering_event.watering_mode == WATERING_BY_DURATION) {
+                // Pentru mode duration: progres = timp scurs efectiv / timp total * 100
+                uint32_t target_ms = current_task->channel->watering_event.watering.by_duration.duration_minutes * 60000;
+                if (target_ms > 0) {
+                    current_progress = (elapsed_ms * 100) / target_ms;
+                    if (current_progress > 100) current_progress = 100;
+                }
+            } else {
+                // Pentru mode volume: progres = volum scurs / volum total * 100
+                uint32_t pulses_per_liter;
+                if (watering_get_flow_calibration(&pulses_per_liter) == WATERING_SUCCESS && pulses_per_liter > 0) {
+                    uint32_t target_pulses = current_task->channel->watering_event.watering.by_volume.volume_liters * pulses_per_liter;
+                    if (target_pulses > 0) {
+                        current_progress = (pulses * 100) / target_pulses;
+                        if (current_progress > 100) current_progress = 100;
+                    }
+                }
+            }
+            
+            // Trimite notificare dacă:
+            // 1. Au trecut cel puțin 200ms de la ultima notificare (5Hz când activ)
+            // 2. Progresul s-a schimbat cu cel puțin 1% față de ultima notificare (ultra sensibil)
+            bool time_elapsed = (now_ms - last_progress_notification_time >= 200);
+            bool significant_change = (last_significant_progress == 0xFFFFFFFF) || 
+                                     (current_progress >= last_significant_progress + 1) ||
+                                     (current_progress <= last_significant_progress - 1);
+            
+            if (time_elapsed && (significant_change || (now_ms - last_progress_notification_time >= 1000))) {
+                should_send_progress_update = true;
+                last_progress_notification_time = now_ms;
+                last_significant_progress = current_progress;
+            }
+        } else {
+            // Resetează timerul când nu există task activ
+            last_significant_progress = 0xFFFFFFFF;
+        }
+        
+        // Trimite notificare immediaă la completion task
+        if (task_just_completed) {
+            should_send_progress_update = true;
+            last_progress_notification_time = now_ms;
+            last_significant_progress = 100; // 100% complete
+            printk("📡 Task completion notification triggered\n");
+        }
 
         /* --- NEW: compute l/min every 0.5 seconds for responsiveness --- */
-        uint32_t now_ms = k_uptime_get_32();
         if (now_ms - last_rate_check_time >= 500) {     /* 0.5 s window - ultra responsive */
             uint32_t delta_p = pulses - last_rate_pulses;
             uint32_t delta_t = now_ms - last_rate_check_time;   /* ms   */
@@ -300,14 +378,37 @@ static void flow_monitor_fn(void *p1, void *p2, void *p3) {
             }
         }
         
-        // Adjust sleep duration based on power mode
-        uint32_t sleep_time = 500; // Default 0.5 seconds - ultra responsive
+        // Trimite notificarea de progres dacă este necesară
+        if (should_send_progress_update) {
+            #ifdef CONFIG_BT
+            // Apelează notificarea pentru task-ul curent
+            int notify_result = bt_irrigation_current_task_notify();
+            if (notify_result == 0) {
+                if (task_just_completed) {
+                    printk("🎉 Task completion notification sent successfully!\n");
+                } else {
+                    printk("📊 Progress notification sent: %u%% complete\n", last_significant_progress);
+                }
+            } else {
+                printk("❌ Failed to send progress notification: %d\n", notify_result);
+            }
+            #endif
+        }
+        
+        // Adjust sleep duration based on power mode and task activity
+        uint32_t sleep_time = 200; // Default 200ms for 5Hz ultra responsive when task active
+        
+        // If no active task, use longer sleep times to save power
+        if (!current_task || !watering_task_state.task_in_progress) {
+            sleep_time = 1000; // 1 second when idle
+        }
+        
         switch (current_power_mode) {
             case POWER_MODE_ENERGY_SAVING:
-                sleep_time = 5000; // 5 seconds in energy saving mode
+                sleep_time = current_task ? 1000 : 5000; // 1s active, 5s idle
                 break;
             case POWER_MODE_ULTRA_LOW_POWER:
-                sleep_time = 30000; // 30 seconds in ultra-low power mode
+                sleep_time = current_task ? 5000 : 30000; // 5s active, 30s idle
                 break;
             default:
                 break;

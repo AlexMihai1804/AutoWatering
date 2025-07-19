@@ -592,6 +592,19 @@ typedef struct {
 } plant_info_t;
 
 /**
+ * @brief Master valve configuration for intelligent timing control
+ */
+typedef struct {
+    bool enabled;                    /**< Whether master valve functionality is enabled */
+    int16_t pre_start_delay_sec;     /**< Seconds to open master valve BEFORE zone valve (negative = after) */
+    int16_t post_stop_delay_sec;     /**< Seconds to keep master valve open AFTER zone valve closes (negative = close before) */
+    uint8_t overlap_grace_sec;       /**< Grace period (seconds) to keep master open between consecutive tasks */
+    bool auto_management;            /**< Enable automatic master valve management for all tasks */
+    struct gpio_dt_spec valve;       /**< GPIO specification for the master valve control */
+    bool is_active;                  /**< Current state of master valve */
+} master_valve_config_t;
+
+/**
  * @brief Complete definition of a watering event including scheduling and quantity
  */
 typedef struct watering_event_t {
@@ -861,6 +874,70 @@ watering_error_t watering_set_power_mode(power_mode_t mode);
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_get_power_mode(power_mode_t *mode);
+
+/* ===== MASTER VALVE FUNCTIONS ===== */
+
+/**
+ * @brief Set master valve configuration
+ * 
+ * @param config Pointer to master valve configuration
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t master_valve_set_config(const master_valve_config_t *config);
+
+/**
+ * @brief Get master valve configuration
+ * 
+ * @param config Pointer to store master valve configuration
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t master_valve_get_config(master_valve_config_t *config);
+
+/**
+ * @brief Notify master valve system about upcoming task
+ * 
+ * This allows the master valve logic to prepare for overlapping tasks
+ * 
+ * @param start_time When the next task will start (k_uptime_get_32() format)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t master_valve_notify_upcoming_task(uint32_t start_time);
+
+/**
+ * @brief Clear pending task notification
+ * 
+ * Called when a scheduled task is cancelled or completed
+ */
+void master_valve_clear_pending_task(void);
+
+/**
+ * @brief Manually open master valve (for BLE control)
+ * 
+ * This function allows manual control of the master valve via BLE.
+ * Only works when auto_management is disabled.
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t master_valve_manual_open(void);
+
+/**
+ * @brief Manually close master valve (for BLE control)
+ * 
+ * This function allows manual control of the master valve via BLE.
+ * Only works when auto_management is disabled.
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t master_valve_manual_close(void);
+
+/**
+ * @brief Get current master valve state
+ * 
+ * @return true if master valve is open, false if closed
+ */
+bool master_valve_is_open(void);
+
+/* ===== CHANNEL TASK FUNCTIONS ===== */
 
 /**
  * @brief Add a duration-based watering task for a specific channel

@@ -62,6 +62,7 @@ enum {
     ID_FLOW_CALIB       = 200,
     ID_DAYS_SINCE_START = 201,
     ID_CHANNEL_NAME_BASE= 300,   /* +ch (0-7)  ← NEW */
+    ID_TIMEZONE_CONFIG  = 400,   /* Timezone configuration */
 };
 
 /* ——— nivel înalt —————————————————————————————————————— */
@@ -129,6 +130,34 @@ int nvs_load_channel_name(uint8_t ch, char *buf, size_t sz)
         } else {
             buf[sz - 1] = '\0';  /* truncate if needed */
         }
+    }
+    return ret;
+}
+
+/* ——— Timezone configuration functions ————————————————— */
+int nvs_save_timezone_config(const timezone_config_t *tz_config)
+{
+    if (!tz_config) {
+        return -EINVAL;
+    }
+    return nvs_config_write(ID_TIMEZONE_CONFIG, tz_config, sizeof(*tz_config));
+}
+
+int nvs_load_timezone_config(timezone_config_t *tz_config)
+{
+    if (!tz_config) {
+        return -EINVAL;
+    }
+    
+    int ret = nvs_config_read(ID_TIMEZONE_CONFIG, tz_config, sizeof(*tz_config));
+    if (ret < 0) {
+        /* Load default configuration if not found */
+        timezone_config_t default_config = DEFAULT_TIMEZONE_CONFIG;
+        *tz_config = default_config;
+        
+        /* Save default configuration for future use */
+        nvs_save_timezone_config(tz_config);
+        ret = sizeof(*tz_config);
     }
     return ret;
 }

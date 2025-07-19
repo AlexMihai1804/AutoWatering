@@ -339,7 +339,7 @@ Special considerations for Bluetooth interface modifications:
 
 1. **Backward Compatibility**:
    - Maintain compatibility with existing clients when possible
-   - Document breaking changes clearly in BLUETOOTH.md
+   - Document breaking changes clearly in ble/README.md
    - Provide migration guidance for API changes
 
 2. **Structure Packing**:
@@ -617,7 +617,7 @@ BT_GATT_CHARACTERISTIC(&new_feature_uuid.uuid,
                       BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
                       read_new_feature, write_new_feature, new_feature_value),
 
-// 5. Update documentation in BLUETOOTH.md
+// 5. Update documentation in ble/README.md
 ```
 
 #### 2. Adding New System States

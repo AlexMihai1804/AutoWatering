@@ -240,6 +240,16 @@ int bt_irrigation_alarm_clear(uint8_t alarm_code);
 int bt_irrigation_calibration_notify(void);
 
 /**
+ * @brief Send timezone configuration notification via Bluetooth
+ * 
+ * Reads current timezone configuration and sends notification to connected
+ * clients. Used for reporting timezone changes and DST status updates.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_timezone_notify(void);
+
+/**
  * @brief Start flow sensor calibration session
  * 
  * Controls flow sensor calibration process via BLE. Starts or stops calibration
@@ -414,6 +424,37 @@ int bt_irrigation_update_statistics(uint8_t channel_id, uint32_t volume_ml, uint
  */
 int bt_irrigation_update_history_aggregations(void);
 
+/**
+ * @brief Debug and test BLE notification system
+ * 
+ * Force enables all BLE notifications and tests the notification system.
+ * Useful for debugging notification issues and verifying client connectivity.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_debug_notifications(void);
+
+/**
+ * @brief Test channel configuration notification
+ * 
+ * Forces a channel configuration notification regardless of client subscription state.
+ * Used for debugging and testing the BLE notification system.
+ * 
+ * @param channel_id Channel ID to test notification for
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_test_channel_notification(uint8_t channel_id);
+
+/**
+ * @brief Force enable all BLE notifications
+ * 
+ * Bypasses normal CCC (Client Characteristic Configuration) setup and forces
+ * all notifications to be enabled. Useful for debugging client connectivity issues.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_force_enable_notifications(void);
+
 #else /* !CONFIG_BT */
 
 /* Bluetooth disabled - provide stub function declarations */
@@ -473,6 +514,50 @@ int bt_irrigation_diagnostics_notify(void);
  * @return 0 on success, negative error code on failure
  */
 int bt_irrigation_diagnostics_update(uint16_t error_count, uint8_t last_error, uint8_t valve_status);
+
+/* Timezone configuration functions */
+/**
+ * @brief Read timezone configuration from BLE characteristic
+ * 
+ * Handles read requests for the timezone configuration characteristic,
+ * returning current timezone settings including UTC offset and DST rules.
+ * 
+ * @param conn BLE connection handle
+ * @param attr GATT attribute
+ * @param buf Buffer to write data to
+ * @param len Length of buffer
+ * @param offset Read offset
+ * @return Number of bytes read, or negative error code
+ */
+ssize_t read_timezone(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                      void *buf, uint16_t len, uint16_t offset);
+
+/**
+ * @brief Write timezone configuration to BLE characteristic
+ * 
+ * Handles write requests for the timezone configuration characteristic,
+ * updating timezone settings and storing them in NVS.
+ * 
+ * @param conn BLE connection handle
+ * @param attr GATT attribute
+ * @param buf Buffer containing new timezone data
+ * @param len Length of data
+ * @param offset Write offset (must be 0)
+ * @param flags Write flags
+ * @return Number of bytes written, or negative error code
+ */
+ssize_t write_timezone(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                       const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
+
+/**
+ * @brief Timezone CCC changed callback
+ * 
+ * Called when client enables/disables notifications for timezone characteristic.
+ * 
+ * @param attr GATT attribute
+ * @param value CCC value (notifications enabled/disabled)
+ */
+void timezone_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 
 /* Debugging and diagnostic functions */
 void bt_irrigation_debug_notification_status(void);

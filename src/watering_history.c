@@ -1,7 +1,9 @@
 #include "watering_history.h"
 #include "watering_internal.h"
+#include "watering.h"
 #include "nvs_config.h"
 #include "rtc.h"
+#include "timezone.h"               /* Add timezone support for local time */
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/logging/log.h>
@@ -432,6 +434,75 @@ watering_error_t history_ctrl_handler(const uint8_t *data, uint16_t len) {
             break;
         }
         
+        case HC_RESET_HISTORY: {
+            uint8_t channel_id = 0xFF; // Default: toate canalele
+            
+            // Parse TLV parameters
+            const uint8_t *ptr = tlv_data;
+            while (ptr < tlv_data + tlv_len) {
+                const tlv_t *tlv = (const tlv_t *)ptr;
+                
+                if (tlv->type == HT_CHANNEL_ID && tlv->len == 1) {
+                    channel_id = tlv->value[0];
+                }
+                
+                ptr += 2 + tlv->len;
+            }
+            
+            if (channel_id == 0xFF) {
+                LOG_INF("Reset history: all channels");
+                return watering_history_reset_all_history();
+            } else {
+                LOG_INF("Reset history: channel %u", channel_id);
+                return watering_history_reset_channel_history(channel_id);
+            }
+        }
+        
+        case HC_RESET_CHANNEL: {
+            uint8_t channel_id = 0;
+            
+            // Parse TLV parameters pentru channel_id
+            const uint8_t *ptr = tlv_data;
+            while (ptr < tlv_data + tlv_len) {
+                const tlv_t *tlv = (const tlv_t *)ptr;
+                
+                if (tlv->type == HT_CHANNEL_ID && tlv->len == 1) {
+                    channel_id = tlv->value[0];
+                    break;
+                }
+                
+                ptr += 2 + tlv->len;
+            }
+            
+            LOG_INF("Reset channel config: channel %u", channel_id);
+            return watering_history_reset_channel_config(channel_id);
+        }
+        
+        case HC_RESET_ALL: {
+            uint8_t channel_id = 0;
+            
+            // Parse TLV parameters pentru channel_id
+            const uint8_t *ptr = tlv_data;
+            while (ptr < tlv_data + tlv_len) {
+                const tlv_t *tlv = (const tlv_t *)ptr;
+                
+                if (tlv->type == HT_CHANNEL_ID && tlv->len == 1) {
+                    channel_id = tlv->value[0];
+                    break;
+                }
+                
+                ptr += 2 + tlv->len;
+            }
+            
+            LOG_INF("Reset complete: channel %u", channel_id);
+            return watering_history_reset_channel_complete(channel_id);
+        }
+        
+        case HC_FACTORY_RESET: {
+            LOG_WRN("Factory reset requested - clearing all data!");
+            return watering_history_factory_reset();
+        }
+        
         default:
             LOG_WRN("Unknown history control opcode: 0x%02x", opcode);
             return WATERING_ERROR_INVALID_PARAM;
@@ -608,6 +679,13 @@ static uint32_t get_current_timestamp(void) {
 static uint16_t get_current_year(void) {
     rtc_datetime_t datetime;
     if (rtc_datetime_get(&datetime) == 0) {
+        /* TIMEZONE FIX: Convert UTC to local time for user-facing date/time */
+        uint32_t utc_timestamp = timezone_rtc_to_unix_utc(&datetime);
+        rtc_datetime_t local_datetime;
+        if (timezone_unix_to_rtc_local(utc_timestamp, &local_datetime) == 0) {
+            return local_datetime.year;
+        }
+        /* Fallback to UTC if timezone conversion fails */
         return datetime.year;
     }
     return 2025; // Fallback if RTC unavailable
@@ -616,6 +694,13 @@ static uint16_t get_current_year(void) {
 static uint8_t get_current_month(void) {
     rtc_datetime_t datetime;
     if (rtc_datetime_get(&datetime) == 0) {
+        /* TIMEZONE FIX: Convert UTC to local time for user-facing date/time */
+        uint32_t utc_timestamp = timezone_rtc_to_unix_utc(&datetime);
+        rtc_datetime_t local_datetime;
+        if (timezone_unix_to_rtc_local(utc_timestamp, &local_datetime) == 0) {
+            return local_datetime.month;
+        }
+        /* Fallback to UTC if timezone conversion fails */
         return datetime.month;
     }
     return 7; // Fallback if RTC unavailable
@@ -624,6 +709,13 @@ static uint8_t get_current_month(void) {
 static uint16_t get_current_day_of_year(void) {
     rtc_datetime_t datetime;
     if (rtc_datetime_get(&datetime) == 0) {
+        /* TIMEZONE FIX: Convert UTC to local time for user-facing date/time */
+        uint32_t utc_timestamp = timezone_rtc_to_unix_utc(&datetime);
+        rtc_datetime_t local_datetime;
+        if (timezone_unix_to_rtc_local(utc_timestamp, &local_datetime) == 0) {
+            datetime = local_datetime; // Use local time for calculation
+        }
+        /* Continue with existing calculation using local time */
         // Calculate day of year from month and day
         static const uint16_t days_in_month[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
         uint16_t day_of_year = datetime.day;
@@ -1503,4 +1595,245 @@ int heatshrink_decompress_monthly(const uint8_t *input, uint16_t input_len, mont
     
     LOG_DBG("Monthly stats decompressed: %u bytes -> %zu bytes", input_len, output_size);
     return 0;
+}
+
+// =============================================================================
+// RESET FUNCTIONS
+// =============================================================================
+
+/**
+ * @brief Reset istoric pentru un canal specific
+ */
+watering_error_t watering_history_reset_channel_history(uint8_t channel_id) {
+    if (channel_id >= MAX_CHANNELS) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    LOG_INF("Resetting history for channel %u", channel_id);
+    
+    if (k_mutex_lock(&history_mutex, K_MSEC(500)) != 0) {
+        LOG_ERR("Failed to acquire mutex for history reset");
+        return WATERING_ERROR_TIMEOUT;
+    }
+    
+    // Clear detailed events for this channel
+    memset(detailed_events[channel_id], 0, sizeof(detailed_events[channel_id]));
+    
+    // Clear daily stats entries that contain this channel's data
+    for (uint16_t i = 0; i < DAILY_STATS_DAYS; i++) {
+        if (daily_stats[i].day_epoch != 0) {
+            // For simplicity, we clear the entire day if it contains this channel
+            // In a more sophisticated implementation, we could remove only this channel's data
+            daily_stats[i].total_ml = 0;
+            daily_stats[i].sessions_ok = 0;
+            daily_stats[i].sessions_err = 0;
+            daily_stats[i].max_channel = 0;
+            daily_stats[i].success_rate = 0;
+        }
+    }
+    
+    // Clear monthly stats (similar approach)
+    for (uint16_t i = 0; i < MONTHLY_STATS_MONTHS; i++) {
+        if (monthly_stats[i].year != 0) {
+            monthly_stats[i].total_ml = 0;
+            monthly_stats[i].active_days = 0;
+            monthly_stats[i].peak_channel = 0;
+        }
+    }
+    
+    // Clear annual stats
+    for (uint16_t i = 0; i < ANNUAL_STATS_YEARS; i++) {
+        if (annual_stats[i].year != 0) {
+            annual_stats[i].total_ml = 0;
+            annual_stats[i].sessions = 0;
+            annual_stats[i].errors = 0;
+            annual_stats[i].max_month_ml = 0;
+        }
+    }
+    
+    // Clear NVS storage for this channel
+    for (uint16_t i = 0; i < current_settings.detailed_cnt; i++) {
+        uint16_t key = NVS_KEY_DETAILED_BASE + (channel_id * 100) + i;
+        nvs_config_delete(key);
+    }
+    
+    // Save updated daily/monthly/annual stats to NVS
+    for (uint16_t i = 0; i < current_settings.daily_days; i++) {
+        uint16_t key = NVS_KEY_DAILY_BASE + i;
+        nvs_config_write(key, &daily_stats[i], sizeof(daily_stats_t));
+    }
+    
+    for (uint16_t i = 0; i < current_settings.monthly_months; i++) {
+        uint16_t key = NVS_KEY_MONTHLY_BASE + i;
+        nvs_config_write(key, &monthly_stats[i], sizeof(monthly_stats_raw_t));
+    }
+    
+    for (uint16_t i = 0; i < current_settings.annual_years; i++) {
+        uint16_t key = NVS_KEY_ANNUAL_BASE + i;
+        nvs_config_write(key, &annual_stats[i], sizeof(annual_stats_t));
+    }
+    
+    k_mutex_unlock(&history_mutex);
+    
+    LOG_INF("History reset completed for channel %u", channel_id);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Reset istoric pentru toate canalele
+ */
+watering_error_t watering_history_reset_all_history(void) {
+    LOG_INF("Resetting history for all channels");
+    
+    if (k_mutex_lock(&history_mutex, K_MSEC(500)) != 0) {
+        LOG_ERR("Failed to acquire mutex for full history reset");
+        return WATERING_ERROR_TIMEOUT;
+    }
+    
+    // Clear all detailed events
+    memset(detailed_events, 0, sizeof(detailed_events));
+    
+    // Clear all daily stats
+    memset(daily_stats, 0, sizeof(daily_stats));
+    
+    // Clear all monthly stats
+    memset(monthly_stats, 0, sizeof(monthly_stats));
+    
+    // Clear all annual stats
+    memset(annual_stats, 0, sizeof(annual_stats));
+    
+    // Clear all insights
+    memset(&current_insights, 0, sizeof(current_insights));
+    
+    // Clear NVS storage for all history data
+    for (uint8_t ch = 0; ch < MAX_CHANNELS; ch++) {
+        for (uint16_t i = 0; i < current_settings.detailed_cnt; i++) {
+            uint16_t key = NVS_KEY_DETAILED_BASE + (ch * 100) + i;
+            nvs_config_delete(key);
+        }
+    }
+    
+    // Clear daily stats from NVS
+    for (uint16_t i = 0; i < current_settings.daily_days; i++) {
+        uint16_t key = NVS_KEY_DAILY_BASE + i;
+        nvs_config_delete(key);
+    }
+    
+    // Clear monthly stats from NVS
+    for (uint16_t i = 0; i < current_settings.monthly_months; i++) {
+        uint16_t key = NVS_KEY_MONTHLY_BASE + i;
+        nvs_config_delete(key);
+    }
+    
+    // Clear annual stats from NVS
+    for (uint16_t i = 0; i < current_settings.annual_years; i++) {
+        uint16_t key = NVS_KEY_ANNUAL_BASE + i;
+        nvs_config_delete(key);
+    }
+    
+    // Clear insights cache
+    nvs_config_delete(NVS_KEY_INSIGHTS_CACHE);
+    
+    // Reset rotation info
+    memset(&rotation_info, 0, sizeof(rotation_info));
+    save_rotation_info();
+    
+    k_mutex_unlock(&history_mutex);
+    
+    LOG_INF("Complete history reset completed");
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Reset configurație canal (fără istoric)
+ */
+watering_error_t watering_history_reset_channel_config(uint8_t channel_id) {
+    if (channel_id >= MAX_CHANNELS) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    LOG_INF("Resetting channel %u configuration", channel_id);
+    
+    // Folosim funcția existentă din watering.c
+    watering_error_t err = watering_reset_channel_statistics(channel_id);
+    if (err != WATERING_SUCCESS) {
+        LOG_ERR("Failed to reset channel %u statistics: %d", channel_id, err);
+        return err;
+    }
+    
+    // Reset suplimentar pentru configurația canalului prin NVS
+    // Ștergem configurația salvată pentru acest canal
+    nvs_config_delete(100 + channel_id); // ID_CHANNEL_CFG_BASE + channel_id
+    nvs_config_delete(300 + channel_id); // ID_CHANNEL_NAME_BASE + channel_id
+    
+    LOG_INF("Channel %u configuration reset completed", channel_id);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Reset complet pentru un canal (istoric + configurație)
+ */
+watering_error_t watering_history_reset_channel_complete(uint8_t channel_id) {
+    if (channel_id >= MAX_CHANNELS) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    LOG_INF("Complete reset for channel %u (history + configuration)", channel_id);
+    
+    // Reset istoric
+    watering_error_t err = watering_history_reset_channel_history(channel_id);
+    if (err != WATERING_SUCCESS) {
+        LOG_ERR("Failed to reset channel %u history: %d", channel_id, err);
+        return err;
+    }
+    
+    // Reset configurație
+    err = watering_history_reset_channel_config(channel_id);
+    if (err != WATERING_SUCCESS) {
+        LOG_ERR("Failed to reset channel %u config: %d", channel_id, err);
+        return err;
+    }
+    
+    LOG_INF("Complete reset for channel %u completed successfully", channel_id);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Factory reset complet
+ */
+watering_error_t watering_history_factory_reset(void) {
+    LOG_WRN("FACTORY RESET - All data will be lost!");
+    
+    // Reset complet istoric
+    watering_error_t err = watering_history_reset_all_history();
+    if (err != WATERING_SUCCESS) {
+        LOG_ERR("Failed to reset history during factory reset: %d", err);
+        return err;
+    }
+    
+    // Reset configurație pentru toate canalele
+    for (uint8_t ch = 0; ch < MAX_CHANNELS; ch++) {
+        err = watering_history_reset_channel_config(ch);
+        if (err != WATERING_SUCCESS) {
+            LOG_ERR("Failed to reset channel %u config during factory reset: %d", ch, err);
+            // Continue with other channels
+        }
+    }
+    
+    // Reset setări history
+    memset(&current_settings, 0, sizeof(current_settings));
+    current_settings.detailed_cnt = DETAILED_EVENTS_PER_CHANNEL;
+    current_settings.daily_days = DAILY_STATS_DAYS;
+    current_settings.monthly_months = MONTHLY_STATS_MONTHS;
+    current_settings.annual_years = ANNUAL_STATS_YEARS;
+    
+    nvs_config_write(NVS_KEY_HISTORY_SETTINGS, &current_settings, sizeof(current_settings));
+    
+    // Reset configurația generală
+    nvs_config_delete(1); // ID_WATERING_CFG
+    nvs_config_delete(200); // ID_FLOW_CALIB
+    nvs_config_delete(201); // ID_DAYS_SINCE_START
+    
+    LOG_WRN("FACTORY RESET COMPLETED - All data cleared!");
+    return WATERING_SUCCESS;
 }

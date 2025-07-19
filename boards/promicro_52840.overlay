@@ -1,11 +1,11 @@
 /*
- * AutoWatering – ProMicro nRF52840 enhanced storage overlay
- * (Enhanced storage configuration with 144KB history partition)
+ * AutoWatering – ProMicro nRF52840 optimized storage overlay
+ * (Optimized storage configuration with 32KB history partition)
  *
- * This overlay provides sufficient storage for full history capability:
+ * This overlay provides efficient storage for full history capability:
+ * - 32 KB NVS Storage partition (history data and settings)
  * - 8 KB Settings partition (Bluetooth settings)
- * - 144 KB NVS Storage partition (history data)
- * - Total: 152 KB allocated (plenty of free space remaining)
+ * - Total: 40 KB allocated (efficient use of flash memory)
  */
 
  / {
@@ -31,6 +31,9 @@
         compatible = "gpio-leds";
         status = "okay";
 
+        /* Master valve - controls main water supply */
+        master_valve: master_valve { gpios = <&gpio0 8 GPIO_ACTIVE_HIGH>; label = "Master Valve"; };
+        
         valve1: valve_1 { gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>; label = "Valve 1"; };
         valve2: valve_2 { gpios = <&gpio0 20 GPIO_ACTIVE_HIGH>; label = "Valve 2"; };
         valve3: valve_3 { gpios = <&gpio0 22 GPIO_ACTIVE_HIGH>; label = "Valve 3"; };
@@ -111,16 +114,16 @@
         #size-cells    = <1>;
         ranges;
 
-        /* Settings partition: 8 KiB = 2 × 4096 B for Bluetooth settings */
-        settings_partition: partition@d7000 {
-            label = "settings";
-            reg   = <0x000d7000 0x00002000>;  /* 8 KiB */
+        /* Optimized NVS partition: 32 KiB = 8 × 4096 B for efficient history storage */
+        nvs_storage: partition@d1000 {
+            label = "nvs_storage";
+            reg   = <0x000d1000 0x00008000>;  /* 32 KiB */
         };
 
-        /* Enhanced NVS partition: 144 KiB = 36 × 4096 B for full history capability */
-        nvs_storage: partition@c0000 {
-            label = "nvs_storage";
-            reg   = <0x000c0000 0x00024000>;  /* 144 KiB */
+        /* Settings partition: 8 KiB = 2 × 4096 B for Bluetooth settings */
+        settings_partition: partition@d9000 {
+            label = "settings";
+            reg   = <0x000d9000 0x00002000>;  /* 8 KiB */
         };
     };
 };

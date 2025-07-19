@@ -125,7 +125,11 @@ enum {
     HC_QUERY_PAGE    = 0x02,
     HC_EXPORT_START  = 0x10,
     HC_EXPORT_ACK    = 0x11,
-    HC_EXPORT_FINISH = 0x12
+    HC_EXPORT_FINISH = 0x12,
+    HC_RESET_HISTORY = 0x20,  // Reset istoric pentru canal specific sau toate
+    HC_RESET_CHANNEL = 0x21,  // Reset configurație canal (fără istoric)
+    HC_RESET_ALL     = 0x22,  // Reset complet (istoric + configurație)
+    HC_FACTORY_RESET = 0xFF   // Factory reset complet
 };
 
 /* ---- Setări History ----------------------------------------------------*/
@@ -330,5 +334,12 @@ watering_error_t watering_history_export_csv(uint8_t channel_id,
                                              uint32_t end_timestamp,
                                              char *output_buffer,
                                              uint16_t buffer_size);
+
+// Reset functions
+watering_error_t watering_history_reset_channel_history(uint8_t channel_id);
+watering_error_t watering_history_reset_all_history(void);
+watering_error_t watering_history_reset_channel_config(uint8_t channel_id);
+watering_error_t watering_history_reset_channel_complete(uint8_t channel_id);
+watering_error_t watering_history_factory_reset(void);
 
 #endif // WATERING_HISTORY_H

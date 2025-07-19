@@ -5,6 +5,121 @@ All notable changes to the AutoWatering project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2025-07-18 - 🚀 Smart Master Valve System
+
+### Major New Feature: Master Valve Intelligence
+
+This release introduces a comprehensive master valve system that provides intelligent main water supply control with advanced timing management and complete BLE integration.
+
+#### Added
+- **🚀 Master Valve Control System**: Complete master valve implementation with intelligent timing
+  - **Hardware Support**: GPIO P0.08 configuration for master valve control
+  - **Intelligent Timing**: Configurable pre/post delays with positive/negative delay support
+  - **Overlap Detection**: Smart grace period management for consecutive watering tasks
+  - **Dual Operating Modes**: Automatic management or manual BLE control
+  - **Fail-safe Operation**: Automatic closure on system shutdown or errors
+
+#### Enhanced BLE Integration
+- **Extended System Configuration**: Master valve settings added to System Config characteristic (now 16 bytes)
+  - `master_valve_enabled`: System enable/disable control
+  - `master_valve_pre_delay`: Pre-start delay (-127 to +127 seconds)
+  - `master_valve_post_delay`: Post-stop delay (-127 to +127 seconds)
+  - `master_valve_overlap_grace`: Grace period for consecutive tasks (0-255 seconds)
+  - `master_valve_auto_mgmt`: Automatic vs manual control selection
+  - `master_valve_current_state`: Real-time status (read-only)
+
+- **Valve Control Enhancement**: Master valve control via special channel ID 0xFF
+  - **Manual Open**: `channel_id=0xFF, task_type=1` (requires auto-management disabled)
+  - **Manual Close**: `channel_id=0xFF, task_type=0` (requires auto-management disabled)
+  - **Real-time Notifications**: Automatic status updates via BLE channel 0xFF
+
+#### Advanced Timing Logic
+- **Positive Delays**: Master valve operates BEFORE zone valve actions
+- **Negative Delays**: Master valve operates AFTER zone valve actions (unique feature!)
+- **Overlap Intelligence**: Prevents unnecessary open/close cycles for back-to-back tasks
+- **Grace Period Management**: Configurable overlap detection (default 5 seconds)
+
+#### API Functions Added
+```c
+// Configuration management
+watering_error_t master_valve_set_config(const master_valve_config_t *config);
+watering_error_t master_valve_get_config(master_valve_config_t *config);
+
+// Manual control (requires auto_management = false)
+watering_error_t master_valve_manual_open(void);
+watering_error_t master_valve_manual_close(void);
+bool master_valve_is_open(void);
+
+// Task coordination
+watering_error_t master_valve_notify_upcoming_task(uint32_t start_time);
+void master_valve_clear_pending_task(void);
+```
+
+#### Documentation Updates
+- **Complete Documentation Refresh**: All major documentation files updated
+  - `PRODUCT_FEATURES.md`: Master valve features and BLE integration
+  - `README.md`: Key features and quick start guide
+  - `HARDWARE.md`: GPIO assignments and installation guide
+  - `SOFTWARE.md`: API examples and code integration
+  - `docs/ble/`: Complete BLE characteristic documentation updates
+- **BLE API Documentation**: Updated valve control and system configuration characteristics
+- **Hardware Guide**: Master valve installation and wiring diagrams
+
+#### Breaking Changes
+- **System Configuration Size**: Increased from 8 to 16 bytes (affects BLE clients)
+- **GPIO P0.08**: Now reserved for master valve (update hardware configurations)
+
+#### Backward Compatibility
+- **Existing BLE Clients**: Must handle new 16-byte System Configuration structure
+- **Hardware Compatibility**: Existing installations can add master valve without modification
+- **API Compatibility**: All existing functions remain unchanged
+
+#### Technical Improvements
+- **Thread-safe Operations**: Master valve operations are thread-safe with proper locking
+- **Error Handling**: Comprehensive error reporting and recovery mechanisms
+- **Performance**: Zero impact on existing valve operations, <1ms overhead
+- **Power Management**: Master valve integrates with existing power management modes
+
+This major release transforms the AutoWatering system into a professional-grade irrigation controller with intelligent master valve management, setting the foundation for advanced water pressure control and system optimization.
+
+## [2.2.0] - 2025-07-12 - Real Historical Data Integration
+
+### Major History System Enhancement
+
+This release replaces mock/sample data with authentic historical data from the NVS storage system, providing real irrigation history through the BLE History characteristic.
+
+#### Added
+- **Real Data Integration**: Complete replacement of mock data with authentic historical records
+- **NVS Storage Access**: Direct integration with `watering_history.c` system for all data types
+- **RTC Date Integration**: Real-time clock integration for accurate date/time calculations
+- **Missing Data Handling**: Proper zero-value responses when no irrigation data exists
+- **Date Navigation**: Intelligent historical navigation using real current date from RTC
+
+#### Changed
+- **History Data Source**: All BLE history queries now return real data from NVS storage
+  - **Detailed Events**: Via `watering_history_query_page()` from stored `history_event_t` records
+  - **Daily Statistics**: Via `watering_history_get_daily_stats()` from aggregated daily data
+  - **Monthly Statistics**: Via `watering_history_get_monthly_stats()` from compressed data
+  - **Annual Statistics**: Via `watering_history_get_annual_stats()` from annual summaries
+- **Missing Data Response**: Returns structured zeros with `count=0` instead of mock data
+- **Date Calculations**: Uses real RTC data with proper leap year support and wrap-around
+- **Entry Index Logic**: Navigates through actual stored history instead of simulated timestamps
+
+#### Improved
+- **Data Authenticity**: Historical irrigation data reflects actual system activity
+- **Zero Data Clarity**: Clear indication when no watering occurred on specific days/periods
+- **Performance**: Maintains fast response times with 100ms timeout protection
+- **Logging**: Enhanced logging with clear "No data found" messages for empty periods
+- **Documentation**: Complete update of BLE History documentation with real data integration
+
+#### Technical Details
+- **Storage Integration**: 144KB NVS partition access for historical data
+- **Helper Functions**: New RTC accessor functions for current year/month/day calculations
+- **Timeout Protection**: Non-blocking history queries with fallback handling
+- **Memory Efficiency**: Direct structure mapping without data duplication
+
+This update provides authentic historical irrigation data while maintaining the same BLE API structure, response times, and backward compatibility.
+
 ## [2.1.0] - 2025-01-13 - Universal BLE Fragmentation Protocol
 
 ### Major BLE Protocol Enhancement
