@@ -1,4 +1,4 @@
-# Environmental History Characteristic (UUID: 12345678-1234-5678-9abcde16)
+# Environmental History Characteristic (UUID: 12345678-1234-5678-1234-56789abcde16)
 
 This characteristic shares the unified 8-byte `history_fragment_header_t` envelope used by the watering history endpoints. Clients send 20-byte `ble_history_request_t` commands and receive responses in 232-byte payload windows (8-byte header + up to 232 bytes of packed records). A "detailed" request simply re-packs hourly retention entries; higher-frequency sensor samples are not exposed. Monthly history remains internal to the firmware.
 
@@ -65,7 +65,7 @@ Rate-limited writes respond with `status = 0x07`, `fragment_size = 0`, and all o
 - Enable notifications to receive responses proactively; otherwise poll via read after each write.
 
 ## Related Interfaces
-- `23-environmental-data.md` - live sensor feed referenced by hourly aggregation.
+- `21-environmental-data.md` - live sensor feed referenced by hourly aggregation.
 - `bt_environmental_history_handlers.c` - firmware implementation of packing and trend generation.
         const response = await environmentalHistoryChar.readValue();
         return parseEnvironmentalHistoryResponse(response);
@@ -474,8 +474,8 @@ async def get_daily_environmental_summary(client, days=30):
 
 ## Related Characteristics
 
-- **[Environmental Data](23-environmental-data.md)** - Real-time environmental readings
-- **[Compensation Status](25-compensation-status.md)** - Environmental impact on irrigation
+- **[Environmental Data](21-environmental-data.md)** - Real-time environmental readings
+- **[Compensation Status](23-compensation-status.md)** - Environmental impact on irrigation
 - **[History Management](12-history-management.md)** - General system history management
 - **[Growing Environment](14-growing-environment.md)** - Plant environment configuration
 - **[Auto Calc Status](15-auto-calc-status.md)** - Environmental data in FAO-56 calculations

@@ -41,7 +41,7 @@ Legend: R=Read, W=Write, N=Notify, F=Custom fragmentation (4B header), H=Unified
 5. Rain Integration Status implemented; documentation added now.
 
 ## Recommended Next Actions
-- Keep `26-rain-integration-status.md` maintained as logic evolves.
+- Keep `24-rain-integration-status.md` maintained as logic evolves.
 - Clarify fragmentation modes inside each fragmented characteristic file (done partially).
 - Update or remove placeholder fields as implementation arrives; sync with FUTURE_FEATURES.md.
 

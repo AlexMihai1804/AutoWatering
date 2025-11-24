@@ -1,4 +1,4 @@
-# Onboarding Status Characteristic (UUID: 12345678-1234-5678-9abcde20)
+# Onboarding Status Characteristic (UUID: 12345678-1234-5678-1234-56789abcde20)
 
 > Operation Summary
 | Operation | Payload | Size | Fragmentation | Notes |
@@ -95,4 +95,4 @@ function parseOnboardingStatus(dataView) {
 ## Related Modules
 - `src/onboarding_state.c` - flag bookkeeping, NVS integration, completion math.
 - `src/bt_irrigation_service.c` - read handler, notification assembler, priority scheduling.
-- `docs/ble-api/characteristics/22-reset-control.md` - reset confirmation flow that may clear onboarding state.
+- `docs/ble-api/characteristics/26-reset-control.md` - reset confirmation flow that may clear onboarding state.

@@ -1,4 +1,4 @@
-# Environmental Data Characteristic (UUID: 12345678-1234-5678-9abcde15)
+# Environmental Data Characteristic (UUID: 12345678-1234-5678-1234-56789abcde15)
 
 > Operation Summary
 | Operation | Payload | Size | Fragmentation | Notes |
@@ -54,6 +54,6 @@ function handleEnvironmentalFragment(view) {
 - Developers can enable `CONFIG_ENV_SENSORS_SIM` to exercise this characteristic without hardware; the simulator drives deterministic temperature/humidity/pressure values that surface through the same payload.
 
 ## Related Characteristics
-- `24-environmental-history.md` - aggregated and trend data using the same sensor feed.
-- `25-compensation-status.md` - per-channel adjustments driven by environmental inputs.
+- `22-environmental-history.md` - aggregated and trend data using the same sensor feed.
+- `23-compensation-status.md` - per-channel adjustments driven by environmental inputs.
 - `15-auto-calc-status.md` - FAO-56 calculations that consume this telemetry.

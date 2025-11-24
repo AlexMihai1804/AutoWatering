@@ -1,7 +1,7 @@
 # Documentation Audit TODOs (2025-10-16)
 Curated checklist covering the active documentation set. Each entry records the current verification status against the firmware and the follow-up item to keep the file aligned with future work.
 ## Latest Pass (2025-10-16)
-- Validated & updated: 05-schedule-configuration, 06-system-configuration, 07-task-queue-management, 08-statistics, 10-alarm-status, 11-calibration-management, 14-growing-environment, 23-environmental-data, 24-environmental-history, 25-compensation-status, 26-rain-integration-status, 02-flow-sensor, 03-system-status.
+- Validated & updated: 05-schedule-configuration, 06-system-configuration, 07-task-queue-management, 08-statistics, 10-alarm-status, 11-calibration-management, 14-growing-environment, 21-environmental-data, 22-environmental-history, 23-compensation-status, 24-rain-integration-status, 02-flow-sensor, 03-system-status.
 - Firmware touch-up: `bt_irrigation_service.c` environmental-data notifications now respect the 23-byte advanced-notify ceiling.
 ## Platform & Architecture Docs
 - [x] `docs/FEATURES_FULL.md`     Updated threading/flow-sensor sections to match `watering_start_tasks()` and `flow_sensor.c`. **TODO:** Fold rain/temperature compensation auto-pipeline wiring into this overview once implemented.
@@ -36,8 +36,8 @@ Curated checklist covering the active documentation set. Each entry records the 
 - [x] `docs/ble-api/characteristics/18-rain-sensor-config.md`     Config struct aligns with rain sensor storage. **DONE 2025-10-16:** Validation table calls out 0.1-10.0 mm/pulse calibration and 10-1000 ms debounce guard rails.
 - [x] `docs/ble-api/characteristics/19-rain-sensor-data.md`     Snapshot matches `rain_data_data`. **DONE 2025-10-16:** Expanded client guidance on `data_quality` signalling.
 - [x] `docs/ble-api/characteristics/20-rain-history-control.md`     Command struct verified against history worker. **DONE 2025-10-16:** Added multi-fragment JavaScript example with TLV ack handling.
-- [x] `docs/ble-api/characteristics/21-onboarding-status.md`     Mirrors onboarding ring buffers and flags. **TODO:** Update when onboarding completion thresholds change with new mandatory fields.
-- [x] `docs/ble-api/characteristics/22-reset-control.md`     Control flow matches `reset_controller` integration. **TODO:** Attach cautionary note for manual master-valve resets once UI confirmation flow finalises.
-- [x] `docs/ble-api/characteristics/23-environmental-data.md`     Fields align with `environmental_data_ble`. **DONE 2025-10-16:** Client guidance now references CONFIG_ENV_SENSORS_SIM simulator.
-- [x] `docs/ble-api/characteristics/24-environmental-history.md`     Fragment framing matches environmental history handlers. **DONE 2025-10-16:** Noted 247-byte MTU fragment size and ~50 ms spacing.
-- [x] `docs/ble-api/characteristics/25-compensation-status.md`     Struct verified against `compensation_status_data`. **TODO:** Extend with channel bitmap summary once multi-channel push gets wired.
+- [x] `docs/ble-api/characteristics/25-onboarding-status.md`     Mirrors onboarding ring buffers and flags. **TODO:** Update when onboarding completion thresholds change with new mandatory fields.
+- [x] `docs/ble-api/characteristics/26-reset-control.md`     Control flow matches `reset_controller` integration. **TODO:** Attach cautionary note for manual master-valve resets once UI confirmation flow finalises.
+- [x] `docs/ble-api/characteristics/21-environmental-data.md`     Fields align with `environmental_data_ble`. **DONE 2025-10-16:** Client guidance now references CONFIG_ENV_SENSORS_SIM simulator.
+- [x] `docs/ble-api/characteristics/22-environmental-history.md`     Fragment framing matches environmental history handlers. **DONE 2025-10-16:** Noted 247-byte MTU fragment size and ~50 ms spacing.
+- [x] `docs/ble-api/characteristics/23-compensation-status.md`     Struct verified against `compensation_status_data`. **TODO:** Extend with channel bitmap summary once multi-channel push gets wired.

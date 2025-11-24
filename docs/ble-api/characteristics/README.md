@@ -55,12 +55,12 @@ See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fr
 | 18 | **[Rain Sensor Config](18-rain-sensor-config.md)** | de12 | 18B | R/W/N | Rain sensor settings |
 | 19 | **[Rain Sensor Data](19-rain-sensor-data.md)** | de13 | 24B | R/N | Rain metrics live |
 | 20 | **[Rain History Control](20-rain-history-control.md)** | de14 | 16B+ | R/W/N | Rain history queries (fragmented) |
-| 21 | **[Onboarding Status](21-onboarding-status.md)** | de20 | 29B | R/N | Onboarding progress |
-| 22 | **[Reset Control](22-reset-control.md)** | de21 | 16B | R/W/N | Controlled resets |
-| 23 | **[Environmental Data](23-environmental-data.md)** | de15 | 24B | R/N | BME280 snapshot |
-| 24 | **[Environmental History](24-environmental-history.md)** | de16 | Var. | R/W/N | Env. history (fragmented) |
-| 25 | **[Compensation Status](25-compensation-status.md)** | de17 | 40B | R/W/N | Compensation metrics |
-| 26 | **[Rain Integration Status](26-rain-integration-status.md)** | de18 | 78B | R/N | Rain integration snapshot |
+| 21 | **[Environmental Data](21-environmental-data.md)** | de15 | 24B | R/N | BME280 snapshot |
+| 22 | **[Environmental History](22-environmental-history.md)** | de16 | Var. | R/W/N | Env. history (fragmented) |
+| 23 | **[Compensation Status](23-compensation-status.md)** | de17 | 40B | R/W/N | Compensation metrics |
+| 24 | **[Rain Integration Status](24-rain-integration-status.md)** | de18 | 78B | R/N | Rain integration snapshot |
+| 25 | **[Onboarding Status](25-onboarding-status.md)** | de20 | 29B | R/N | Onboarding progress |
+| 26 | **[Reset Control](26-reset-control.md)** | de21 | 16B | R/W/N | Controlled resets |
 
 **Legend**: R=Read, W=Write, N=Notify
 

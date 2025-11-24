@@ -1,4 +1,4 @@
-# Rain Integration Status Characteristic (UUID: 12345678-1234-5678-9abcde22)
+# Rain Integration Status Characteristic (UUID: 12345678-1234-5678-1234-56789abcde18)
 
 Snapshot of the rain integration subsystem, exposing recent rainfall, per-channel adjustments, and storage utilisation.
 
@@ -49,4 +49,4 @@ Structure size is exactly 78 bytes (build asserted in firmware). Floats follow I
 ## Related Characteristics
 - `19-rain-data.md` - raw rain sensor telemetry.
 - `20-rain-history-control.md` - command/response access to archived rainfall data.
-- `25-compensation-status.md` - per-channel compensation view consuming rain integration results.
+- `23-compensation-status.md` - per-channel compensation view consuming rain integration results.

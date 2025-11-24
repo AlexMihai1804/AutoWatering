@@ -141,5 +141,5 @@ function handleRainHistoryNotification(dataView) {
 ## Related Characteristics
 - `18-rain-sensor-config.md`
 - `19-rain-sensor-data.md`
-- `26-rain-integration-status.md`
+- `24-rain-integration-status.md`
 - `12-history-management.md`

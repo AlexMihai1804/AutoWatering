@@ -1,4 +1,4 @@
-# Reset Control Characteristic (UUID: 12345678-1234-5678-9abcde21)
+# Reset Control Characteristic (UUID: 12345678-1234-5678-1234-56789abcde21)
 
 > Operation Summary
 | Operation | Payload | Size | Notes |

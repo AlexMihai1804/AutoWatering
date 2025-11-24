@@ -1,4 +1,4 @@
-# Compensation Status Characteristic (UUID: 12345678-1234-5678-9abcde17)
+# Compensation Status Characteristic (UUID: 12345678-1234-5678-1234-56789abcde17)
 
 > Operation Summary
 | Operation | Payload | Size | Fragmentation | Notes |
@@ -36,8 +36,8 @@ All multi-byte values are little-endian; floats use single-precision IEEE-754. T
 - Always select a channel before performing the first read to avoid unintentionally inspecting channel 0.<br>- Treat `recent_rainfall_mm` and `current_temperature` as optional. Some call paths deliver `0.0f` while integration with sensor modules matures; rely on reduction percentages and factors for definitive behaviour.<br>- When subscribing, be prepared for multiple notifications: immediate response to the write followed by future updates triggered by compensation recalculations.
 
 ## Related Interfaces
-- `23-environmental-data.md` - source for temperature values used by temperature compensation.
-- `26-rain-integration-status.md` - storage-level view of rain aggregation feeding compensation.
+- `21-environmental-data.md` - source for temperature values used by temperature compensation.
+- `24-rain-integration-status.md` - storage-level view of rain aggregation feeding compensation.
 ```javascript
 async function selectChannelAndReadCompStatus(channelId) {
     // Optional: write single byte to select channel (0xFF = auto)
@@ -76,8 +76,8 @@ Removed prior example parsing a different 24B layout with multiple domain bitfie
 
 ## Related Characteristics
 
-- **[Environmental Data](23-environmental-data.md)** - Source data for compensation calculations
-- **[Environmental History](24-environmental-history.md)** - Historical environmental trends
+- **[Environmental Data](21-environmental-data.md)** - Source data for compensation calculations
+- **[Environmental History](22-environmental-history.md)** - Historical environmental trends
 - **[Auto Calc Status](15-auto-calc-status.md)** - FAO-56 calculations using compensation
 - **[Growing Environment](14-growing-environment.md)** - Plant-specific environmental settings
 - **[Current Task Status](16-current-task-status.md)** - How compensation affects active tasks
