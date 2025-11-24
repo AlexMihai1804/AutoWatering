@@ -1,0 +1,12 @@
+mainmenu "AutoWatering"
+
+source "Kconfig.zephyr"
+
+menu "AutoWatering options"
+
+config AUTOWATERING_PM_SUPPORT
+    bool "Enable AutoWatering power management glue"
+    default y
+    select HAS_PM
+
+endmenu

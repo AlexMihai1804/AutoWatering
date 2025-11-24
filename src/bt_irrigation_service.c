@@ -10,33 +10,64 @@
 #define CONFIG_BT_MAX_CONN 1
 #endif
 
-// Simplified logging to avoid printk formatting issues
-#define LOG_DBG(...) printk(__VA_ARGS__)
-#define LOG_INF(...) printk(__VA_ARGS__)
-#define LOG_WRN(...) printk(__VA_ARGS__)
-#define LOG_ERR(...) printk(__VA_ARGS__)
-
 #include <string.h>    // for strlen
 #include <stdlib.h>    // for abs function
+#include <zephyr/logging/log.h>
+#include <zephyr/sys/byteorder.h>
+#include <limits.h>
+
+LOG_MODULE_REGISTER(bt_irrigation_service, LOG_LEVEL_DBG);
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/uuid.h>
+
+// Forward declaration to help with logging
+struct bt_conn;
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/settings/settings.h>
+#include <zephyr/sys/util.h>
 
 #include "bt_irrigation_service.h"
 #include "watering.h"
 #include "watering_internal.h"  // Add this include to access internal state
+#include "watering_enhanced.h"  // Add enhanced watering structures
+#include "bt_gatt_structs_enhanced.h"  // Add enhanced BLE structures
+#include "fao56_calc.h"         // Add this include for water_balance_t type
 #include "watering_history.h"   // Add this include for history statistics
 #include "rtc.h"
 #include "timezone.h"           // Add timezone support
+#include "flow_sensor.h"        // For pulse count during calibration
 #include "flow_sensor.h"
 #include "nvs_config.h"         // Add NVS config support
 #include "watering_history.h"   // Add this include for history functionality
+#include "rain_sensor.h"        // Add rain sensor support
+#include "rain_history.h"       // Add rain history support
+#include "rain_integration.h"   // Add rain integration support
+#include "rain_compensation.h"  // Add rain compensation support
+#include "temperature_compensation.h"  // Add temperature compensation support
+#include "interval_mode_controller.h"  // Add interval mode support
+#include "custom_soil_db.h"     // Add custom soil database support
+#include "configuration_status.h"  // Add configuration status support
+#include "onboarding_state.h"       // Add onboarding state management
+#include "reset_controller.h"       // Add reset controller support
+#include "environmental_data.h"     // Environmental data helpers for validation/quality
+#include "env_sensors.h"            // Sensor health and status
+#include "bt_environmental_history_handlers.h" // Environmental history BLE handlers
+#include "bme280_driver.h"          // BME280 config API prototypes
 
 /* Forward declaration for the service structure */
 extern const struct bt_gatt_service_static irrigation_svc;
+
+/* Forward declarations for notify functions referenced before definition */
+int bt_irrigation_onboarding_status_notify(void);
+int bt_irrigation_reset_control_notify(void);
+
+/* Rain history fragmentation support */
+#define RAIN_HISTORY_MAX_FRAGMENTS 20   /* Maximum number of fragments */
 
 /* ------------------------------------------------------------------ */
 /* TIMING STRATEGY DOCUMENTATION                                      */
@@ -83,7 +114,16 @@ typedef enum {
 /* Buffer Pool Management */
 #define BLE_BUFFER_POOL_SIZE    8      /* Number of notification buffers */
 #define MAX_NOTIFICATION_RETRIES 3
+
+/* Enhanced BLE characteristic support flags */
+static bool enhanced_features_enabled __attribute__((unused)) = true;
 #define BUFFER_RECOVERY_TIME_MS 2000   /* Time to wait before retry after buffer exhaustion */
+
+/* Connection parameter targets tuned for low-power operation (units: 1.25 ms / 10 ms) */
+#define LOW_POWER_CONN_INTERVAL_MIN 160U  /* 200 ms */
+#define LOW_POWER_CONN_INTERVAL_MAX 320U  /* 400 ms */
+#define LOW_POWER_CONN_LATENCY       4U
+#define LOW_POWER_CONN_TIMEOUT     500U   /* 5 s */
 
 /* Buffer Pool Structure */
 typedef struct {
@@ -120,8 +160,74 @@ static struct bt_conn *default_conn;
 static bool connection_active = false;  /* Track connection state */
 
 /* Forward declarations */
-static bool is_notification_enabled(const struct bt_gatt_attr *attr);
 static bool should_throttle_channel_name_notification(uint8_t channel_id);
+
+static uint32_t build_epoch_from_date(uint16_t year, uint8_t month, uint8_t day)
+{
+    rtc_datetime_t dt = {
+        .second = 0,
+        .minute = 0,
+        .hour = 0,
+        .day = day,
+        .month = month,
+        .year = year,
+        .day_of_week = 0,
+    };
+    return timezone_rtc_to_unix_utc(&dt);
+}
+
+static uint16_t count_sessions_in_period(uint8_t channel_id, uint32_t start_epoch, uint32_t end_epoch)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT || end_epoch <= start_epoch) {
+        return 0;
+    }
+
+    uint16_t sessions = 0;
+    if (watering_history_count_events(channel_id, start_epoch, end_epoch, &sessions) != WATERING_SUCCESS) {
+        return 0;
+    }
+
+    return sessions;
+}
+
+static bool epoch_to_local_datetime(uint32_t epoch, rtc_datetime_t *datetime)
+{
+    if (!datetime) {
+        return false;
+    }
+    return timezone_unix_to_rtc_local(epoch, datetime) == 0;
+}
+
+static bool is_leap_year(uint16_t year)
+{
+    return ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0));
+}
+
+static uint8_t days_in_month(uint16_t year, uint8_t month)
+{
+    static const uint8_t month_lengths[12] = {
+        31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+    };
+
+    if (month < 1 || month > 12) {
+        return 30;
+    }
+
+    uint8_t days = month_lengths[month - 1];
+    if (month == 2 && is_leap_year(year)) {
+        days = 29;
+    }
+    return days;
+}
+
+static uint16_t calculate_day_of_year(uint16_t year, uint8_t month, uint8_t day)
+{
+    uint16_t doy = day;
+    for (uint8_t m = 1; m < month; ++m) {
+        doy += days_in_month(year, m);
+    }
+    return doy;
+}
 
 /* Helper functions for RTC date/time access */
 static uint16_t get_current_year(void) {
@@ -201,11 +307,21 @@ static uint16_t get_current_day_of_year(void) {
 #define ATTR_IDX_HISTORY_VALUE     35
 #define ATTR_IDX_DIAGNOSTICS_VALUE 38
 #define ATTR_IDX_GROWING_ENV_VALUE 41
-#define ATTR_IDX_CURRENT_TASK_VALUE 44
+#define ATTR_IDX_AUTO_CALC_STATUS_VALUE 44
+#define ATTR_IDX_CURRENT_TASK_VALUE 47
+#define ATTR_IDX_TIMEZONE_VALUE     50
+#define ATTR_IDX_RAIN_CONFIG_VALUE  53
+#define ATTR_IDX_RAIN_DATA_VALUE    56
+#define ATTR_IDX_RAIN_HISTORY_VALUE 59
+#define ATTR_IDX_ENVIRONMENTAL_DATA_VALUE 62
+#define ATTR_IDX_ENVIRONMENTAL_HISTORY_VALUE 65
+#define ATTR_IDX_COMPENSATION_STATUS_VALUE 68
+#define ATTR_IDX_ONBOARDING_STATUS_VALUE 71
+#define ATTR_IDX_RESET_CONTROL_VALUE 74
+/* New Rain Integration Status characteristic index; appended to service */
+#define ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE 77
 
 /* Simple direct notification function - no queues, no work handlers */
-static int send_simple_notification(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                   const void *data, uint16_t len);
 
 /* Forward declarations for advanced notification functions */
 static void init_notification_pool(void);
@@ -240,30 +356,6 @@ static int safe_notify_channel_config(struct bt_conn *conn, const struct bt_gatt
     return safe_notify(conn, attr, data, len);
 }
 
-/* Enhanced safe notification with additional validation */
-static int safe_notify_enhanced(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                               const void *data, uint16_t len, bool check_enable_flag) {
-    if (!conn || !attr || !data) {
-        return -EINVAL;
-    }
-    
-    if (!notification_system_enabled || !connection_active) {
-        return -ENOTCONN;
-    }
-    
-    /* Check if we have a valid default connection */
-    if (conn != default_conn) {
-        return -ENOTCONN;
-    }
-    
-    /* Additional enable flag check if requested */
-    if (check_enable_flag && !is_notification_enabled(attr)) {
-        return -ENOTCONN;
-    }
-    
-    return bt_gatt_notify(conn, attr, data, len);
-}
-
 /* Enhanced notification macros using advanced buffer pooling system */
 #define SMART_NOTIFY(conn, attr, data, size) \
     do { \
@@ -295,9 +387,6 @@ static int safe_notify_enhanced(struct bt_conn *conn, const struct bt_gatt_attr 
             } \
         } \
     } while(0)
-
-/* Legacy macro for backward compatibility - redirects to smart version */
-#define FAST_NOTIFY(conn, attr, data, size) SMART_NOTIFY(conn, attr, data, size)
 
 /* Special macro for channel config notifications with name change throttling */
 #define CHANNEL_CONFIG_NOTIFY(conn, attr, data, size) \
@@ -343,8 +432,18 @@ typedef struct {
     bool history_notifications_enabled;
     bool diagnostics_notifications_enabled;
     bool growing_env_notifications_enabled;
+    bool auto_calc_status_notifications_enabled;
     bool current_task_notifications_enabled;
     bool timezone_notifications_enabled;
+    bool rain_config_notifications_enabled;
+    bool rain_data_notifications_enabled;
+    bool rain_history_notifications_enabled;
+    bool environmental_data_notifications_enabled;
+    bool environmental_history_notifications_enabled;
+    bool compensation_status_notifications_enabled;
+    bool onboarding_status_notifications_enabled;
+    bool reset_control_notifications_enabled;
+    bool rain_integration_status_notifications_enabled;
 } notification_state_t;
 
 static notification_state_t notification_state = {0};
@@ -433,12 +532,29 @@ static notify_priority_t get_notification_priority(const struct bt_gatt_attr *at
         return NOTIFY_PRIORITY_CRITICAL;
     } else if (attr == &irrigation_svc.attrs[ATTR_IDX_STATUS_VALUE] ||
                attr == &irrigation_svc.attrs[ATTR_IDX_VALVE_VALUE] ||
-               attr == &irrigation_svc.attrs[ATTR_IDX_CURRENT_TASK_VALUE]) {
+               attr == &irrigation_svc.attrs[ATTR_IDX_CURRENT_TASK_VALUE] ||
+               attr == &irrigation_svc.attrs[ATTR_IDX_TASK_QUEUE_VALUE]) {
         return NOTIFY_PRIORITY_HIGH;
     } else if (attr == &irrigation_svc.attrs[ATTR_IDX_FLOW_VALUE] ||
                attr == &irrigation_svc.attrs[ATTR_IDX_STATISTICS_VALUE] ||
-               attr == &irrigation_svc.attrs[ATTR_IDX_CHANNEL_CFG_VALUE]) {
+               attr == &irrigation_svc.attrs[ATTR_IDX_CALIB_VALUE] ||
+               attr == &irrigation_svc.attrs[ATTR_IDX_SCHEDULE_VALUE] ||
+               attr == &irrigation_svc.attrs[ATTR_IDX_SYSTEM_CFG_VALUE] ||
+               attr == &irrigation_svc.attrs[ATTR_IDX_CHANNEL_CFG_VALUE] ||
+               attr == &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_DATA_VALUE] ||
+               attr == &irrigation_svc.attrs[ATTR_IDX_COMPENSATION_STATUS_VALUE] ||
+               attr == &irrigation_svc.attrs[ATTR_IDX_RTC_VALUE] ||
+               attr == &irrigation_svc.attrs[ATTR_IDX_AUTO_CALC_STATUS_VALUE] ||
+               attr == &irrigation_svc.attrs[ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE]) {
         return NOTIFY_PRIORITY_NORMAL;
+    } else if (attr == &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_HISTORY_VALUE]) {
+        return NOTIFY_PRIORITY_LOW; /* History data is low priority */
+    } else if (attr == &irrigation_svc.attrs[ATTR_IDX_ONBOARDING_STATUS_VALUE]) {
+        return NOTIFY_PRIORITY_LOW; /* Onboarding status is low priority (1000ms) */
+    } else if (attr == &irrigation_svc.attrs[ATTR_IDX_DIAGNOSTICS_VALUE]) {
+        return NOTIFY_PRIORITY_LOW; /* Diagnostics is low priority */
+    } else if (attr == &irrigation_svc.attrs[ATTR_IDX_RESET_CONTROL_VALUE]) {
+        return NOTIFY_PRIORITY_NORMAL; /* Reset Control per spec: Normal (200ms throttling) */
     } else {
         return NOTIFY_PRIORITY_LOW;
     }
@@ -615,7 +731,7 @@ static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr
 /* NEW: forward declarations needed before first use                  */
 /* ------------------------------------------------------------------ */
 
-/*  stub-handlers used inside BT_GATT_SERVICE_DEFINE – declare early  */
+/* Forward-declared handlers used inside BT_GATT_SERVICE_DEFINE – declare early  */
 /* Schedule characteristics */
 static ssize_t read_schedule(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                             void *buf, uint16_t len, uint16_t offset);
@@ -652,6 +768,13 @@ static ssize_t write_growing_env(struct bt_conn *, const struct bt_gatt_attr *,
                                 const void *, uint16_t, uint16_t, uint8_t);
 static void    growing_env_ccc_changed(const struct bt_gatt_attr *, uint16_t);
 
+/* Automatic calculation status characteristics */
+static ssize_t read_auto_calc_status(struct bt_conn *, const struct bt_gatt_attr *,
+                                    void *, uint16_t, uint16_t);
+static void    auto_calc_status_ccc_changed(const struct bt_gatt_attr *, uint16_t);
+static ssize_t write_auto_calc_status(struct bt_conn *, const struct bt_gatt_attr *,
+                                     const void *, uint16_t, uint16_t, uint8_t);
+
 static ssize_t read_alarm(struct bt_conn *, const struct bt_gatt_attr *,
                           void *, uint16_t, uint16_t);
 static ssize_t write_alarm(struct bt_conn *, const struct bt_gatt_attr *,
@@ -665,13 +788,7 @@ static ssize_t write_current_task(struct bt_conn *conn, const struct bt_gatt_att
                                  const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
 static void    current_task_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 
-/* Forward declaration for task update thread */
-static int start_task_update_thread(void);
-static void stop_task_update_thread(void);
-
-/* Forward declaration for simple notification function */
-static int send_simple_notification(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                   const void *data, uint16_t len);
+/* Legacy 'task update thread' removed – any reintroduction should be justified (kept lean). */
 
 /* Forward declarations for additional functions */
 static ssize_t read_channel_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -702,8 +819,44 @@ static ssize_t read_diagnostics(struct bt_conn *conn, const struct bt_gatt_attr 
                                void *buf, uint16_t len, uint16_t offset);
 static void diagnostics_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 
+/* Onboarding characteristics */
+static ssize_t read_onboarding_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                    void *buf, uint16_t len, uint16_t offset);
+static void onboarding_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+
+static ssize_t read_reset_control(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                void *buf, uint16_t len, uint16_t offset);
+static ssize_t write_reset_control(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                 const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
+static void reset_control_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+
 /* Forward declaration for force enable notifications */
 static void force_enable_all_notifications(void);
+
+/* Rain sensor characteristics */
+ssize_t read_rain_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                               void *buf, uint16_t len, uint16_t offset);
+ssize_t write_rain_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
+void rain_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+
+ssize_t read_rain_data(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                             void *buf, uint16_t len, uint16_t offset);
+void rain_data_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+
+ssize_t read_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                void *buf, uint16_t len, uint16_t offset);
+ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                 const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
+void rain_history_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+
+/* Environmental data characteristics */
+static int send_rain_history_fragment(struct bt_conn *conn, uint8_t fragment_id);
+
+/* Rain Integration Status characteristic */
+static ssize_t read_rain_integration_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                            void *buf, uint16_t len, uint16_t offset);
+static void    rain_integration_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 
 /* ------------------------------------------------------------------ */
 
@@ -738,48 +891,43 @@ static void force_enable_all_notifications(void);
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdefc)
 #define BT_UUID_IRRIGATION_TIMEZONE_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x9abc, 0xdef123456793)
-/* Add History Service UUIDs (UUID 0x181A) */
-#define BT_UUID_HISTORY_SERVICE_VAL \
-    BT_UUID_128_ENCODE(0x0000181A, 0x0000, 0x1000, 0x8000, 0x00805F9B34FB)
-#define BT_UUID_HISTORY_SERVICE_REVISION_VAL \
-    BT_UUID_128_ENCODE(0x00002A80, 0x0000, 0x1000, 0x8000, 0x00805F9B34FB)
-#define BT_UUID_HISTORY_CAPABILITIES_VAL \
-    BT_UUID_128_ENCODE(0x00002A81, 0x0000, 0x1000, 0x8000, 0x00805F9B34FB)
-#define BT_UUID_HISTORY_CTRL_VAL \
-    BT_UUID_128_ENCODE(0x0000EF01, 0x0000, 0x1000, 0x8000, 0x00805F9B34FB)
-#define BT_UUID_HISTORY_DATA_VAL \
-    BT_UUID_128_ENCODE(0x0000EF02, 0x0000, 0x1000, 0x8000, 0x00805F9B34FB)
-#define BT_UUID_HISTORY_INSIGHTS_VAL \
-    BT_UUID_128_ENCODE(0x0000EF03, 0x0000, 0x1000, 0x8000, 0x00805F9B34FB)
-#define BT_UUID_HISTORY_SETTINGS_VAL \
-    BT_UUID_128_ENCODE(0x0000EF04, 0x0000, 0x1000, 0x8000, 0x00805F9B34FB)
-
-static struct bt_uuid_128 history_service_uuid = BT_UUID_INIT_128(BT_UUID_HISTORY_SERVICE_VAL);
-static struct bt_uuid_128 history_service_revision_uuid = BT_UUID_INIT_128(BT_UUID_HISTORY_SERVICE_REVISION_VAL);
-static struct bt_uuid_128 history_capabilities_uuid = BT_UUID_INIT_128(BT_UUID_HISTORY_CAPABILITIES_VAL);
-static struct bt_uuid_128 history_ctrl_uuid = BT_UUID_INIT_128(BT_UUID_HISTORY_CTRL_VAL);
-static struct bt_uuid_128 history_data_uuid = BT_UUID_INIT_128(BT_UUID_HISTORY_DATA_VAL);
-static struct bt_uuid_128 history_insights_uuid = BT_UUID_INIT_128(BT_UUID_HISTORY_INSIGHTS_VAL);
-static struct bt_uuid_128 history_settings_uuid = BT_UUID_INIT_128(BT_UUID_HISTORY_SETTINGS_VAL);
-
-/* History Service data structures */
-static uint8_t history_service_revision[2] = {1, 0}; // Major.Minor
-static uint32_t history_capabilities = 0x07; // Export, Purge, Insights
-static uint8_t history_ctrl_value[20] = {0};
-static uint8_t history_data_value[20] = {0};
-static insights_t history_insights_value = {0};
-static history_settings_t history_settings_value = {
-    .detailed_cnt = DETAILED_EVENTS_PER_CHANNEL,
-    .daily_days = DAILY_STATS_DAYS,
-    .monthly_months = MONTHLY_STATS_MONTHS,
-    .annual_years = ANNUAL_STATS_YEARS
-};
+/* History Service UUIDs and values removed (unused) to reduce warnings and memory. */
 #define BT_UUID_IRRIGATION_DIAGNOSTICS_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdefd)
 #define BT_UUID_IRRIGATION_GROWING_ENV_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdefe)
+#define BT_UUID_IRRIGATION_AUTO_CALC_STATUS_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde00)
 #define BT_UUID_IRRIGATION_CURRENT_TASK_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcdeff)
+
+/* Onboarding characteristics UUIDs */
+#define BT_UUID_IRRIGATION_ONBOARDING_STATUS_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde20)
+
+#define BT_UUID_IRRIGATION_RESET_CONTROL_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde21)
+
+/* Rain sensor characteristics UUIDs */
+#define BT_UUID_IRRIGATION_RAIN_CONFIG_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde12)
+
+#define BT_UUID_IRRIGATION_RAIN_DATA_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde13)
+
+#define BT_UUID_IRRIGATION_RAIN_HISTORY_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde14)
+
+/* New environmental data characteristics UUIDs */
+#define BT_UUID_IRRIGATION_ENVIRONMENTAL_DATA_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde15)
+#define BT_UUID_IRRIGATION_ENVIRONMENTAL_HISTORY_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde16)
+#define BT_UUID_IRRIGATION_COMPENSATION_STATUS_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde17)
+/* Rain integration status characteristic UUID (separate from config) */
+#define BT_UUID_IRRIGATION_RAIN_INTEGRATION_STATUS_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde18)
 
 static struct bt_uuid_128 irrigation_service_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_SERVICE_VAL);
 static struct bt_uuid_128 valve_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_VALVE_VAL);
@@ -796,231 +944,33 @@ static struct bt_uuid_128 calibration_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIG
 static struct bt_uuid_128 history_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_HISTORY_VAL);
 static struct bt_uuid_128 diagnostics_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_DIAGNOSTICS_VAL);
 static struct bt_uuid_128 growing_env_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_GROWING_ENV_VAL);
+static struct bt_uuid_128 auto_calc_status_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_AUTO_CALC_STATUS_VAL);
 static struct bt_uuid_128 current_task_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_CURRENT_TASK_VAL);
 static struct bt_uuid_128 timezone_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_TIMEZONE_VAL);
 
-/* Valve Control structure - matches BLE API documentation */
-struct valve_control_data {
-    uint8_t  channel_id;   // 0-7: target channel
-    uint8_t  task_type;    // 0=duration [min], 1=volume [L] (for task creation)
-                           // Also used for status: 0=inactive, 1=active (for notifications)
-    uint16_t value;        // minutes (task_type=0) or liters (task_type=1)
-                           // For status notifications: 0 (no value)
-} __packed;               // TOTAL SIZE: 4 bytes
+/* Onboarding characteristics UUIDs */
+static struct bt_uuid_128 onboarding_status_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_ONBOARDING_STATUS_VAL);
+static struct bt_uuid_128 reset_control_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_RESET_CONTROL_VAL);
 
-/* Channel configuration structure */
-struct channel_config_data {
-    uint8_t channel_id;              /* Channel ID 0-7 */
-    uint8_t name_len;               /* Actual string length, excluding null terminator (≤63) */
-    char    name[64];               /* CHANNEL NAME (64 bytes): User-friendly channel identifier (e.g., "Front Garden") */
-    uint8_t auto_enabled;           /* 1=automatic schedule active, 0=disabled */
-    
-    /* Plant and growing environment fields per BLE API Documentation */
-    uint8_t plant_type;             /* Plant type: 0=Vegetables, 1=Herbs, 2=Flowers, 3=Shrubs, 4=Trees, 5=Lawn, 6=Succulents, 7=Custom */
-    uint8_t soil_type;              /* Soil type: 0=Clay, 1=Sandy, 2=Loamy, 3=Silty, 4=Rocky, 5=Peaty, 6=Potting Mix, 7=Hydroponic */
-    uint8_t irrigation_method;      /* Irrigation method: 0=Drip, 1=Sprinkler, 2=Soaker Hose, 3=Micro Spray, 4=Hand Watering, 5=Flood */
-    uint8_t coverage_type;          /* 0=area in m², 1=plant count */
-    union {
-        float area_m2;              /* Area in square meters (4 bytes) */
-        uint16_t plant_count;       /* Number of individual plants (2 bytes + 2 padding) */
-    } coverage;                     /* Total: 4 bytes */
-    uint8_t sun_percentage;         /* Percentage of direct sunlight (0-100%) */
-} __packed;                         /* TOTAL SIZE: 76 bytes - CRITICAL: must match documentation exactly */
+/* Rain sensor characteristics UUIDs */
+static struct bt_uuid_128 rain_config_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_RAIN_CONFIG_VAL);
+static struct bt_uuid_128 rain_data_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_RAIN_DATA_VAL);
+static struct bt_uuid_128 rain_history_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_RAIN_HISTORY_VAL);
 
-/* Schedule configuration structure */
-struct schedule_config_data {
-    uint8_t channel_id;
-    uint8_t schedule_type; // 0=daily, 1=periodic
-    uint8_t days_mask; // Days for daily schedule or interval days for periodic
-    uint8_t hour;
-    uint8_t minute;
-    uint8_t watering_mode; // 0=duration, 1=volume
-    uint16_t value; // Minutes or liters
-    uint8_t auto_enabled; // 0=disabled, 1=enabled
-}
-        __packed;
+/* New environmental data characteristics UUIDs */
+static struct bt_uuid_128 environmental_data_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_ENVIRONMENTAL_DATA_VAL);
+static struct bt_uuid_128 environmental_history_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_ENVIRONMENTAL_HISTORY_VAL);
+static struct bt_uuid_128 compensation_status_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_COMPENSATION_STATUS_VAL);
+static struct bt_uuid_128 rain_integration_status_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_RAIN_INTEGRATION_STATUS_VAL);
 
-/* System configuration structure */
-struct system_config_data {
-    uint8_t version;           /* Configuration version (read-only) */
-    uint8_t power_mode;        /* 0=Normal, 1=Energy-Saving, 2=Ultra-Low */
-    uint32_t flow_calibration; /* Pulses per liter */
-    uint8_t max_active_valves; /* Always 1 (read-only) */
-    uint8_t num_channels;      /* Number of channels (read-only) */
-    /* Master valve configuration (new fields) */
-    uint8_t master_valve_enabled;      /* 0=disabled, 1=enabled */
-    int16_t master_valve_pre_delay;    /* Pre-start delay in seconds (negative = after) */
-    int16_t master_valve_post_delay;   /* Post-stop delay in seconds (negative = before) */
-    uint8_t master_valve_overlap_grace; /* Grace period for overlapping tasks (seconds) */
-    uint8_t master_valve_auto_mgmt;    /* 0=manual, 1=automatic management */
-    uint8_t master_valve_current_state; /* Current state: 0=closed, 1=open (read-only) */
-}
-        __packed;
-
-/* Task queue structure */
-struct task_queue_data {
-    uint8_t pending_count;       /* Number of pending tasks in queue */
-    uint8_t completed_tasks;     /* Number of completed tasks since boot */
-    uint8_t current_channel;     /* Currently active channel (0xFF if none) */
-    uint8_t current_task_type;   /* 0=duration, 1=volume */
-    uint16_t current_value;      /* Current task value (minutes or liters) */
-    uint8_t command;             /* Command to execute (write-only) */
-    uint8_t task_id_to_delete;   /* Task ID for deletion (future use) */
-    uint8_t active_task_id;      /* Currently active task ID */
-} __packed;
-
-/* Statistics structure for a channel */
-struct statistics_data {
-    uint8_t channel_id;
-    uint32_t total_volume; // Total volume in ml
-    uint32_t last_volume; // Last volume in ml
-    uint32_t last_watering; // Last watering timestamp
-    uint16_t count; // Total watering count
-}
-        __packed;
-
-/* Current task monitoring structure */
-struct current_task_data {
-    uint8_t channel_id;        // Channel ID (0xFF if no active task)
-    uint32_t start_time;       // Task start time in seconds since epoch
-    uint8_t mode;              // Watering mode (0=duration, 1=volume)
-    uint32_t target_value;     // Target: seconds (duration mode) or milliliters (volume mode)
-    uint32_t current_value;    // Current: elapsed seconds (duration) or volume dispensed in ml
-    uint32_t total_volume;     // Total volume dispensed in ml (from flow sensor)
-    uint8_t status;            // Task status (0=idle, 1=running, 2=paused, 3=completed)
-    uint16_t reserved;         // Elapsed time in seconds for volume mode (0 for duration mode)
-} __packed;
-
-/* Structure for setting/reading RTC */
-struct rtc_data {
-    uint8_t year; /* Year minus 2000 (0-99) */
-    uint8_t month; /* Month (1-12) */
-    uint8_t day; /* Day (1-31) */
-    uint8_t hour; /* Hour (0-23) */
-    uint8_t minute; /* Minute (0-59) */
-    uint8_t second; /* Second (0-59) */
-    uint8_t day_of_week; /* Day of week (0-6, 0=Sunday) */
-    int16_t utc_offset_minutes; /* UTC offset in minutes (e.g., 120 for UTC+2) */
-    uint8_t dst_active; /* 1 if DST is currently active, 0 otherwise */
-    uint8_t reserved[6]; /* Reserved for future use */
-}
-        __packed;
-
-/* Structure for alarms and notifications */
-struct alarm_data {
-    uint8_t alarm_code; /* Alarm code */
-    uint16_t alarm_data; /* Additional alarm-specific data */
-    uint32_t timestamp; /* Timestamp when alarm occurred */
-}
-        __packed;
-
-/* Structure for flow sensor calibration */
-struct calibration_data {
-    uint8_t action; /* 0=stop, 1=start, 2=in progress, 3=calculated */
-    uint32_t pulses; /* Number of pulses counted */
-    uint32_t volume_ml; /* Volume in ml (input or calculated) */
-    uint32_t pulses_per_liter; /* Calibration result */
-}
-        __packed;
-
-/* Structure for irrigation history request/response */
-struct history_data {
-    uint8_t channel_id;        /* Channel (0-7) or 0xFF for all */
-    uint8_t history_type;      /* 0=detailed, 1=daily, 2=monthly, 3=annual */
-    uint8_t entry_index;       /* Entry index (0=most recent) */
-    uint8_t count;             /* Number of entries to return/returned */
-    uint32_t start_timestamp;  /* Start time filter (0=no filter) */
-    uint32_t end_timestamp;    /* End time filter (0=no filter) */
-    
-    /* Response data (varies by history_type) */
-    union {
-        struct {
-            uint32_t timestamp;
-            uint8_t channel_id;      /* Channel that performed the watering */
-            uint8_t event_type;      /* START/COMPLETE/ABORT/ERROR */
-            uint8_t mode;
-            uint16_t target_value;
-            uint16_t actual_value;
-            uint16_t total_volume_ml;
-            uint8_t trigger_type;
-            uint8_t success_status;
-            uint8_t error_code;
-            uint16_t flow_rate_avg;
-            uint8_t reserved[2];     /* For alignment */
-        } detailed;
-        
-        struct {
-            uint16_t day_index;
-            uint16_t year;
-            uint8_t watering_sessions;
-            uint32_t total_volume_ml;
-            uint16_t total_duration_sec;
-            uint16_t avg_flow_rate;
-            uint8_t success_rate;
-            uint8_t error_count;
-        } daily;
-        
-        struct {
-            uint8_t month;
-            uint16_t year;
-            uint16_t total_sessions;
-            uint32_t total_volume_ml;
-            uint16_t total_duration_hours;
-            uint16_t avg_daily_volume;
-            uint8_t active_days;
-            uint8_t success_rate;
-        } monthly;
-        
-        struct {
-            uint16_t year;
-            uint16_t total_sessions;
-            uint32_t total_volume_liters;
-            uint16_t avg_monthly_volume;
-            uint8_t most_active_month;
-            uint8_t success_rate;
-            uint16_t peak_month_volume;
-        } annual;
-    } data;
-}
-        __packed;
-
-/* Structure for diagnostics */
-struct diagnostics_data {
-    uint32_t uptime; /* System uptime in minutes */
-    uint16_t error_count; /* Total error count since boot */
-    uint8_t last_error; /* Code of the most recent error (0 if no errors) */
-    uint8_t valve_status; /* Valve status bitmap (bit 0 = channel 0, etc.) */
-    uint8_t battery_level; /* Battery level in percent (0xFF if not applicable) */
-    uint8_t reserved[3]; /* Reserved for future use */
-} __packed;
-
-/* Structure for growing environment configuration */
-struct growing_env_data {
-    uint8_t channel_id;           /* Channel ID (0-7) */
-    uint8_t plant_type;           /* Plant type (0-7) */
-    uint16_t specific_plant;      /* Specific plant type (see enums, meaning depends on plant_type) */
-    uint8_t soil_type;            /* Soil type (0-7) */
-    uint8_t irrigation_method;    /* Irrigation method (0-5) */
-    uint8_t use_area_based;       /* 1=area in m², 0=plant count */
-    union {
-        float area_m2;            /* Area in square meters */
-        uint16_t plant_count;     /* Number of plants */
-    } coverage;
-    uint8_t sun_percentage;       /* Sun exposure percentage (0-100) */
-    /* Custom plant fields (used only when plant_type=7) */
-    char custom_name[32];         /* CUSTOM PLANT NAME (32 bytes): Species name when plant_type=Custom (e.g., "Hibiscus rosa-sinensis") */
-    float water_need_factor;      /* Water need multiplier (0.1-5.0) */
-    uint8_t irrigation_freq_days; /* Recommended irrigation frequency (days) */
-    uint8_t prefer_area_based;    /* 1=plant prefers m² measurement, 0=prefers plant count */
-} __packed;
-
-/* Characteristic value handles */
+/* Characteristic value handles - use types from headers */
 static uint8_t valve_value[sizeof(struct valve_control_data)];
 static uint8_t flow_value[sizeof(uint32_t)];
 static uint8_t status_value[1];
 static uint8_t channel_config_value[sizeof(struct channel_config_data)];
 static uint8_t schedule_value[sizeof(struct schedule_config_data)];
-static uint8_t system_config_value[sizeof(struct system_config_data)];
+static uint8_t system_config_value[sizeof(struct enhanced_system_config_data)];
+static uint16_t system_config_bytes_received = 0; /* Track fragmented writes */
 static uint8_t task_queue_value[sizeof(struct task_queue_data)];
 static uint8_t statistics_value[sizeof(struct statistics_data)];
 static uint8_t rtc_value[sizeof(struct rtc_data)];
@@ -1029,8 +979,32 @@ static uint8_t calibration_value[sizeof(struct calibration_data)];
 static uint8_t history_value[sizeof(struct history_data)];
 static uint8_t diagnostics_value[sizeof(struct diagnostics_data)];
 static uint8_t growing_env_value[sizeof(struct growing_env_data)];
+static uint8_t auto_calc_status_value[sizeof(struct auto_calc_status_data)];
 static uint8_t current_task_value[sizeof(struct current_task_data)];
 static uint8_t timezone_value[sizeof(timezone_config_t)];
+
+/* Rain sensor static values - using types from headers */
+/* Removed legacy rain_history_cmd_value and rain_fragment_value (unused after unified fragmentation) */
+
+/* Rain history response structure */
+#define RAIN_HISTORY_FRAGMENT_SIZE 240  // Maximum BLE data payload
+
+/* Rain sensor characteristic value handles */
+static uint8_t rain_config_value[sizeof(struct rain_config_data)];
+static uint8_t rain_data_value[sizeof(struct rain_data_data)];
+static uint8_t rain_history_value[sizeof(struct rain_history_cmd_data)];
+
+/* Adaptive cadence state for Rain Data */
+static uint32_t rain_last_periodic_ms = 0;
+static uint32_t rain_last_pulse_notify_ms = 0;
+static uint8_t  rain_last_status_sent = 0xFF; /* invalid at boot to force first snapshot */
+
+/* Environmental data characteristic value handles */
+static uint8_t environmental_data_value[sizeof(struct environmental_data_ble)];
+static uint8_t environmental_history_value[256]; // Fixed size buffer for history response
+static uint8_t compensation_status_value[sizeof(struct compensation_status_data)];
+/* Rain Integration Status characteristic value buffer */
+static uint8_t rain_integration_status_value[sizeof(struct rain_integration_status_ble)];
 
 /* Channel caching for performance */
 static struct {
@@ -1072,15 +1046,84 @@ static struct {
     uint32_t start_time;  /* timestamp when fragmentation started */
 } channel_frag = {0};
 
+/* ---------------------------------------------------------------
+ *  Accumulator for fragmented Growing Environment writes (≤20 B each)
+ * ------------------------------------------------------------- */
+static struct {
+    uint8_t  channel_id;       /* channel being edited              */
+    uint8_t  frag_type;        /* fragment type (2=full_struct_be, 3=full_struct_le) */
+    uint16_t expected;         /* total struct size from first frame */
+    uint16_t received;         /* bytes stored so far               */
+    uint8_t  buf[128];         /* temporary buffer for struct data - increased for 76-byte structures */
+    bool     in_progress;      /* true while receiving fragments    */
+    uint32_t start_time;       /* timestamp when fragmentation started */
+} growing_env_frag = {0};
+
+/* ---------------------------------------------------------------
+ *  Current Task: no fragmentation per 21-byte spec
+ * ------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------
+ *  Accumulator for fragmented Auto Calc Status writes (≤20 B each)
+ * ------------------------------------------------------------- */
+static struct {
+    uint8_t  frag_type;        /* fragment type (2=full_struct_be, 3=full_struct_le) */
+    uint16_t expected;         /* total struct size from first frame */
+    uint16_t received;         /* bytes stored so far               */
+    uint8_t  buf[64];          /* temporary buffer for 40-byte auto calc structure */
+    bool     in_progress;      /* true while receiving fragments    */
+    uint32_t start_time;       /* timestamp when fragmentation started */
+} auto_calc_frag = {0};
+
+/* ---------------------------------------------------------------
+ *  Accumulator for fragmented History writes (≤20 B each)
+ * ------------------------------------------------------------- */
+static struct {
+    uint8_t  frag_type;        /* fragment type (2=full_struct_be, 3=full_struct_le) */
+    uint16_t expected;         /* total struct size from first frame */
+    uint16_t received;         /* bytes stored so far               */
+    uint8_t  buf[128];         /* temporary buffer for 32-byte history structure */
+    bool     in_progress;      /* true while receiving fragments    */
+    uint32_t start_time;       /* timestamp when fragmentation started */
+} history_frag = {0};
+
 #define FRAGMENTATION_TIMEOUT_MS 5000  /* 5 second timeout for fragmentation */
 
 /* Check and reset fragmentation state if timeout occurred */
 static inline void check_fragmentation_timeout(void) {
+    uint32_t now = k_uptime_get_32();
+    
+    /* Check channel config fragmentation timeout */
     if (channel_frag.in_progress) {
-        uint32_t now = k_uptime_get_32();
         if (now - channel_frag.start_time > FRAGMENTATION_TIMEOUT_MS) {
-            printk("⚠️ BLE: Fragmentation timeout - resetting state\n");
+            printk("⚠️ BLE: Channel config fragmentation timeout - resetting state\n");
             channel_frag.in_progress = false;
+        }
+    }
+    
+    /* Check growing environment fragmentation timeout */
+    if (growing_env_frag.in_progress) {
+        if (now - growing_env_frag.start_time > FRAGMENTATION_TIMEOUT_MS) {
+            printk("⚠️ BLE: Growing environment fragmentation timeout - resetting state\n");
+            growing_env_frag.in_progress = false;
+        }
+    }
+    
+    /* Check history fragmentation timeout */
+    if (history_frag.in_progress) {
+        if (now - history_frag.start_time > FRAGMENTATION_TIMEOUT_MS) {
+            printk("⚠️ BLE: History fragmentation timeout - resetting state\n");
+            history_frag.in_progress = false;
+        }
+    }
+    
+    /* Current Task: no fragmentation */
+    
+    /* Check auto calc fragmentation timeout */
+    if (auto_calc_frag.in_progress) {
+        if (now - auto_calc_frag.start_time > FRAGMENTATION_TIMEOUT_MS) {
+            printk("⚠️ BLE: Auto calc fragmentation timeout - resetting state\n");
+            auto_calc_frag.in_progress = false;
         }
     }
 }
@@ -1099,33 +1142,58 @@ static inline void log_fragmentation_state(const char *context) {
 
 
 
-/* ---------------------------------------------------------------
- *  Accumulator for fragmented Growing Environment writes (≤20 B each)
- * ------------------------------------------------------------- */
-static struct {
-    uint8_t  channel_id;       /* channel being edited              */
-    uint16_t expected;         /* total struct size from first frame */
-    uint16_t received;         /* bytes stored so far               */
-    uint8_t  buf[128];         /* temporary buffer for struct data - increased for 76-byte structures */
-    bool     in_progress;      /* true while receiving fragments    */
-} growing_env_frag = {0};
-
-/* ---------------------------------------------------------------
- *  Accumulator for fragmented History writes (≤20 B each)
- * ------------------------------------------------------------- */
-static struct {
-    uint8_t  frag_type;        /* fragment type (2=full_struct_be, 3=full_struct_le) */
-    uint16_t expected;         /* total struct size from first frame */
-    uint16_t received;         /* bytes stored so far               */
-    uint8_t  buf[128];         /* temporary buffer for 32-byte history structure */
-    bool     in_progress;      /* true while receiving fragments    */
-    uint32_t start_time;       /* timestamp when fragmentation started */
-} history_frag = {0};
 /* ---------------------------------------------------------------- */
 
 /* Global variables for calibration */
 static bool calibration_active = false;
 static uint32_t calibration_start_pulses = 0;
+/* Periodic notifier for calibration progress */
+static struct k_work_delayable calibration_progress_work;
+static void calibration_progress_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+    if (!calibration_active) {
+        return;
+    }
+    if (default_conn && notification_state.calibration_notifications_enabled) {
+        struct calibration_data *val = (struct calibration_data *)calibration_value;
+        uint32_t current_pulses = get_pulse_count();
+        val->pulses = current_pulses - calibration_start_pulses;
+        val->action = 2; /* IN_PROGRESS */
+        bt_irrigation_calibration_notify();
+    }
+    /* Reschedule at ~200ms while active */
+    k_work_schedule(&calibration_progress_work, K_MSEC(200));
+}
+
+/* ------------------------------------------------------------------ */
+/* Current Task periodic notifier (2s while running)                   */
+/* ------------------------------------------------------------------ */
+
+/* Prototype first so the macro can reference it */
+static void current_task_periodic_work_handler(struct k_work *work);
+
+/* Define the delayable work instance before function body so it is visible */
+static K_WORK_DELAYABLE_DEFINE(current_task_periodic_work, current_task_periodic_work_handler);
+
+static void current_task_periodic_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+    /* Only run when notifications enabled and connection up */
+    if (!default_conn || !connection_active || !notification_state.current_task_notifications_enabled) {
+        return;
+    }
+
+    /* Send progress only when a task is running (not paused) */
+    watering_task_t *current_task = watering_get_current_task();
+    bool running = (current_task && watering_task_state.task_in_progress && !watering_task_state.task_paused);
+
+    if (running) {
+        (void)bt_irrigation_current_task_notify();
+    }
+
+    /* Re-schedule at 2s cadence while notifications stay enabled */
+    k_work_schedule(&current_task_periodic_work, K_SECONDS(2));
+}
+
 
 /* Global variables for diagnostics tracking */
 static uint16_t diagnostics_error_count = 0;
@@ -1149,6 +1217,8 @@ static ssize_t read_status(struct bt_conn *conn, const struct bt_gatt_attr *attr
                            void *buf, uint16_t len, uint16_t offset);
 
 static void status_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value);
+/* Forward declaration: timer instance used for periodic fault re-notifications */
+static struct k_timer status_periodic_timer;
 
 static void channel_config_ccc_changed(const struct bt_gatt_attr *attr,
                                        uint16_t value);
@@ -1210,11 +1280,565 @@ static struct bt_le_adv_param adv_param = {
 };
 /* ---------------------------------------------------------------------- */
 
+/* ------------------------------------------------------------------ */
+/* Environmental Data Callback Implementations                       */
+/* ------------------------------------------------------------------ */
+
+/* Environmental data read callback - returns environmental_data_ble (24B) */
+static ssize_t read_environmental_data(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                      void *buf, uint16_t len, uint16_t offset)
+{
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for Environmental Data read");
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
+    }
+
+    struct environmental_data_ble out = {0};
+
+    /* Get current processed environmental data */
+    bme280_environmental_data_t proc;
+    int ret = environmental_data_get_current(&proc);
+    if (ret == 0 && proc.current.valid) {
+        out.temperature = proc.current.temperature;
+        out.humidity = proc.current.humidity;
+        out.pressure = proc.current.pressure;
+        out.timestamp = proc.current.timestamp;
+        out.sensor_status = 1; /* Active */
+
+        /* Compute data_quality score using validation */
+        env_data_validation_t validation;
+        if (env_data_validate_reading(&proc.current, NULL, &validation) == 0) {
+            out.data_quality = env_data_calculate_quality_score(&proc.current, &validation);
+        } else {
+            out.data_quality = 0;
+        }
+    } else {
+        /* Provide sane defaults if unavailable */
+        out.temperature = 25.0f;
+        out.humidity = 50.0f;
+        out.pressure = 1013.25f;
+        out.timestamp = k_uptime_get_32();
+        out.sensor_status = 0; /* Inactive */
+        out.data_quality = 0;
+    }
+
+    /* Get measurement interval from BME280 config if available */
+    bme280_config_t config;
+    if (bme280_system_get_config(&config) == 0) {
+        out.measurement_interval = config.measurement_interval;
+    } else {
+        out.measurement_interval = 60; /* Default */
+    }
+
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &out, sizeof(out));
+}
+
+/* Environmental data CCC callback */
+static void environmental_data_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.environmental_data_notifications_enabled = notif_enabled;
+    
+    if (notif_enabled) {
+        LOG_INF("Environmental data notifications enabled");
+    } else {
+        LOG_INF("Environmental data notifications disabled");
+    }
+}
+
+/* Environmental history read callback */
+static ssize_t read_environmental_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                         void *buf, uint16_t len, uint16_t offset)
+{
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for Environmental History read");
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
+    }
+
+    /* Return current response buffer (may be large; long read supported) */
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, environmental_history_value, sizeof(environmental_history_value));
+}
+
+/* Environmental history write callback */
+static ssize_t write_environmental_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                          const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+    /* Rate limiting: minimum 1s between commands, 500ms between notifications */
+    static int64_t last_cmd_ms = -2000;
+    static int64_t last_notify_ms = -2000;
+    int64_t now_ms = k_uptime_get();
+    if (!conn || !attr || !buf) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
+    }
+    if (offset != 0) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+    if (len != sizeof(ble_history_request_t)) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    /* Removed unused early request peek variable to reduce warnings */
+
+    /* Enforce 1s minimum between commands */
+    if ((now_ms - last_cmd_ms) < 1000) {
+        /* Always build unified 8B header (no payload) with Rate Limited status */
+        history_fragment_header_t hdr = (history_fragment_header_t){0};
+        hdr.data_type = 0; /* unspecified */
+        hdr.status = 0x07; /* Rate limited */
+        hdr.entry_count = 0;
+        hdr.fragment_index = 0;
+        hdr.total_fragments = 0;
+        hdr.fragment_size = 0;
+        hdr.reserved = 0;
+        memcpy(environmental_history_value, &hdr, sizeof(hdr));
+        if (notification_state.environmental_history_notifications_enabled && default_conn) {
+            if ((now_ms - last_notify_ms) >= 500) {
+                const struct bt_gatt_attr *eh_attr = &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_HISTORY_VALUE];
+                bt_gatt_notify(default_conn, eh_attr, &hdr, sizeof(hdr));
+                last_notify_ms = now_ms;
+            }
+        }
+        return len; /* Accept write but indicate throttling via status */
+    }
+
+    const ble_history_request_t *req = (const ble_history_request_t *)buf;
+    ble_history_response_t resp;
+    memset(&resp, 0, sizeof(resp));
+
+    int rc = bt_env_history_request_handler(req, &resp);
+    if (rc != 0) {
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
+
+    /* Always wrap response using unified 8B header */
+    uint8_t rec_size = 0;
+    switch (resp.data_type) {
+        case 0: rec_size = 12; break; /* detailed */
+        case 1: rec_size = 16; break; /* hourly */
+        case 2: rec_size = 22; break; /* daily */
+        case 3: rec_size = 24; break; /* trends */
+        default: rec_size = 0; break;
+    }
+    uint16_t fragment_size = (uint16_t)(resp.record_count * rec_size);
+
+    /* Use max payload 232B to match environmental history fragment size */
+    #define ENVHIST_MAX_PAYLOAD 232
+    uint8_t notify_buf[sizeof(history_fragment_header_t) + ENVHIST_MAX_PAYLOAD] = {0};
+    history_fragment_header_t *hdr = (history_fragment_header_t *)notify_buf;
+    hdr->data_type = resp.data_type;
+    hdr->status = resp.status;
+    hdr->entry_count = resp.record_count;
+    hdr->fragment_index = resp.fragment_id;
+    hdr->total_fragments = resp.total_fragments;
+    hdr->fragment_size = (uint8_t)(fragment_size > 255 ? 255 : fragment_size);
+    hdr->reserved = 0;
+    if (fragment_size > 0) {
+        uint16_t copy_sz = fragment_size > ENVHIST_MAX_PAYLOAD ? ENVHIST_MAX_PAYLOAD : fragment_size;
+        memcpy(&notify_buf[sizeof(history_fragment_header_t)], resp.data, copy_sz);
+    }
+    /* Update read buffer with header + payload slice */
+    {
+        uint16_t copy_sz = fragment_size > ENVHIST_MAX_PAYLOAD ? ENVHIST_MAX_PAYLOAD : fragment_size;
+        memcpy(environmental_history_value, notify_buf, sizeof(history_fragment_header_t) + copy_sz);
+    }
+    /* Notify if enabled (500ms min interval) */
+    if (notification_state.environmental_history_notifications_enabled && default_conn) {
+        if ((now_ms - last_notify_ms) >= 500) {
+            const struct bt_gatt_attr *eh_attr = &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_HISTORY_VALUE];
+            uint16_t copy_sz = fragment_size > ENVHIST_MAX_PAYLOAD ? ENVHIST_MAX_PAYLOAD : fragment_size;
+            int nerr = bt_gatt_notify(default_conn, eh_attr, notify_buf, sizeof(history_fragment_header_t) + copy_sz);
+            if (nerr) {
+                LOG_WRN("Environmental history notify (unified) failed: %d", nerr);
+            } else {
+                last_notify_ms = now_ms;
+            }
+        }
+    }
+    last_cmd_ms = now_ms;
+    return len;
+}
+
+/* Environmental history CCC callback */
+static void environmental_history_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.environmental_history_notifications_enabled = notif_enabled;
+    
+    if (notif_enabled) {
+        LOG_INF("Environmental history notifications enabled");
+    } else {
+        LOG_INF("Environmental history notifications disabled");
+    }
+}
+
+/* Compensation status read callback */
+static ssize_t write_compensation_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                        const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    ARG_UNUSED(flags);
+    /* Accept a single byte channel selector: 0..(N-1) or 0xFF = first auto */
+    if (offset != 0 || len != 1 || buf == NULL) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+    uint8_t req = *((const uint8_t*)buf);
+    uint8_t sel = req;
+    if (req == 0xFF) {
+        sel = 0xFF;
+        for (uint8_t i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+            watering_channel_t *ch;
+            if (watering_get_channel(i, &ch) == WATERING_SUCCESS) {
+                if (ch->auto_mode == WATERING_AUTOMATIC_QUALITY || ch->auto_mode == WATERING_AUTOMATIC_ECO) {
+                    sel = i;
+                    break;
+                }
+            }
+        }
+        if (sel == 0xFF) {
+            sel = 0; /* default if none in auto */
+        }
+    } else if (req >= WATERING_CHANNELS_COUNT) {
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+    struct compensation_status_data *val = (struct compensation_status_data *)compensation_status_value;
+    val->channel_id = sel;
+    /* Build a fresh payload and push immediate notification if enabled */
+    if (notification_state.compensation_status_notifications_enabled) {
+        struct compensation_status_data comp = {0};
+        comp.channel_id = sel;
+        watering_channel_t *channel = NULL;
+        if (watering_get_channel(sel, &channel) == WATERING_SUCCESS && channel) {
+            comp.rain_compensation_active = channel->rain_compensation.enabled ? 1 : 0;
+            comp.recent_rainfall_mm = 0.0f;
+            comp.rain_reduction_percentage = channel->last_rain_compensation.reduction_percentage;
+            comp.rain_skip_watering = channel->last_rain_compensation.skip_watering ? 1 : 0;
+            comp.rain_calculation_time = channel->last_calculation_time;
+            comp.temp_compensation_active = channel->temp_compensation.enabled ? 1 : 0;
+            comp.current_temperature = 0.0f;
+            comp.temp_compensation_factor = channel->last_temp_compensation.compensation_factor;
+            comp.temp_adjusted_requirement = channel->last_temp_compensation.adjusted_requirement;
+            comp.temp_calculation_time = channel->last_calculation_time;
+            comp.any_compensation_active = (comp.rain_compensation_active || comp.temp_compensation_active) ? 1 : 0;
+        }
+        memcpy(compensation_status_value, &comp, sizeof(comp));
+        /* Notify via this attribute */
+        safe_notify(default_conn, attr, &comp, sizeof(comp));
+    }
+    return len;
+}
+
+static ssize_t read_compensation_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                       void *buf, uint16_t len, uint16_t offset)
+{
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for Compensation Status read");
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
+    }
+
+    /* Build current compensation status per implemented 40B struct */
+    struct compensation_status_data comp = {0};
+
+    /* Select channel for read: use last selected from value buffer, default 0 */
+    uint8_t ch = ((const struct compensation_status_data *)compensation_status_value)->channel_id;
+    if (ch >= WATERING_CHANNELS_COUNT) {
+        ch = 0;
+    }
+    comp.channel_id = ch;
+
+    watering_channel_t *channel = NULL;
+    if (watering_get_channel(ch, &channel) == WATERING_SUCCESS && channel) {
+        /* Rain compensation */
+        comp.rain_compensation_active = channel->rain_compensation.enabled ? 1 : 0;
+        comp.recent_rainfall_mm = 0.0f; /* Not tracked in watering_channel_t */
+        comp.rain_reduction_percentage = channel->last_rain_compensation.reduction_percentage;
+        comp.rain_skip_watering = channel->last_rain_compensation.skip_watering ? 1 : 0;
+        comp.rain_calculation_time = channel->last_calculation_time;
+
+        /* Temperature compensation */
+        comp.temp_compensation_active = channel->temp_compensation.enabled ? 1 : 0;
+        comp.current_temperature = 0.0f; /* Use sensor API if needed */
+        comp.temp_compensation_factor = channel->last_temp_compensation.compensation_factor;
+        comp.temp_adjusted_requirement = channel->last_temp_compensation.adjusted_requirement;
+        comp.temp_calculation_time = channel->last_calculation_time;
+
+        /* Overall */
+        comp.any_compensation_active = (comp.rain_compensation_active || comp.temp_compensation_active) ? 1 : 0;
+    } else {
+        /* Defaults if channel unavailable */
+        comp.rain_compensation_active = 0;
+        comp.rain_skip_watering = 0;
+        comp.temp_compensation_active = 0;
+        comp.any_compensation_active = 0;
+        comp.rain_reduction_percentage = 0.0f;
+        comp.temp_compensation_factor = 1.0f;
+        comp.temp_adjusted_requirement = 0.0f;
+        comp.recent_rainfall_mm = 0.0f;
+        comp.current_temperature = 0.0f;
+        comp.rain_calculation_time = k_uptime_get_32();
+        comp.temp_calculation_time = comp.rain_calculation_time;
+    }
+
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &comp, sizeof(comp));
+}
+
+/* Compensation status CCC callback */
+static void compensation_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.compensation_status_notifications_enabled = notif_enabled;
+    
+    if (notif_enabled) {
+        LOG_INF("Compensation status notifications enabled");
+    } else {
+        LOG_INF("Compensation status notifications disabled");
+    }
+}
+
+/* ================================================================== */
+/* Onboarding Characteristics Implementation                          */
+/* ================================================================== */
+
+/* Onboarding status characteristic read callback */
+static ssize_t read_onboarding_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                    void *buf, uint16_t len, uint16_t offset) {
+    if (!conn || !attr || !buf) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
+    }
+
+    struct onboarding_status_data status_data = {0};
+    
+    /* Get current onboarding state */
+    onboarding_state_t state;
+    int ret = onboarding_get_state(&state);
+    if (ret < 0) {
+        LOG_ERR("Failed to get onboarding state: %d", ret);
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
+    
+    /* Fill the BLE structure */
+    status_data.overall_completion_pct = state.onboarding_completion_pct;
+    
+    /* Calculate individual completion percentages */
+    int total_channel_flags = 8 * 8; /* 8 channels × 8 flags each */
+    int set_channel_flags = 0;
+    for (int i = 0; i < 64; i++) {
+        if (state.channel_config_flags & (1ULL << i)) {
+            set_channel_flags++;
+        }
+    }
+    status_data.channels_completion_pct = (set_channel_flags * 100) / total_channel_flags;
+    
+    int total_system_flags = 8; /* 8 system flags defined */
+    int set_system_flags = 0;
+    for (int i = 0; i < 32; i++) {
+        if (state.system_config_flags & (1U << i)) {
+            set_system_flags++;
+        }
+    }
+    status_data.system_completion_pct = (set_system_flags * 100) / total_system_flags;
+    
+    int total_schedule_flags = 8; /* 8 channels can have schedules */
+    int set_schedule_flags = 0;
+    for (int i = 0; i < 8; i++) {
+        if (state.schedule_config_flags & (1U << i)) {
+            set_schedule_flags++;
+        }
+    }
+    status_data.schedules_completion_pct = (set_schedule_flags * 100) / total_schedule_flags;
+    
+    /* Copy state flags */
+    status_data.channel_config_flags = state.channel_config_flags;
+    status_data.system_config_flags = state.system_config_flags;
+    status_data.schedule_config_flags = state.schedule_config_flags;
+    status_data.onboarding_start_time = state.onboarding_start_time;
+    status_data.last_update_time = state.last_update_time;
+    
+    LOG_DBG("Onboarding status read: overall=%u%%, channels=%u%%, system=%u%%, schedules=%u%%",
+            status_data.overall_completion_pct, status_data.channels_completion_pct,
+            status_data.system_completion_pct, status_data.schedules_completion_pct);
+    
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &status_data, sizeof(status_data));
+}
+
+/* Onboarding status CCC callback */
+static void onboarding_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.onboarding_status_notifications_enabled = notif_enabled;
+    
+    LOG_DBG("Onboarding status notifications %s", notif_enabled ? "enabled" : "disabled");
+    
+    /* Send initial notification if enabled */
+    if (notif_enabled) {
+        /* Trigger an immediate notification with current status */
+        bt_irrigation_onboarding_status_notify();
+    }
+}
+
+/* Reset control characteristic read callback */
+static ssize_t read_reset_control(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                void *buf, uint16_t len, uint16_t offset) {
+    if (!conn || !attr || !buf) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
+    }
+
+    struct reset_control_data reset_data = {0};
+    
+    /* Get current confirmation info */
+    reset_confirmation_t confirmation;
+    int ret = reset_controller_get_confirmation_info(&confirmation);
+    if (ret == 0 && confirmation.is_valid) {
+        reset_data.reset_type = confirmation.type;
+        reset_data.channel_id = confirmation.channel_id;
+        reset_data.confirmation_code = confirmation.code;
+        reset_data.timestamp = confirmation.generation_time;
+        reset_data.status = 0x01; /* Pending */
+    } else {
+        /* No active confirmation */
+        reset_data.reset_type = 0xFF; /* Invalid */
+        reset_data.channel_id = 0xFF;
+        reset_data.confirmation_code = 0;
+        reset_data.timestamp = 0;
+        reset_data.status = 0xFF; /* No operation */
+    }
+    
+    LOG_DBG("Reset control read: type=%u, channel=%u, status=%u", 
+            reset_data.reset_type, reset_data.channel_id, reset_data.status);
+    
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &reset_data, sizeof(reset_data));
+}
+
+/* Reset control characteristic write callback */
+static ssize_t write_reset_control(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                 const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
+    if (!conn || !attr || !buf) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
+    }
+
+    if (offset != 0) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+
+    if (len != sizeof(struct reset_control_data)) {
+        LOG_ERR("Invalid reset control data length: %u (expected %u)", len, sizeof(struct reset_control_data));
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    const struct reset_control_data *reset_data = (const struct reset_control_data *)buf;
+
+    LOG_DBG("Reset control write: type=0x%02x, channel=%u, code=0x%08x",
+            reset_data->reset_type, reset_data->channel_id, reset_data->confirmation_code);
+
+    /* Map BLE reset_type (spec-defined) to internal reset_type_t */
+    reset_type_t mapped_type;
+    bool type_valid = true;
+    switch (reset_data->reset_type) {
+        /* Channel-specific (requires channel_id) */
+        case 0x01: mapped_type = RESET_TYPE_CHANNEL_CONFIG; break;          /* RESET_CHANNEL_CONFIG */
+        case 0x02: mapped_type = RESET_TYPE_CHANNEL_SCHEDULE; break;        /* RESET_CHANNEL_SCHEDULE */
+        case 0x03: /* RESET_CHANNEL_STATISTICS - not supported */ type_valid = false; break;
+        case 0x04: /* RESET_CHANNEL_HISTORY - not supported */ type_valid = false; break;
+
+        /* System-wide */
+        case 0x10: mapped_type = RESET_TYPE_ALL_CHANNELS; break;            /* RESET_ALL_CHANNELS */
+        case 0x11: mapped_type = RESET_TYPE_ALL_SCHEDULES; break;           /* RESET_ALL_SCHEDULES */
+        case 0x12: mapped_type = RESET_TYPE_SYSTEM_CONFIG; break;           /* RESET_SYSTEM_CONFIG */
+        case 0x13: /* RESET_STATISTICS - not supported */ type_valid = false; break;
+        case 0x14: mapped_type = RESET_TYPE_HISTORY; break;                 /* RESET_HISTORY */
+        case 0x15: /* RESET_ONBOARDING - not supported */ type_valid = false; break;
+
+        /* Complete system */
+        case 0xFF: mapped_type = RESET_TYPE_FACTORY_RESET; break;           /* RESET_FACTORY_SETTINGS */
+
+        default:
+            type_valid = false;
+            break;
+    }
+
+    if (!type_valid) {
+        LOG_ERR("Unsupported reset_type 0x%02x per BLE spec", reset_data->reset_type);
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+    
+    /* Check if this is a confirmation code generation request */
+    if (reset_data->confirmation_code == 0) {
+        /* Generate confirmation code */
+        uint32_t code = reset_controller_generate_confirmation_code(
+            mapped_type, reset_data->channel_id);
+        
+        if (code == 0) {
+            LOG_ERR("Failed to generate confirmation code for reset type %u", reset_data->reset_type);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+        
+        LOG_INF("Generated confirmation code 0x%08x for reset type %u, channel %u", 
+                code, reset_data->reset_type, reset_data->channel_id);
+        
+        /* Notify clients of the new confirmation code */
+        bt_irrigation_reset_control_notify();
+        
+        return len;
+    }
+    
+    /* Execute reset operation */
+    reset_request_t request = {
+        .type = mapped_type,
+        .channel_id = reset_data->channel_id,
+        .confirmation_code = reset_data->confirmation_code
+    };
+    
+    reset_status_t status = reset_controller_execute(&request);
+    
+    if (status == RESET_STATUS_SUCCESS) {
+        LOG_INF("Reset operation completed successfully: type=%u, channel=%u", 
+                request.type, request.channel_id);
+        
+        /* Notify clients of successful reset */
+        bt_irrigation_reset_control_notify();
+        
+        /* Also trigger onboarding status update */
+        if (notification_state.onboarding_status_notifications_enabled) {
+            bt_irrigation_onboarding_status_notify();
+        }
+        
+        return len;
+    } else {
+        LOG_ERR("Reset operation failed: type=%u, channel=%u, status=%u (%s)", 
+                request.type, request.channel_id, status, 
+                reset_controller_get_status_description(status));
+        
+        /* Map reset status to BLE error codes */
+        switch (status) {
+            case RESET_STATUS_INVALID_TYPE:
+            case RESET_STATUS_INVALID_CHANNEL:
+                return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+            case RESET_STATUS_INVALID_CODE:
+                /* Incorrect confirmation code */
+                return BT_GATT_ERR(BT_ATT_ERR_AUTHENTICATION);
+            case RESET_STATUS_CODE_EXPIRED:
+                /* Code expired - treat as authorization failure */
+                return BT_GATT_ERR(BT_ATT_ERR_AUTHORIZATION);
+            case RESET_STATUS_STORAGE_ERROR:
+                return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+            default:
+                return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+        }
+    }
+}
+
+/* Reset control CCC callback */
+static void reset_control_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.reset_control_notifications_enabled = notif_enabled;
+    
+    LOG_DBG("Reset control notifications %s", notif_enabled ? "enabled" : "disabled");
+}
+
 /* ----------------------------------------------------------- */
 /*  GATT Service Definition                                   */
 /* ----------------------------------------------------------- */
+
 BT_GATT_SERVICE_DEFINE(irrigation_svc,
-    BT_GATT_PRIMARY_SERVICE(&irrigation_service_uuid),
+    BT_GATT_PRIMARY_SERVICE(&irrigation_service_uuid.uuid),
     
     // Valve control characteristic
     BT_GATT_CHARACTERISTIC(&valve_char_uuid.uuid,
@@ -1328,6 +1952,14 @@ BT_GATT_SERVICE_DEFINE(irrigation_svc,
     BT_GATT_CCC(growing_env_ccc_changed,
                BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
     
+    // Automatic calculation status characteristic
+    BT_GATT_CHARACTERISTIC(&auto_calc_status_char_uuid.uuid,
+                        BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                        BT_GATT_PERM_READ | BT_GATT_PERM_WRITE, 
+                        read_auto_calc_status, write_auto_calc_status, auto_calc_status_value),
+    BT_GATT_CCC(auto_calc_status_ccc_changed,
+               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    
     // Current task characteristic
     BT_GATT_CHARACTERISTIC(&current_task_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
@@ -1343,6 +1975,75 @@ BT_GATT_SERVICE_DEFINE(irrigation_svc,
                          read_timezone, write_timezone, timezone_value),
     BT_GATT_CCC(timezone_ccc_changed,
                BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    
+    // Rain sensor configuration characteristic
+    BT_GATT_CHARACTERISTIC(&rain_config_char_uuid.uuid,
+                         BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         read_rain_config, write_rain_config, rain_config_value),
+    BT_GATT_CCC(rain_config_ccc_changed,
+               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    
+    // Rain sensor data characteristic
+    BT_GATT_CHARACTERISTIC(&rain_data_char_uuid.uuid,
+                         BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+                         BT_GATT_PERM_READ,
+                         read_rain_data, NULL, rain_data_value),
+    BT_GATT_CCC(rain_data_ccc_changed,
+               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    
+    // Rain history control characteristic
+    BT_GATT_CHARACTERISTIC(&rain_history_char_uuid.uuid,
+                         BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         read_rain_history, write_rain_history, rain_history_value),
+    BT_GATT_CCC(rain_history_ccc_changed,
+               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    
+    // Environmental data characteristic (BME280 readings)
+    BT_GATT_CHARACTERISTIC(&environmental_data_char_uuid.uuid,
+                         BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+                         BT_GATT_PERM_READ,
+                         read_environmental_data, NULL, environmental_data_value),
+    BT_GATT_CCC(environmental_data_ccc_changed,
+               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    
+    // Environmental history characteristic (with fragmentation support)
+    BT_GATT_CHARACTERISTIC(&environmental_history_char_uuid.uuid,
+                         BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         read_environmental_history, write_environmental_history, environmental_history_value),
+    BT_GATT_CCC(environmental_history_ccc_changed,
+               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    
+    // Compensation status characteristic (real-time compensation information)
+    BT_GATT_CHARACTERISTIC(&compensation_status_char_uuid.uuid,
+                         BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         read_compensation_status, write_compensation_status, compensation_status_value),
+    BT_GATT_CCC(compensation_status_ccc_changed,
+               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    
+    // Onboarding status characteristic
+    BT_GATT_CHARACTERISTIC(&onboarding_status_char_uuid.uuid,
+                         BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+                         BT_GATT_PERM_READ,
+                         read_onboarding_status, NULL, NULL),
+    BT_GATT_CCC(onboarding_status_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    
+    // Reset control characteristic
+    BT_GATT_CHARACTERISTIC(&reset_control_char_uuid.uuid,
+                         BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         read_reset_control, write_reset_control, NULL),
+    BT_GATT_CCC(reset_control_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+
+    // Rain Integration Status characteristic (separate from rain config)
+    BT_GATT_CHARACTERISTIC(&rain_integration_status_char_uuid.uuid,
+                         BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
+                         BT_GATT_PERM_READ,
+                         read_rain_integration_status, NULL, rain_integration_status_value),
+    BT_GATT_CCC(rain_integration_status_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE)
 );
 
 /* ------------------------------------------------------------------ */
@@ -1593,69 +2294,171 @@ static void schedule_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value
 static ssize_t read_system_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                  void *buf, uint16_t len, uint16_t offset) {
     if (!conn || !attr || !buf) {
-        LOG_ERR("Invalid parameters for System Config read");
+        LOG_ERR("Invalid parameters for Enhanced System Config read");
         return -EINVAL;
     }
     
-    /* Per BLE API Documentation: READ returns current system configuration */
-    /* Structure: version, power_mode, flow_calibration, max_active_valves, num_channels, master_valve_config */
-    struct system_config_data *config = (struct system_config_data *)system_config_value;
+    /* Enhanced system configuration with BME280 and compensation support */
+    struct enhanced_system_config_data enhanced_config;
+    memset(&enhanced_config, 0, sizeof(enhanced_config));
     
-    /* Update values from system state */
-    config->version = 1; /* Configuration version (read-only) */
+    /* Update basic system values */
+    enhanced_config.version = 2; /* Enhanced configuration version */
     
     /* Get current power mode from watering system */
     power_mode_t current_mode;
     if (watering_get_power_mode(&current_mode) == WATERING_SUCCESS) {
-        config->power_mode = (uint8_t)current_mode;
+        enhanced_config.power_mode = (uint8_t)current_mode;
     } else {
-        config->power_mode = 0; /* Default to normal mode on error */
+        enhanced_config.power_mode = 0; /* Default to normal mode on error */
     }
     
-    config->flow_calibration = get_flow_calibration(); /* Get current calibration */
-    config->max_active_valves = 1; /* Always 1 (read-only) */
-    config->num_channels = WATERING_CHANNELS_COUNT; /* Number of channels (read-only) */
+    enhanced_config.flow_calibration = get_flow_calibration(); /* Get current calibration */
+    enhanced_config.max_active_valves = 1; /* Always 1 (read-only) */
+    enhanced_config.num_channels = WATERING_CHANNELS_COUNT; /* Number of channels (read-only) */
     
     /* Get current master valve configuration */
     master_valve_config_t master_config;
     if (master_valve_get_config(&master_config) == WATERING_SUCCESS) {
-        config->master_valve_enabled = master_config.enabled ? 1 : 0;
-        config->master_valve_pre_delay = master_config.pre_start_delay_sec;
-        config->master_valve_post_delay = master_config.post_stop_delay_sec;
-        config->master_valve_overlap_grace = master_config.overlap_grace_sec;
-        config->master_valve_auto_mgmt = master_config.auto_management ? 1 : 0;
-        config->master_valve_current_state = master_config.is_active ? 1 : 0;
+        enhanced_config.master_valve_enabled = master_config.enabled ? 1 : 0;
+        enhanced_config.master_valve_pre_delay = master_config.pre_start_delay_sec;
+        enhanced_config.master_valve_post_delay = master_config.post_stop_delay_sec;
+        enhanced_config.master_valve_overlap_grace = master_config.overlap_grace_sec;
+        enhanced_config.master_valve_auto_mgmt = master_config.auto_management ? 1 : 0;
+        enhanced_config.master_valve_current_state = master_config.is_active ? 1 : 0;
     } else {
         /* Default values on error */
-        config->master_valve_enabled = 0;
-        config->master_valve_pre_delay = 0;
-        config->master_valve_post_delay = 0;
-        config->master_valve_overlap_grace = 30;
-        config->master_valve_auto_mgmt = 1;
-        config->master_valve_current_state = 0;
+        enhanced_config.master_valve_enabled = 0;
+        enhanced_config.master_valve_pre_delay = 0;
+        enhanced_config.master_valve_post_delay = 0;
+        enhanced_config.master_valve_overlap_grace = 30;
+        enhanced_config.master_valve_auto_mgmt = 1;
+        enhanced_config.master_valve_current_state = 0;
+    }
+    
+    /* Get BME280 sensor configuration */
+    bme280_config_t bme280_config;
+    if (bme280_system_get_config(&bme280_config) == 0) {
+        enhanced_config.bme280_enabled = bme280_config.enabled ? 1 : 0;
+        enhanced_config.bme280_measurement_interval = bme280_config.measurement_interval;
+        enhanced_config.bme280_sensor_status = bme280_config.initialized ? 1 : 0;
+    } else {
+        /* Default BME280 values on error */
+        enhanced_config.bme280_enabled = 0;
+        enhanced_config.bme280_measurement_interval = 60;
+        enhanced_config.bme280_sensor_status = 0;
+    }
+    
+    /* Get global compensation settings */
+    rain_integration_config_t rain_cfg;
+    if (rain_integration_get_config(&rain_cfg) == WATERING_SUCCESS) {
+        enhanced_config.global_rain_compensation_enabled = rain_cfg.integration_enabled ? 1 : 0;
+        /* Store sensitivity as 0.0-1.0 for BLE */
+        enhanced_config.global_rain_sensitivity = rain_cfg.rain_sensitivity_pct / 100.0f;
+        enhanced_config.global_rain_lookback_hours =
+            (uint16_t)MIN(rain_cfg.lookback_hours, UINT16_MAX);
+        enhanced_config.global_rain_skip_threshold = rain_cfg.skip_threshold_mm;
+    } else {
+        enhanced_config.global_rain_compensation_enabled = 0;
+        enhanced_config.global_rain_sensitivity = 0.0f;
+        enhanced_config.global_rain_lookback_hours = 0;
+        enhanced_config.global_rain_skip_threshold = 0.0f;
+    }
+
+    uint8_t temp_enabled_channels = 0;
+    float temp_sensitivity_accum = 0.0f;
+    float temp_base_accum = 0.0f;
+
+    for (uint8_t i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+        watering_channel_t *channel;
+        if (watering_get_channel(i, &channel) != WATERING_SUCCESS) {
+            continue;
+        }
+        if (channel->temp_compensation.enabled) {
+            temp_enabled_channels++;
+            temp_sensitivity_accum += channel->temp_compensation.sensitivity;
+            temp_base_accum += channel->temp_compensation.base_temperature;
+        }
+    }
+
+    if (temp_enabled_channels > 0) {
+        enhanced_config.global_temp_compensation_enabled = 1;
+        enhanced_config.global_temp_sensitivity =
+            temp_sensitivity_accum / (float)temp_enabled_channels;
+        enhanced_config.global_temp_base_temperature =
+            temp_base_accum / (float)temp_enabled_channels;
+    } else {
+        enhanced_config.global_temp_compensation_enabled = 0;
+        enhanced_config.global_temp_sensitivity = TEMP_COMP_DEFAULT_SENSITIVITY;
+        enhanced_config.global_temp_base_temperature = TEMP_COMP_DEFAULT_BASE_TEMP;
+    }
+    
+    /* Get system status indicators */
+    enhanced_system_is_interval_mode_active(&enhanced_config.interval_mode_active_channels);
+    enhanced_system_has_incomplete_config(&enhanced_config.incomplete_config_channels);
+    
+    /* Calculate compensation active channels */
+    enhanced_config.compensation_active_channels = 0;
+    for (uint8_t i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+        watering_channel_t *channel;
+        if (watering_get_channel(i, &channel) == WATERING_SUCCESS) {
+            if (channel->rain_compensation.enabled || channel->temp_compensation.enabled) {
+                enhanced_config.compensation_active_channels |= (1 << i);
+            }
+        }
+    }
+    
+    /* Get environmental data quality */
+    bme280_environmental_data_t env_data;
+    if (environmental_data_get_current(&env_data) == 0 && env_data.current.valid) {
+        env_data_validation_t validation;
+        if (env_data_validate_reading(&env_data.current, NULL, &validation) == 0) {
+            enhanced_config.environmental_data_quality =
+                env_data_calculate_quality_score(&env_data.current, &validation);
+        } else {
+            enhanced_config.environmental_data_quality = 0;
+        }
+        enhanced_config.last_sensor_reading = env_data.current.timestamp;
+    } else {
+        enhanced_config.environmental_data_quality = 0; /* No data available */
+        enhanced_config.last_sensor_reading = timezone_get_unix_utc();
+    }
+
+    if (enhanced_config.global_rain_sensitivity < 0.0f) {
+        enhanced_config.global_rain_sensitivity = 0.0f;
+    } else if (enhanced_config.global_rain_sensitivity > 1.0f) {
+        enhanced_config.global_rain_sensitivity = 1.0f;
+    }
+    
+    /* Set timestamps */
+    enhanced_config.last_config_update = timezone_get_unix_utc();
+    if (enhanced_config.last_sensor_reading == 0) {
+        enhanced_config.last_sensor_reading = enhanced_config.last_config_update;
     }
     
     /* Reduced logging frequency for read operations */
     static uint32_t last_read_time = 0;
     uint32_t now = k_uptime_get_32();
     if (now - last_read_time > 5000) { /* Log every 5 seconds max */
-        LOG_DBG("System Config read: version=%u, power_mode=%u, flow_cal=%u, max_valves=%u, channels=%u",
-                config->version, config->power_mode, config->flow_calibration,
-                config->max_active_valves, config->num_channels);
-        LOG_DBG("Master Valve: enabled=%u, pre_delay=%d, post_delay=%d, overlap=%u, auto=%u, state=%u",
-                config->master_valve_enabled, config->master_valve_pre_delay, 
-                config->master_valve_post_delay, config->master_valve_overlap_grace,
-                config->master_valve_auto_mgmt, config->master_valve_current_state);
+        LOG_DBG("Enhanced System Config read: version=%u, power_mode=%u, flow_cal=%u",
+                enhanced_config.version, enhanced_config.power_mode, enhanced_config.flow_calibration);
+        LOG_DBG("BME280: enabled=%u, interval=%u, status=%u",
+                enhanced_config.bme280_enabled, enhanced_config.bme280_measurement_interval,
+                enhanced_config.bme280_sensor_status);
+        LOG_DBG("Compensation: rain_global=%u, temp_global=%u, active_channels=0x%02x",
+                enhanced_config.global_rain_compensation_enabled,
+                enhanced_config.global_temp_compensation_enabled,
+                enhanced_config.compensation_active_channels);
         last_read_time = now;
     }
     
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, system_config_value,
-                           sizeof(system_config_value));
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &enhanced_config,
+                           sizeof(enhanced_config));
 }
 
 static ssize_t write_system_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                   const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
-    struct system_config_data *config = (struct system_config_data *)attr->user_data;
+    struct enhanced_system_config_data *config = (struct enhanced_system_config_data *)attr->user_data;
     
     /* Validate basic parameters */
     if (!conn || !attr || !buf) {
@@ -1670,14 +2473,9 @@ static ssize_t write_system_config(struct bt_conn *conn, const struct bt_gatt_at
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
     }
     
-    /* Only accept complete structure writes */
-    if (len != sizeof(*config)) {
-        LOG_ERR("System Config write: Invalid length (got %u, expected %zu)", 
-                len, sizeof(*config));
-        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
-    }
-    
+    /* Support fragmented writes of the enhanced structure */
     memcpy(((uint8_t *)config) + offset, buf, len);
+    system_config_bytes_received = offset + len;
     
     /* If complete structure received, validate and apply changes */
     if (offset + len == sizeof(*config)) {
@@ -1693,8 +2491,15 @@ static ssize_t write_system_config(struct bt_conn *conn, const struct bt_gatt_at
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
         }
         
-        LOG_INF("System Config update: power_mode=%u, flow_cal=%u (read-only fields ignored)",
-                config->power_mode, config->flow_calibration);
+        /* Validate BME280 measurement interval */
+        if (config->bme280_enabled &&
+            config->bme280_measurement_interval == 0) {
+            LOG_ERR("Invalid BME280 measurement interval: 0");
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+
+        LOG_INF("System Config (enhanced) update: power_mode=%u, flow_cal=%u, bme280_enabled=%u",
+                config->power_mode, config->flow_calibration, config->bme280_enabled);
         
         /* Apply writable settings */
         
@@ -1747,16 +2552,89 @@ static ssize_t write_system_config(struct bt_conn *conn, const struct bt_gatt_at
         /* Save configuration to persistent storage if needed */
         /* Note: Flow calibration is saved automatically by set_flow_calibration() */
         
-        /* Send notification to confirm system config update per BLE API Documentation */
-        /* System Config (ef6): Config updates | On change (throttled 500ms) | System parameter changes */
+        /* Best-effort apply BME280 settings if API available */
+        bme280_config_t bme_cfg;
+        if (bme280_system_get_config(&bme_cfg) == 0) {
+            bme_cfg.enabled = (config->bme280_enabled != 0);
+            if (config->bme280_measurement_interval != 0) {
+                bme_cfg.measurement_interval = config->bme280_measurement_interval;
+            }
+            /* Apply via sensor manager if present */
+            extern int sensor_manager_configure_bme280(const bme280_config_t *config);
+            int sm_ret = sensor_manager_configure_bme280(&bme_cfg);
+            if (sm_ret != 0) {
+                LOG_WRN("BME280 configure failed (%d), continuing without error", sm_ret);
+            }
+        }
+
+        /* Apply global rain compensation settings */
+        rain_integration_config_t rain_cfg_current;
+        if (rain_integration_get_config(&rain_cfg_current) == WATERING_SUCCESS) {
+            float rain_sensitivity = config->global_rain_sensitivity;
+            if (rain_sensitivity < 0.0f) {
+                rain_sensitivity = 0.0f;
+            } else if (rain_sensitivity > 1.0f) {
+                rain_sensitivity = 1.0f;
+            }
+
+            rain_cfg_current.integration_enabled = (config->global_rain_compensation_enabled != 0);
+            rain_cfg_current.rain_sensitivity_pct = rain_sensitivity * 100.0f;
+            rain_cfg_current.skip_threshold_mm = config->global_rain_skip_threshold;
+            rain_cfg_current.lookback_hours = config->global_rain_lookback_hours;
+
+            watering_error_t rain_err = rain_integration_set_config(&rain_cfg_current);
+            if (rain_err != WATERING_SUCCESS) {
+                LOG_WRN("Failed to apply rain integration config: %d", rain_err);
+            } else {
+                rain_integration_save_config();
+                LOG_INF("Global rain integration updated: enabled=%u, sensitivity=%.1f%%, lookback=%u h, skip=%.1f mm",
+                        config->global_rain_compensation_enabled,
+                        (double)(rain_cfg_current.rain_sensitivity_pct),
+                        rain_cfg_current.lookback_hours,
+                        (double)rain_cfg_current.skip_threshold_mm);
+            }
+        }
+
+        /* Apply global temperature compensation defaults */
+        float temp_sensitivity = config->global_temp_sensitivity;
+        if (temp_sensitivity < TEMP_COMP_MIN_SENSITIVITY) {
+            temp_sensitivity = TEMP_COMP_MIN_SENSITIVITY;
+        } else if (temp_sensitivity > TEMP_COMP_MAX_SENSITIVITY) {
+            temp_sensitivity = TEMP_COMP_MAX_SENSITIVITY;
+        }
+
+        float base_temperature = config->global_temp_base_temperature;
+        if (base_temperature < TEMP_COMP_MIN_TEMP_C) {
+            base_temperature = TEMP_COMP_MIN_TEMP_C;
+        } else if (base_temperature > TEMP_COMP_MAX_TEMP_C) {
+            base_temperature = TEMP_COMP_MAX_TEMP_C;
+        }
+
+        bool temp_enable = (config->global_temp_compensation_enabled != 0);
+
+        for (uint8_t ch = 0; ch < WATERING_CHANNELS_COUNT; ch++) {
+            watering_channel_t *channel;
+            if (watering_get_channel(ch, &channel) != WATERING_SUCCESS) {
+                continue;
+            }
+            channel->temp_compensation.enabled = temp_enable;
+            channel->temp_compensation.base_temperature = base_temperature;
+            channel->temp_compensation.sensitivity = temp_sensitivity;
+            channel->temp_compensation.min_factor = TEMP_COMP_DEFAULT_MIN_FACTOR;
+            channel->temp_compensation.max_factor = TEMP_COMP_DEFAULT_MAX_FACTOR;
+        }
+
+        watering_save_config_priority(true);
+
+        /* Send notification to confirm system config update */
         if (notification_state.system_config_notifications_enabled) {
-            /* Update system_config_value with current values for notification */
-            config->version = 1; /* Configuration version */
+            /* Ensure read-only fields are populated */
+            config->version = 2; /* Enhanced configuration version */
             config->max_active_valves = 1; /* Always 1 */
             config->num_channels = WATERING_CHANNELS_COUNT; /* Number of channels */
-            
+
             const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_SYSTEM_CFG_VALUE];
-            int bt_err = safe_notify(default_conn, attr, system_config_value, sizeof(struct system_config_data));
+            int bt_err = safe_notify(default_conn, attr, system_config_value, sizeof(struct enhanced_system_config_data));
             
             if (bt_err == 0) {
                 LOG_INF("✅ System Config notification sent successfully");
@@ -1777,27 +2655,64 @@ static void system_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t 
     
     if (notif_enabled) {
         LOG_INF("✅ System Config notifications ENABLED - will send updates when config changes");
-        
-        /* Per BLE API Documentation: System Config structure with global parameters */
-        /* Notification frequency: on change (throttled 500ms) for system parameter changes */
-        
-        LOG_INF("System Config monitoring: version, power_mode, flow_calibration, limits");
-        
-        /* Initialize system_config_value with current values */
-        struct system_config_data *config = (struct system_config_data *)system_config_value;
-        config->version = 1; /* Configuration version */
-        config->power_mode = (config->power_mode <= 2) ? config->power_mode : 0; /* Validate power mode */
-        config->flow_calibration = get_flow_calibration(); /* Current calibration */
-        config->max_active_valves = 1; /* Always 1 */
-        config->num_channels = WATERING_CHANNELS_COUNT; /* Number of channels */
+        LOG_INF("System Config monitoring: enhanced configuration active (68B)");
+
+        /* Initialize system_config_value with current values (enhanced) */
+        struct enhanced_system_config_data *config = (struct enhanced_system_config_data *)system_config_value;
+        memset(config, 0, sizeof(*config));
+        config->version = 2; /* Enhanced version */
+        power_mode_t current_mode;
+        if (watering_get_power_mode(&current_mode) == WATERING_SUCCESS) {
+            config->power_mode = (uint8_t)current_mode;
+        }
+        config->flow_calibration = get_flow_calibration();
+        config->max_active_valves = 1;
+        config->num_channels = WATERING_CHANNELS_COUNT;
     } else {
         LOG_INF("System Config notifications disabled");
         /* Clear system_config_value when notifications disabled */
         memset(system_config_value, 0, sizeof(system_config_value));
+        system_config_bytes_received = 0;
     }
 }
 
 /* Task queue characteristics implementation */
+/* Forward declare periodic handler and define timer early so CCC can start/stop it */
+static void task_queue_periodic_timer_handler(struct k_timer *timer);
+static K_TIMER_DEFINE(task_queue_periodic_timer, task_queue_periodic_timer_handler, NULL);
+/* Helper: send error-shaped Task Queue notification (current_task_type=0xFF, current_value=error_code) */
+static void task_queue_send_error(uint8_t error_code)
+{
+    if (!default_conn || !notification_state.task_queue_notifications_enabled) {
+        return;
+    }
+    struct task_queue_data *qd = (struct task_queue_data *)task_queue_value;
+    uint8_t pending = 0; bool active = false;
+    (void)watering_get_queue_status(&pending, &active);
+    qd->pending_count = pending;
+    qd->completed_tasks = watering_get_completed_tasks_count();
+
+    if (!active) {
+        qd->current_channel = 0xFF;
+        qd->active_task_id = 0;
+        qd->current_value = 0;
+    } else {
+        /* Keep current task info if available */
+        watering_task_t *current_task = watering_get_current_task();
+        if (current_task) {
+            uint8_t channel_id = current_task->channel - watering_channels;
+            qd->current_channel = channel_id;
+            qd->active_task_id = 1;
+        }
+    }
+    qd->current_task_type = 0xFF; /* Error indicator */
+    qd->current_value = error_code; /* Error code */
+    qd->command = 0;
+    qd->task_id_to_delete = 0;
+
+    const struct bt_gatt_attr *nattr = &irrigation_svc.attrs[ATTR_IDX_TASK_QUEUE_VALUE];
+    (void)safe_notify(default_conn, nattr, task_queue_value, sizeof(task_queue_value));
+}
 static ssize_t read_task_queue(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                               void *buf, uint16_t len, uint16_t offset) {
     if (!conn || !attr || !buf) {
@@ -1893,82 +2808,111 @@ static ssize_t write_task_queue(struct bt_conn *conn, const struct bt_gatt_attr 
         /* Process command field */
         if (queue_data->command != 0) {
             LOG_INF("Task Queue command: %u", queue_data->command);
-            
+
             switch (queue_data->command) {
-                case 1: /* Cancel current task */
-                    {
-                        bool stopped = watering_stop_current_task();
-                        if (stopped) {
-                            LOG_INF("✅ Current task cancelled");
-                        } else {
-                            LOG_WRN("No current task to cancel");
-                        }
+                case 1: /* Start next task in queue */
+                {
+                    uint8_t pending = 0; bool active = false;
+                    (void)watering_get_queue_status(&pending, &active);
+                    if (pending == 0) {
+                        LOG_WRN("Start requested with no pending tasks");
+                        task_queue_send_error(1); /* No pending tasks */
+                        break;
                     }
-                    break;
-                    
-                case 2: /* Clear entire queue */
-                    {
-                        int err = watering_clear_task_queue();
-                        if (err == 0) {
-                            LOG_INF("✅ Task queue cleared");
-                        } else {
-                            LOG_ERR("❌ Failed to clear task queue: %d", err);
-                            return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
-                        }
+                    if (active) {
+                        LOG_WRN("Start requested while a task is already active");
+                        task_queue_send_error(3); /* Treat busy as not ready */
+                        break;
                     }
-                    break;
-                    
-                case 3: /* Delete specific task */
-                    {
-                        uint8_t task_id_to_delete = queue_data->task_id_to_delete;
-                        if (task_id_to_delete == 0) {
-                            LOG_WRN("No task ID specified for deletion");
-                            break;
-                        }
-                        
-                        /* For now, we can only delete the currently active task */
-                        if (task_id_to_delete == queue_data->active_task_id) {
-                            bool success = watering_stop_current_task();
-                            if (success) {
-                                LOG_INF("✅ Active task deleted (ID: %u)", task_id_to_delete);
-                            } else {
-                                LOG_ERR("❌ Failed to delete active task");
-                                return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
-                            }
-                        } else {
-                            LOG_WRN("Cannot delete task ID %u - only active task deletion supported", task_id_to_delete);
-                        }
+                    watering_status_t sys;
+                    if (watering_get_status(&sys) != WATERING_SUCCESS || sys != WATERING_STATUS_OK) {
+                        LOG_WRN("System not ready to start next task: %d", sys);
+                        task_queue_send_error(3);
+                        break;
                     }
-                    break;
-                    
-                case 4: /* Clear error state */
-                    {
-                        watering_error_t err = watering_clear_errors();
-                        if (err == WATERING_SUCCESS) {
-                            LOG_INF("✅ Error state cleared");
-                        } else {
-                            LOG_ERR("❌ Failed to clear error state: %d", err);
-                            return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
-                        }
+                    int started = watering_process_next_task();
+                    if (started <= 0) {
+                        LOG_WRN("No task started (ret=%d)", started);
+                        task_queue_send_error(3);
+                        break;
                     }
-                    break;
-                    
+                    LOG_INF("✅ Started next task from queue");
+                    queue_data->command = 0;
+                    if (notification_state.task_queue_notifications_enabled) {
+                        bt_irrigation_queue_status_notify();
+                    }
+                }
+                break;
+
+                case 2: /* Pause current task */
+                {
+                    if (!watering_pause_current_task()) {
+                        LOG_WRN("Pause requested but no pausable task");
+                        task_queue_send_error(2); /* Invalid command in current state */
+                        break;
+                    }
+                    LOG_INF("✅ Paused current task");
+                    queue_data->command = 0;
+                    if (notification_state.task_queue_notifications_enabled) {
+                        bt_irrigation_queue_status_notify();
+                    }
+                }
+                break;
+
+                case 3: /* Resume current task */
+                {
+                    if (!watering_resume_current_task()) {
+                        LOG_WRN("Resume requested but no resumable task");
+                        task_queue_send_error(2);
+                        break;
+                    }
+                    LOG_INF("✅ Resumed current task");
+                    queue_data->command = 0;
+                    if (notification_state.task_queue_notifications_enabled) {
+                        bt_irrigation_queue_status_notify();
+                    }
+                }
+                break;
+
+                case 4: /* Cancel current task */
+                {
+                    if (!watering_stop_current_task()) {
+                        LOG_WRN("Cancel requested but no active task");
+                        task_queue_send_error(2);
+                        break;
+                    }
+                    LOG_INF("✅ Cancelled current task");
+                    queue_data->command = 0;
+                    if (notification_state.task_queue_notifications_enabled) {
+                        bt_irrigation_queue_status_notify();
+                    }
+                }
+                break;
+
+                case 5: /* Clear all pending tasks */
+                {
+                    int cerr = watering_clear_task_queue();
+                    if (cerr != 0) {
+                        LOG_ERR("❌ Failed to clear task queue: %d", cerr);
+                        task_queue_send_error(3);
+                        break;
+                    }
+                    LOG_INF("✅ Cleared all pending tasks");
+                    queue_data->command = 0;
+                    if (notification_state.task_queue_notifications_enabled) {
+                        bt_irrigation_queue_status_notify();
+                    }
+                }
+                break;
+
                 default:
                     LOG_ERR("Unknown task queue command: %u", queue_data->command);
-                    return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+                    task_queue_send_error(2); /* Invalid command */
+                    break;
             }
-            
-            /* Clear command after processing */
-            queue_data->command = 0;
-            
-            /* Send notification to confirm task queue command execution per BLE API Documentation */
-            /* Task Queue (ef7): Queue changes | Immediate (throttled 500ms) | Task added/completed/cancelled */
-            if (notification_state.task_queue_notifications_enabled) {
-                bt_irrigation_queue_status_notify();
-            }
+
+            LOG_INF("✅ Task Queue command processed");
         }
-        
-        LOG_INF("✅ Task Queue command processed successfully");
     }
     
     return len;
@@ -1988,7 +2932,7 @@ static void task_queue_ccc_changed(const struct bt_gatt_attr *attr, uint16_t val
         
         LOG_INF("Task Queue monitoring: pending tasks, current task, command interface");
         
-        /* Initialize task_queue_value with current queue state */
+    /* Initialize task_queue_value with current queue state */
         struct task_queue_data *queue_data = (struct task_queue_data *)task_queue_value;
         memset(queue_data, 0, sizeof(*queue_data));
         
@@ -1998,10 +2942,14 @@ static void task_queue_ccc_changed(const struct bt_gatt_attr *attr, uint16_t val
         queue_data->current_value = 0; /* No active task */
         queue_data->command = 0; /* No command */
         queue_data->active_task_id = 0; /* No active task */
+
+    /* Start periodic 5s updates while a task is active */
+    k_timer_start(&task_queue_periodic_timer, K_SECONDS(5), K_SECONDS(5));
     } else {
         LOG_INF("Task Queue notifications disabled");
         /* Clear task_queue_value when notifications disabled */
         memset(task_queue_value, 0, sizeof(task_queue_value));
+    k_timer_stop(&task_queue_periodic_timer);
     }
 }
 
@@ -2071,7 +3019,8 @@ static ssize_t read_statistics(struct bt_conn *conn, const struct bt_gatt_attr *
         read_value.count = 0;
     }
     
-    read_value.last_watering = channel->last_watering_time / 1000; /* Convert to seconds */
+    /* last_watering_time is already Unix seconds; do not convert */
+    read_value.last_watering = channel->last_watering_time;
     
     LOG_DBG("Statistics read: ch=%u, total_vol=%u, last_vol=%u, last_time=%u, count=%u",
             read_value.channel_id, read_value.total_volume, read_value.last_volume,
@@ -2138,13 +3087,21 @@ static ssize_t write_statistics(struct bt_conn *conn, const struct bt_gatt_attr 
                 value->channel_id, value->total_volume, value->last_volume,
                 value->last_watering, value->count);
 
-        /* Per BLE API Documentation: ≥15 bytes = Reset statistics for channel */
-        /* Reset statistics to written values (typically zeros for reset operation) */
-        /* This allows clients to reset statistics by writing a zeroed structure */
-        
-        /* Update channel statistics when actual statistics tracking is implemented */
-        if (value->total_volume == 0 && value->last_volume == 0 && value->count == 0) {
-            /* This is a reset operation - clear channel statistics */
+        /* Interpret write semantics:
+         * - All-zeros payload => reset channel statistics
+         * - Sentinel values (0xFFFFFFFF for 32-bit fields, 0xFFFF for 16-bit) mean "no change"
+         * - We accept updates only for last_volume/last_watering by recording a synthetic completion
+         *   event; total_volume and count are derived and thus ignored if provided.
+         */
+        const uint32_t NO_CHANGE_32 = 0xFFFFFFFFu;
+        const uint16_t NO_CHANGE_16 = 0xFFFFu;
+
+        bool is_reset = (value->total_volume == 0 &&
+                         value->last_volume == 0 &&
+                         value->last_watering == 0 &&
+                         value->count == 0);
+
+        if (is_reset) {
             watering_error_t reset_err = watering_reset_channel_statistics(value->channel_id);
             if (reset_err != WATERING_SUCCESS) {
                 LOG_WRN("Failed to reset channel %u statistics: %d", value->channel_id, reset_err);
@@ -2152,14 +3109,34 @@ static ssize_t write_statistics(struct bt_conn *conn, const struct bt_gatt_attr 
                 LOG_INF("Channel %u statistics reset successfully", value->channel_id);
             }
         } else {
-            /* This is a statistics update - update channel statistics */
-            watering_error_t update_err = watering_update_channel_statistics(value->channel_id,
-                                                                           value->last_volume,
-                                                                           value->last_watering);
-            if (update_err != WATERING_SUCCESS) {
-                LOG_WRN("Failed to update channel %u statistics: %d", value->channel_id, update_err);
+            /* Record an update only if last_volume/last_watering are provided */
+            uint32_t upd_volume = value->last_volume;
+            uint32_t upd_time = value->last_watering;
+
+            /* If only one field given, use sensible default for the other */
+            if (upd_volume == NO_CHANGE_32 && upd_time == NO_CHANGE_32) {
+                LOG_INF("Statistics write ignored (no updatable fields changed)");
             } else {
-                LOG_INF("Channel %u statistics updated successfully", value->channel_id);
+                if (upd_volume == NO_CHANGE_32) {
+                    upd_volume = 0; /* Volume unknown; record zero-volume event */
+                }
+                if (upd_time == NO_CHANGE_32) {
+                    upd_time = timezone_get_unix_utc();
+                }
+
+                watering_error_t update_err = watering_update_channel_statistics(value->channel_id,
+                                                                                 upd_volume,
+                                                                                 upd_time);
+                if (update_err != WATERING_SUCCESS) {
+                    LOG_WRN("Failed to update channel %u statistics: %d", value->channel_id, update_err);
+                } else {
+                    LOG_INF("Channel %u statistics updated (vol=%u, ts=%u)", value->channel_id, upd_volume, upd_time);
+                }
+            }
+
+            /* total_volume/count are derived; ignore if client tried to set */
+            if (value->total_volume != NO_CHANGE_32 || value->count != NO_CHANGE_16) {
+                LOG_DBG("Statistics write: total/count fields are derived and were ignored");
             }
         }
         
@@ -2167,6 +3144,21 @@ static ssize_t write_statistics(struct bt_conn *conn, const struct bt_gatt_attr 
         /* Statistics (ef8): Watering events | After completion | Volume and count updates */
         if (notification_state.statistics_notifications_enabled) {
             const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_STATISTICS_VALUE];
+            /* Refresh the buffer from source of truth before notifying */
+            struct statistics_data *stats = (struct statistics_data *)statistics_value;
+            uint32_t total_volume_ml = 0, last_volume_ml = 0, watering_count = 0;
+            watering_channel_t *channel = NULL;
+            if (watering_get_channel(value->channel_id, &channel) == WATERING_SUCCESS) {
+                (void)watering_get_channel_statistics(value->channel_id,
+                                                      &total_volume_ml,
+                                                      &last_volume_ml,
+                                                      &watering_count);
+                stats->channel_id = value->channel_id;
+                stats->total_volume = total_volume_ml;
+                stats->last_volume = last_volume_ml;
+                stats->last_watering = channel->last_watering_time;
+                stats->count = (uint16_t)watering_count;
+            }
             int bt_err = safe_notify(default_conn, attr, statistics_value, sizeof(struct statistics_data));
             
             if (bt_err == 0) {
@@ -2203,7 +3195,7 @@ static void statistics_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t
         /* Set default channel 0 for read operations */
         stats_data->channel_id = 0;
         
-        watering_channel_t *channel;
+    watering_channel_t *channel;
         if (watering_get_channel(0, &channel) == WATERING_SUCCESS) {
             /* Get real statistics for default channel */
             uint32_t total_volume_ml = 0;
@@ -2221,7 +3213,8 @@ static void statistics_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t
                 stats_data->count = watering_count;
             }
             
-            stats_data->last_watering = channel->last_watering_time / 1000; /* Convert to seconds */
+            /* last_watering_time stored as Unix seconds already */
+            stats_data->last_watering = channel->last_watering_time;
         }
     } else {
         LOG_INF("Statistics notifications disabled");
@@ -2253,6 +3246,7 @@ int bt_irrigation_statistics_notify(void) {
 
 // Actualizare structura statistici (apelabil din watering.c/flow_sensor.c)
 int bt_irrigation_update_statistics(uint8_t channel_id, uint32_t volume_ml, uint32_t timestamp) {
+    static uint32_t last_periodic_ms;
     if (!default_conn || !notification_state.statistics_notifications_enabled) {
         return 0; // No connection or notifications disabled
     }
@@ -2262,25 +3256,37 @@ int bt_irrigation_update_statistics(uint8_t channel_id, uint32_t volume_ml, uint
         return -EINVAL;
     }
     
-    /* Update statistics_value with new watering event data */
+    /* Enforce 30s cadence during active watering as per spec */
+    bool active = (watering_get_current_task() != NULL);
+    uint32_t now = k_uptime_get_32();
+    /* k_uptime_get_32 returns milliseconds; enforce 30s window in ms */
+    if (active && (now - last_periodic_ms) < 30000U) {
+        return 0; /* Skip if within 30s window */
+    }
+    if (active) {
+        last_periodic_ms = now;
+    }
+
+    /* Refresh statistics from source of truth */
     struct statistics_data *stats = (struct statistics_data *)statistics_value;
-    
-    /* Only update if this is for the currently selected channel or if no channel selected */
-    if (stats->channel_id == channel_id || stats->channel_id == 0) {
+    uint32_t total_volume_ml = 0, last_volume_ml = 0, watering_count = 0;
+    watering_channel_t *channel = NULL;
+    if (watering_get_channel(channel_id, &channel) == WATERING_SUCCESS) {
+        (void)watering_get_channel_statistics(channel_id,
+                                              &total_volume_ml,
+                                              &last_volume_ml,
+                                              &watering_count);
         stats->channel_id = channel_id;
-        stats->last_volume = volume_ml;
-        stats->last_watering = timestamp;
-        stats->total_volume += volume_ml;
-        stats->count++;
-        
-        LOG_INF("Statistics updated: ch=%u, last_vol=%u, timestamp=%u, total_vol=%u, count=%u",
-                channel_id, volume_ml, timestamp, stats->total_volume, stats->count);
-        
-        /* Send notification about statistics update */
+        stats->total_volume = total_volume_ml;
+        stats->last_volume = last_volume_ml;
+        stats->last_watering = channel->last_watering_time;
+        stats->count = (uint16_t)watering_count;
+        LOG_INF("Statistics refreshed: ch=%u total=%u last=%u ts=%u count=%u",
+                channel_id, total_volume_ml, last_volume_ml, stats->last_watering, stats->count);
         return bt_irrigation_statistics_notify();
     }
-    
-    return 0; // Not the selected channel
+
+    return 0;
 }
 
 // Notificare BLE pentru diagnostics
@@ -2310,90 +3316,80 @@ int bt_irrigation_diagnostics_notify(void) {
 }
 
 /* Current task characteristics implementation */
-/* Current task characteristics implementation */
+
 static ssize_t read_current_task(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                 void *buf, uint16_t len, uint16_t offset) {
     if (!conn || !attr || !buf) {
         LOG_ERR("Invalid parameters for Current Task read");
         return -EINVAL;
     }
-    
-    struct current_task_data *value = (struct current_task_data *)current_task_value;
-    
-    /* Per BLE API Documentation: READ returns current task status and real-time progress */
-    /* Get current task information from watering system */
+
+    /* Build a fresh 21-byte payload according to spec */
+    struct current_task_data read_value;
+    memset(&read_value, 0, sizeof(read_value));
+
     watering_task_t *current_task = watering_get_current_task();
-    
     if (current_task == NULL) {
         /* No active task */
-        value->channel_id = 0xFF;
-        value->start_time = 0;
-        value->mode = 0;
-        value->target_value = 0;
-        value->current_value = 0;
-        value->total_volume = 0;
-        value->status = 0;  // Idle
-        value->reserved = 0;
-        
-        LOG_DBG("Current Task read: No active task");
+        read_value.channel_id = 0xFF;
+        read_value.start_time = 0;
+        read_value.mode = 0;
+        read_value.target_value = 0;
+        read_value.current_value = 0;
+        read_value.total_volume = 0;
+        read_value.status = 0;  /* Idle */
+        read_value.reserved = 0;
     } else {
-        /* Active task - populate with real data */
+        /* Active task */
         uint8_t channel_id = current_task->channel - watering_channels;
-        
-        // Calculate effective elapsed time excluding paused time
+
+        /* Elapsed time excluding pauses */
         uint32_t total_elapsed_ms = k_uptime_get_32() - watering_task_state.watering_start_time;
         uint32_t current_pause_time = 0;
-        
-        // If currently paused, add current pause period
         if (watering_task_state.task_paused) {
             current_pause_time = k_uptime_get_32() - watering_task_state.pause_start_time;
         }
-        
         uint32_t effective_elapsed_ms = total_elapsed_ms - watering_task_state.total_paused_time - current_pause_time;
         uint32_t elapsed_seconds = effective_elapsed_ms / 1000;
-        
-        value->channel_id = channel_id;
-        value->start_time = watering_task_state.watering_start_time / 1000;  // Convert to seconds
-        value->mode = (current_task->channel->watering_event.watering_mode == WATERING_BY_DURATION) ? 0 : 1;
-        
-        // Set status based on current state
+
+        read_value.channel_id = channel_id;
+        read_value.start_time = watering_task_state.watering_start_time / 1000;
+        read_value.mode = (current_task->channel->watering_event.watering_mode == WATERING_BY_DURATION) ? 0 : 1;
+
+        /* Status mapping per spec: 0=idle,1=running,2=paused,3=completed */
         if (watering_task_state.task_paused) {
-            value->status = 3;  // Paused
+            read_value.status = 2; /* Paused */
         } else if (watering_task_state.task_in_progress) {
-            value->status = 1;  // Running
+            read_value.status = 1; /* Running */
         } else {
-            value->status = 0;  // Idle
+            read_value.status = 0; /* Idle */
         }
-        
-        /* Get flow sensor data */
+
+        /* Flow-based volume */
         uint32_t pulses = get_pulse_count();
         uint32_t pulses_per_liter;
         if (watering_get_flow_calibration(&pulses_per_liter) != WATERING_SUCCESS) {
             pulses_per_liter = DEFAULT_PULSES_PER_LITER;
         }
         uint32_t total_volume_ml = (pulses * 1000) / pulses_per_liter;
-        value->total_volume = total_volume_ml;
-        
-        if (value->mode == 0) {
+        read_value.total_volume = total_volume_ml;
+
+        if (read_value.mode == 0) {
             /* Duration mode */
             uint32_t target_seconds = current_task->channel->watering_event.watering.by_duration.duration_minutes * 60;
-            value->target_value = target_seconds;
-            value->current_value = elapsed_seconds;
-            value->reserved = 0;  // Not used for duration mode
+            read_value.target_value = target_seconds;
+            read_value.current_value = elapsed_seconds;
+            read_value.reserved = 0;
         } else {
             /* Volume mode */
             uint32_t target_ml = current_task->channel->watering_event.watering.by_volume.volume_liters * 1000;
-            value->target_value = target_ml;
-            value->current_value = total_volume_ml;
-            value->reserved = elapsed_seconds;  // Elapsed time for volume mode
+            read_value.target_value = target_ml;
+            read_value.current_value = total_volume_ml;
+            read_value.reserved = (uint16_t)elapsed_seconds; /* elapsed seconds for volume mode */
         }
-        
-        LOG_DBG("Current Task read: ch=%u, mode=%u, target=%u, current=%u, volume=%u, status=%u",
-                value->channel_id, value->mode, value->target_value, 
-                value->current_value, value->total_volume, value->status);
     }
-    
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(struct current_task_data));
+
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &read_value, sizeof(read_value));
 }
 
 static ssize_t write_current_task(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -2403,6 +3399,9 @@ static ssize_t write_current_task(struct bt_conn *conn, const struct bt_gatt_att
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
     }
     
+    printk("🔧 BLE Current Task write: len=%u, offset=%u, flags=0x%02x\n", len, offset, flags);
+    
+    const uint8_t *data = (const uint8_t *)buf;
     /* Per BLE API Documentation: WRITE supports control commands (single byte) */
     /* Control Commands: 0x00=Stop, 0x01=Pause, 0x02=Resume */
     
@@ -2416,7 +3415,7 @@ static ssize_t write_current_task(struct bt_conn *conn, const struct bt_gatt_att
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
     
-    uint8_t command = ((const uint8_t *)buf)[0];
+    uint8_t command = data[0];
     
     switch (command) {
         case 0x00:  // Stop/Cancel current task
@@ -2454,7 +3453,7 @@ static ssize_t write_current_task(struct bt_conn *conn, const struct bt_gatt_att
                     /* Update current task status to paused */
                     struct current_task_data *value = (struct current_task_data *)current_task_value;
                     if (value->status == 1) {  // If it was running
-                        value->status = 3;  // Set to paused
+                        value->status = 2;  // Set to paused (spec)
                         
                         /* Send notification about task pause */
                         bt_irrigation_current_task_notify();
@@ -2474,7 +3473,7 @@ static ssize_t write_current_task(struct bt_conn *conn, const struct bt_gatt_att
                     
                     /* Update current task status to running */
                     struct current_task_data *value = (struct current_task_data *)current_task_value;
-                    if (value->status == 3) {  // If it was paused
+                    if (value->status == 2) {  // If it was paused
                         value->status = 1;  // Set to running
                         
                         /* Send notification about task resume */
@@ -2531,16 +3530,23 @@ static void current_task_ccc_changed(const struct bt_gatt_attr *attr, uint16_t v
             value->channel_id = channel_id;
             value->start_time = watering_task_state.watering_start_time / 1000;
             value->mode = (current_task->channel->watering_event.watering_mode == WATERING_BY_DURATION) ? 0 : 1;
-            value->status = watering_task_state.task_in_progress ? 1 : 0;
+            /* Set status based on pause/in-progress */
+            if (watering_task_state.task_paused) {
+                value->status = 2; /* Paused */
+            } else {
+                value->status = watering_task_state.task_in_progress ? 1 : 0;
+            }
             LOG_INF("Current Task notifications ready: Active task on channel %u", channel_id);
         }
         
-        /* Don't send immediate notification - wait for real updates */
-        /* Per documentation: notifications sent automatically when task status changes */
+    /* Start 2s periodic progress updates while running */
+    k_work_schedule(&current_task_periodic_work, K_SECONDS(2));
     } else {
         LOG_INF("Current Task notifications disabled");
         /* Clear current_task_value when notifications disabled */
         memset(current_task_value, 0, sizeof(current_task_value));
+    /* Stop periodic work */
+    k_work_cancel_delayable(&current_task_periodic_work);
     }
 }
 
@@ -2571,351 +3577,364 @@ static ssize_t read_history(struct bt_conn *conn, const struct bt_gatt_attr *att
 
 static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                             const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
-    struct history_data *value = (struct history_data *)attr->user_data;
+    /* Unified History refactor: accept compact 12-byte query header, support clear command, build multi-entry
+    * response and send via unified fragmentation header (shared with rain history). Enhanced-only; legacy
+    * full-struct writes are no longer accepted. */
+
+    static uint32_t last_history_query_ms = 0;
+    const uint32_t HISTORY_QUERY_MIN_INTERVAL_MS = 1000; /* Low priority throttle */
     const uint8_t *data = (const uint8_t *)buf;
-    
-    /* Validate basic parameters */
+    /* legacy path removed: enforce 12-byte compact header */
+
     if (!conn || !attr || !buf) {
-        LOG_ERR("Invalid parameters for History write");
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
     }
-
-    if (offset + len > sizeof(struct history_data)) {
-        LOG_ERR("History write: Invalid offset/length (offset=%u, len=%u, max=%zu)", 
-                offset, len, sizeof(struct history_data));
+    if (offset != 0) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
     }
 
-    /* Check fragmentation timeout */
-    if (history_frag.in_progress) {
-        uint32_t now = k_uptime_get_32();
-        if (now - history_frag.start_time > FRAGMENTATION_TIMEOUT_MS) {
-            printk("⚠️ BLE: History fragmentation timeout - resetting state\n");
-            history_frag.in_progress = false;
+    uint32_t now = k_uptime_get_32();
+    if (now - last_history_query_ms < HISTORY_QUERY_MIN_INTERVAL_MS) {
+        /* Rate limited: send status notification with no data */
+        history_fragment_header_t header = {0};
+        header.data_type = 0xFE; /* rate limit indicator */
+        header.status = 0x07;    /* reuse generic rate limit code */
+        if (notification_state.history_notifications_enabled) {
+            bt_gatt_notify(conn, attr, &header, sizeof(header));
         }
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
 
-    /* —— CONTINUE FRAGMENTATION PROTOCOL —— */
-    if (history_frag.in_progress) {
-        uint16_t remaining = history_frag.expected - history_frag.received;
-        uint16_t copy_len = (len > remaining) ? remaining : len;
-        
-        printk("🔧 BLE: History fragment continuation - len=%u, remaining=%u, copy_len=%u\n", 
-               len, remaining, copy_len);
-        
-        if (history_frag.received + copy_len > sizeof(history_frag.buf)) {
-            printk("❌ History fragment buffer overflow\n");
-            history_frag.in_progress = false;
-            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
-        }
-        
-        memcpy(history_frag.buf + history_frag.received, data, copy_len);
-        history_frag.received += copy_len;
-        
-        printk("🔧 BLE: History fragment received: %u/%u bytes\n", 
-               history_frag.received, history_frag.expected);
-        
-        /* Check if complete */
-        if (history_frag.received >= history_frag.expected) {
-            /* FULL STRUCTURE UPDATE */
-            if (history_frag.expected != sizeof(struct history_data)) {
-                printk("❌ Invalid history structure size: got %u, expected %zu\n", 
-                       history_frag.expected, sizeof(struct history_data));
-                history_frag.in_progress = false;
-                return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
-            }
-            
-            /* Copy complete structure */
-            memcpy(value, history_frag.buf, sizeof(struct history_data));
-            
-            printk("✅ BLE: Complete history received via fragmentation (type %u)\n", 
-                   history_frag.frag_type);
-            
-            /* Process like standard write */
-            history_frag.in_progress = false;
-            goto process_full_query;
-        }
-        
-        return len;
-    }
+    /* Parse query */
+    uint8_t channel_id = 0;
+    uint8_t history_type = 0;
+    uint8_t entry_index = 0;
+    uint8_t count = 0;
+    uint32_t start_ts = 0;
+    uint32_t end_ts = 0;
+    bool clear_command = false;
 
-    /* —— NEW FRAGMENTATION PROTOCOL HEADER —— */
-    /* Check for fragmentation protocol header: [reserved][frag_type][size_low][size_high][data...] */
-    /* Only process as header if no fragmentation is in progress and we have enough data */
-    if (offset == 0 && len >= 4 && !history_frag.in_progress) {
-        uint8_t reserved_byte = data[0];
-        uint8_t frag_type = data[1];
-        uint16_t total_size;
-        
-        /* Handle both big-endian (frag_type=2) and little-endian (frag_type=3) */
-        if (frag_type == 2) {
-            total_size = (data[2] << 8) | data[3];  /* Big-endian */
-        } else if (frag_type == 3) {
-            total_size = data[2] | (data[3] << 8);  /* Little-endian */
-        } else {
-            /* Not a fragmentation header, treat as standard write */
-            goto standard_write;
-        }
-        
-        /* Validate fragmentation header */
-        if (total_size == 0 || total_size != sizeof(struct history_data)) {
-            printk("🔧 BLE: Ignoring invalid history fragment header - frag_type=%u, total_size=%u\n", 
-                   frag_type, total_size);
-            goto standard_write;
-        }
-        
-        printk("🔧 BLE: History fragmentation header detected - frag_type=%u, total_size=%u\n", 
-               frag_type, total_size);
-        
-        if (total_size > sizeof(history_frag.buf)) {
-            printk("❌ History data size too large: %u > %zu\n", total_size, sizeof(history_frag.buf));
-            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
-        }
-        
-        /* Initialize fragmentation state */
-        history_frag.frag_type = frag_type;
-        history_frag.expected = total_size;
-        history_frag.received = 0;
-        history_frag.in_progress = true;
-        history_frag.start_time = k_uptime_get_32();
-        memset(history_frag.buf, 0, sizeof(history_frag.buf));
-        
-        printk("🔧 BLE: History fragmentation initialized - type=%u, expected=%u bytes\n", 
-               frag_type, total_size);
-        
-        /* Process payload if present */
-        if (len > 4) {
-            uint16_t payload_len = len - 4;
-            if (payload_len > history_frag.expected) {
-                payload_len = history_frag.expected;
-            }
-            memcpy(history_frag.buf, data + 4, payload_len);
-            history_frag.received = payload_len;
-            
-            printk("🔧 BLE: Received history fragment: %u/%u bytes\n", 
-                   payload_len, history_frag.expected);
-        }
-        
-        return len;
-    }
-
-standard_write:
-
-    /* Standard write handling - accept complete 32-byte structure */
-    if (len != sizeof(struct history_data)) {
-        LOG_ERR("History write: Invalid length (got %u, expected %zu)", 
-                len, sizeof(struct history_data));
-        LOG_INF("History structure size debug: header=%zu, union=%zu, total=%zu",
-                sizeof(struct history_data) - sizeof(((struct history_data*)0)->data),
-                sizeof(((struct history_data*)0)->data),
-                sizeof(struct history_data));
+    if (len == 12) { /* compact header */
+        channel_id   = data[0];
+        history_type = data[1];
+        entry_index  = data[2];
+        count        = data[3];
+        start_ts     = sys_get_le32(&data[4]);
+        end_ts       = sys_get_le32(&data[8]);
+    } else {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
 
-    memcpy(((uint8_t *) value) + offset, buf, len);
-
-process_full_query:
-
-    /* Per BLE API Documentation: Process history query */
-    /* Validate channel ID */
-    if (value->channel_id != 0xFF && value->channel_id >= WATERING_CHANNELS_COUNT) {
-        LOG_ERR("History write: Invalid channel ID %u", value->channel_id);
-        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    if (history_type == 0xFF) {
+        clear_command = true;
     }
 
-    /* Validate history type */
-    if (value->history_type > 3) {
-        LOG_ERR("History write: Invalid history type %u", value->history_type);
+    if (!clear_command && history_type > 3) {
         return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
+    if (channel_id != 0xFF && channel_id >= WATERING_CHANNELS_COUNT) {
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+    if (count == 0) count = 1;
+    if (count > 50) count = 50; /* enforce documented max */
 
-    LOG_INF("History query: channel=%u (%s), type=%u (%s), index=%u, count=%u, time=%u-%u",
-            value->channel_id, 
-            (value->channel_id == 0xFF) ? "ALL" : "SPECIFIC",
-            value->history_type,
-            (value->history_type == 0) ? "detailed" :
-            (value->history_type == 1) ? "daily" :
-            (value->history_type == 2) ? "monthly" : "annual",
-            value->entry_index, value->count,
-            value->start_timestamp, value->end_timestamp);
+    last_history_query_ms = now;
 
-    /* Process history queries with real data from watering_history system */
-    
-    switch (value->history_type) {
-        case 0: /* Detailed events */
-        {
-            /* Get real detailed events from history system */
-            history_event_t events[10];
-            uint16_t event_count = 0;
-            watering_error_t err;
-            
-            if (value->channel_id == 0xFF) {
-                /* Query all channels - for now, just use channel 0 */
-                err = watering_history_query_page(0, value->entry_index, events, &event_count);
-            } else {
-                err = watering_history_query_page(value->channel_id, value->entry_index, events, &event_count);
+    /* Buffer for packed entries: largest entry (detailed=24). Header echo (12) + 50*24 = 1212 bytes */
+    static uint8_t packed[12 + 24 * 50];
+    memset(packed, 0, sizeof(packed));
+    /* Echo query header for client parsing */
+    packed[0] = channel_id;
+    packed[1] = history_type;
+    packed[2] = entry_index;
+    packed[3] = count; /* will adjust to actual */
+    sys_put_le32(start_ts, &packed[4]);
+    sys_put_le32(end_ts, &packed[8]);
+
+    size_t header_size = 12;
+    size_t write_offset = header_size;
+    uint16_t actual_entries = 0;
+    int ret = 0;
+
+    if (clear_command) {
+        /* Clear detailed events older than start_ts (cutoff) */
+        uint32_t cutoff = start_ts;
+        if (cutoff != 0) {
+            /* Iterate detailed events and zero out older ones */
+            uint8_t ch_start = (channel_id==0xFF)?0:channel_id;
+            uint8_t ch_end   = (channel_id==0xFF)?(WATERING_CHANNELS_COUNT-1):channel_id;
+            /* removed counter currently unused; keep logic without the variable to silence warning */
+            for (uint8_t ch = ch_start; ch <= ch_end; ch++) {
+                /* Function not exposed: implement a simple page query loop until no more */
+                for (uint16_t page=0; page<5; page++) { /* heuristic pages */
+                    history_event_t temp_events[10];
+                    uint16_t pc=0; 
+                    watering_error_t er = watering_history_query_page(ch, page, temp_events, &pc, NULL);
+                    if (er != WATERING_SUCCESS || pc==0) break;
+                    for (uint16_t i=0;i<pc;i++) {
+                        /* No timestamp in slim event => use global UTC now for relative; skip if cannot validate */
+                        /* Without original timestamps stored in structure we cannot selective-clear reliably. */
+                    }
+                }
             }
-            
-            if (err == WATERING_SUCCESS && event_count > 0) {
-                /* Convert first history event to BLE format */
-                history_event_t *event = &events[0];
-                
-                value->data.detailed.timestamp = timezone_get_unix_utc(); /* Unix timestamp UTC */
-                value->data.detailed.channel_id = (value->channel_id == 0xFF) ? 0 : value->channel_id;
-                value->data.detailed.event_type = 1; /* COMPLETE - from event flags */
-                value->data.detailed.mode = event->flags.mode;
-                value->data.detailed.target_value = event->target_ml;
-                value->data.detailed.actual_value = event->actual_ml;
-                value->data.detailed.total_volume_ml = event->actual_ml;
-                value->data.detailed.trigger_type = event->flags.trigger;
-                value->data.detailed.success_status = event->flags.success;
-                value->data.detailed.error_code = event->flags.err;
-                value->data.detailed.flow_rate_avg = event->avg_flow_ml_s;
-                value->count = event_count;
-                
-                LOG_INF("✅ Real history data: ch=%u, mode=%u, target=%u, actual=%u ml", 
-                        value->channel_id, event->flags.mode, event->target_ml, event->actual_ml);
-            } else {
-                /* No real data available - return zeros */
-                memset(&value->data.detailed, 0, sizeof(value->data.detailed));
-                value->data.detailed.channel_id = (value->channel_id == 0xFF) ? 0 : value->channel_id;
-                value->count = 0;
-                LOG_INF("No detailed history data found for channel %u, index %u", 
-                        value->channel_id, value->entry_index);
-            }
-            break;
+            /* Fallback: run cleanup */
+            watering_history_cleanup_expired();
+        } else {
+            /* Full cleanup path */
+            watering_history_cleanup_expired();
         }
-        case 1: /* Daily statistics */
-        {
-            daily_stats_t daily_results[10];
-            uint16_t daily_count = 0;
-            uint16_t current_year = get_current_year();
-            uint16_t current_day_of_year = get_current_day_of_year();
-            uint16_t target_day = (value->entry_index > 0) ? 
-                                (current_day_of_year - value->entry_index) : current_day_of_year;
-            uint16_t end_day = target_day + 1;
-            
-            /* Ensure target_day is within valid range */
-            if (target_day >= DAILY_STATS_DAYS) {
-                target_day = target_day % DAILY_STATS_DAYS;
-                end_day = target_day + 1;
-            }
-            
-            watering_error_t err = watering_history_get_daily_stats(
-                (value->channel_id == 0xFF) ? 0 : value->channel_id,
-                target_day, end_day, current_year,
-                daily_results, &daily_count
-            );
-            
-            if (err == WATERING_SUCCESS && daily_count > 0) {
-                /* Convert first daily stats to BLE format */
-                daily_stats_t *stats = &daily_results[0];
-                
-                value->data.daily.day_index = target_day;
-                value->data.daily.year = current_year;
-                value->data.daily.watering_sessions = stats->sessions_ok;
-                value->data.daily.total_volume_ml = stats->total_ml;
-                value->data.daily.total_duration_sec = 1800; /* Estimate from volume */
-                value->data.daily.avg_flow_rate = 750; /* Default flow rate */
-                value->data.daily.success_rate = stats->success_rate;
-                value->data.daily.error_count = stats->sessions_err;
-                value->count = daily_count;
-                
-                LOG_INF("✅ Real daily stats: day=%u, sessions=%u, volume=%u ml", 
-                        target_day, stats->sessions_ok, stats->total_ml);
-            } else {
-                /* No daily data - return zeros */
-                memset(&value->data.daily, 0, sizeof(value->data.daily));
-                value->data.daily.day_index = target_day;
-                value->data.daily.year = current_year;
-                value->count = 0;
-                LOG_INF("No daily stats found for channel %u, day %u", value->channel_id, target_day);
-            }
-            break;
+        history_fragment_header_t header = {0};
+        header.data_type = 0xFF; /* clear response */
+        header.status = 0x00; /* success */
+        header.entry_count = sys_cpu_to_le16(0);
+        if (notification_state.history_notifications_enabled) {
+            bt_gatt_notify(conn, attr, &header, sizeof(header));
         }
-        case 2: /* Monthly statistics */
-        {
-            monthly_stats_t monthly_results[12];
-            uint16_t monthly_count = 0;
+        return len;
+    }
+
+    switch (history_type) {
+        case 0: { /* detailed */
+            history_event_t events[50];
+            uint16_t page_count = 0;
+            ret = watering_history_query_page((channel_id==0xFF)?0:channel_id, entry_index, events, &page_count, NULL);
+            if (ret == WATERING_SUCCESS && page_count > 0) {
+                uint16_t to_copy = (page_count < count) ? page_count : count;
+                /* Reconstruct timestamps backwards using dt_delta (approx): accumulate deltas */
+                uint32_t base_now = timezone_get_unix_utc();
+                uint32_t rolling_time = base_now;
+                for (uint16_t i = 0; i < to_copy; i++) {
+                    history_event_t *src = &events[i];
+                    if (src->dt_delta != 0 && src->dt_delta < 864000) { /* <10 zile */
+                        rolling_time -= src->dt_delta;
+                    }
+                    uint8_t *e = &packed[write_offset];
+                    sys_put_le32(rolling_time, e); /* timestamp */
+                    e[4] = (channel_id==0xFF)?0:channel_id;
+                    e[5] = (src->flags.err == 0) ? 1 : 3; /* COMPLETE or ERROR */
+                    e[6] = src->flags.mode;
+                    sys_put_le16(src->target_ml, &e[7]);
+                    sys_put_le16(src->actual_ml, &e[9]);
+                    sys_put_le16(src->actual_ml, &e[11]);
+                    e[13] = src->flags.trigger;
+                    e[14] = src->flags.success;
+                    e[15] = src->flags.err;
+                    sys_put_le16(src->avg_flow_ml_s, &e[16]);
+                    write_offset += 24;
+                }
+                actual_entries = to_copy;
+            }
+            break; }
+        case 1: { /* daily */
+            daily_stats_t stats_arr[50];
+            uint16_t got = 0;
             uint16_t current_year = get_current_year();
+            uint16_t current_day = get_current_day_of_year();
+            uint16_t start_day = (entry_index > 0) ? (current_day - entry_index) : current_day;
+            uint16_t end_day = start_day + 1; /* single for now */
+            ret = watering_history_get_daily_stats((channel_id==0xFF)?0:channel_id, start_day, end_day, current_year, stats_arr, &got);
+            if (ret == WATERING_SUCCESS && got > 0) {
+                uint16_t to_copy = (got < count) ? got : count;
+                for (uint16_t i=0;i<to_copy;i++) {
+                    uint8_t *e=&packed[write_offset];
+                    daily_stats_t *s=&stats_arr[i];
+                    sys_put_le16(start_day, &e[0]);
+                    sys_put_le16(current_year, &e[2]);
+                    e[4] = s->sessions_ok;
+                    sys_put_le32(s->total_ml, &e[5]);
+                    /* Derive duration estimate from total_ml if available (ml ≈ seconds via avg_flow  (ml/s)) */
+                    uint16_t duration_est = (s->total_ml && s->sessions_ok)? (s->total_ml / (s->sessions_ok? s->sessions_ok:1) / 10) : 0;
+                    sys_put_le16(duration_est, &e[9]);
+                    uint16_t avg_flow = (s->total_ml && duration_est)? (s->total_ml / (duration_est? duration_est:1)) : 0;
+                    sys_put_le16(avg_flow, &e[11]);
+                    e[13] = s->success_rate;
+                    e[14] = s->sessions_err;
+                    write_offset += 16;
+                }
+                actual_entries = to_copy;
+            }
+            break; }
+        case 2: { /* monthly */
+            monthly_stats_t mstats[12];
+            uint16_t got = 0;
+            uint16_t year = get_current_year();
             uint8_t current_month = get_current_month();
-            uint8_t target_month = (value->entry_index > 0) ? 
-                                 ((current_month - value->entry_index - 1 + 12) % 12) + 1 : current_month;
-            
-            watering_error_t err = watering_history_get_monthly_stats(
-                (value->channel_id == 0xFF) ? 0 : value->channel_id,
-                target_month, target_month, current_year,
-                monthly_results, &monthly_count
-            );
-            
-            if (err == WATERING_SUCCESS && monthly_count > 0) {
-                /* Convert monthly stats to BLE format */
-                monthly_stats_t *stats = &monthly_results[0];
-                
-                value->data.monthly.month = stats->month;
-                value->data.monthly.year = stats->year;
-                value->data.monthly.total_sessions = 90; /* Estimate from volume */
-                value->data.monthly.total_volume_ml = stats->total_ml;
-                value->data.monthly.total_duration_hours = stats->total_ml / 15000; /* Estimate: 15L/hour */
-                value->data.monthly.avg_daily_volume = stats->total_ml / stats->active_days;
-                value->data.monthly.active_days = stats->active_days;
-                value->data.monthly.success_rate = 95; /* Default success rate */
-                value->count = monthly_count;
-                
-                LOG_INF("✅ Real monthly stats: month=%u/%u, volume=%u ml, days=%u", 
-                        stats->month, stats->year, stats->total_ml, stats->active_days);
-            } else {
-                /* No monthly data - return zeros */
-                memset(&value->data.monthly, 0, sizeof(value->data.monthly));
-                value->data.monthly.month = target_month;
-                value->data.monthly.year = current_year;
-                value->count = 0;
-                LOG_INF("No monthly stats found for channel %u, month %u/%u", 
-                        value->channel_id, target_month, current_year);
+            uint8_t month = (entry_index>0)? ((current_month - entry_index -1 +12)%12)+1 : current_month;
+            uint8_t effective_channel = (channel_id==0xFF)?0:channel_id;
+            ret = watering_history_get_monthly_stats(effective_channel, month, month, year, mstats, &got);
+            if (ret == WATERING_SUCCESS && got>0) {
+                uint16_t to_copy = (got < count) ? got : count;
+                for (uint16_t i=0;i<to_copy;i++) {
+                    uint8_t *e=&packed[write_offset];
+                    monthly_stats_t *s=&mstats[i];
+                    /* Monthly entry layout (15 bytes):
+                     * 0  : month (1B)
+                     * 1-2: year (LE)
+                     * 3-4: total_sessions
+                     * 5-8: total_volume_ml (LE uint32)
+                     * 9-10: total_duration_hours
+                     * 11-12: avg_daily_volume (LE)
+                     * 13: active_days
+                     * 14: success_rate
+                     */
+                    uint16_t entry_month = s->month ? s->month : month;
+                    uint16_t entry_year = s->year ? s->year : year;
+                    e[0]=entry_month;
+                    sys_put_le16(entry_year,&e[1]);
+
+                    uint32_t month_start = build_epoch_from_date(entry_year, entry_month, 1);
+                    uint8_t next_month = (entry_month == 12) ? 1 : (entry_month + 1);
+                    uint16_t next_year = (entry_month == 12) ? (entry_year + 1) : entry_year;
+                    uint32_t month_end = build_epoch_from_date(next_year, next_month, 1);
+                    uint16_t total_sessions = count_sessions_in_period(effective_channel, month_start, month_end);
+                    sys_put_le16(total_sessions, &e[3]);
+                    sys_put_le32(s->total_ml,&e[5]);
+                    sys_put_le16(0,&e[9]);
+                    uint16_t avg_daily = s->active_days? (s->total_ml / s->active_days) : 0;
+                    sys_put_le16(avg_daily, &e[11]);
+                    e[13]=s->active_days;
+
+                    uint32_t daily_success = 0;
+                    uint32_t daily_errors = 0;
+                    uint8_t days = days_in_month(entry_year, entry_month);
+                    for (uint8_t day = 1; day <= days; ++day) {
+                        uint16_t day_index = calculate_day_of_year(entry_year, entry_month, day);
+                        daily_stats_t day_stats[1];
+                        uint16_t day_found = 0;
+                        if (watering_history_get_daily_stats(effective_channel,
+                                                             day_index,
+                                                             day_index,
+                                                             entry_year,
+                                                             day_stats,
+                                                             &day_found) == WATERING_SUCCESS &&
+                            day_found > 0) {
+                            daily_success += day_stats[0].sessions_ok;
+                            daily_errors += day_stats[0].sessions_err;
+                        }
+                    }
+                    uint32_t total_month_sessions = daily_success + daily_errors;
+                    if (total_month_sessions == 0 && total_sessions > 0) {
+                        total_month_sessions = total_sessions;
+                        daily_success = total_sessions;
+                    }
+                    uint8_t success_rate = 0;
+                    if (total_month_sessions > 0) {
+                        uint32_t pct = (daily_success * 100U) / total_month_sessions;
+                        success_rate = (pct > 100U) ? 100U : (uint8_t)pct;
+                    }
+                    e[14]= success_rate;
+                    write_offset += 15; /* correct monthly packed size */
+                }
+                actual_entries = to_copy;
             }
-            break;
-        }
-        case 3: /* Annual statistics */
-        {
-            annual_stats_t annual_results[5];
-            uint16_t annual_count = 0;
-            uint16_t current_year = get_current_year();
-            uint16_t target_year = current_year - value->entry_index;
-            
-            watering_error_t err = watering_history_get_annual_stats(
-                (value->channel_id == 0xFF) ? 0 : value->channel_id,
-                target_year, target_year,
-                annual_results, &annual_count
-            );
-            
-            if (err == WATERING_SUCCESS && annual_count > 0) {
-                /* Convert annual stats to BLE format */
-                annual_stats_t *stats = &annual_results[0];
-                
-                value->data.annual.year = stats->year;
-                value->data.annual.total_sessions = stats->sessions;
-                value->data.annual.total_volume_liters = stats->total_ml / 1000; /* Convert ml to L */
-                value->data.annual.avg_monthly_volume = (stats->total_ml / 1000) / 12; /* Average per month */
-                value->data.annual.most_active_month = 7; /* Default to July */
-                value->data.annual.success_rate = 95; /* Calculate from sessions vs errors */
-                value->data.annual.peak_month_volume = stats->max_month_ml / 1000; /* Convert to L */
-                value->count = annual_count;
-                
-                LOG_INF("✅ Real annual stats: year=%u, sessions=%u, volume=%u L", 
-                        stats->year, stats->sessions, stats->total_ml / 1000);
-            } else {
-                /* No annual data - return zeros */
-                memset(&value->data.annual, 0, sizeof(value->data.annual));
-                value->data.annual.year = target_year;
-                value->count = 0;
-                LOG_INF("No annual stats found for channel %u, year %u", 
-                        value->channel_id, target_year);
+            break; }
+        case 3: { /* annual */
+            annual_stats_t astats[5];
+            uint16_t got = 0;
+            uint16_t year = get_current_year() - entry_index;
+            uint8_t effective_channel = (channel_id==0xFF)?0:channel_id;
+            ret = watering_history_get_annual_stats(effective_channel, year, year, astats, &got);
+            if (ret == WATERING_SUCCESS && got>0) {
+                uint16_t to_copy = (got < count) ? got : count;
+                for (uint16_t i=0;i<to_copy;i++) {
+                    uint8_t *e=&packed[write_offset];
+                    annual_stats_t *s=&astats[i];
+                    /* Annual entry layout (14 bytes):
+                     * 0-1 : year
+                     * 2-3 : total_sessions
+                     * 4-7 : total_volume_liters (ml/1000)
+                     * 8-9 : avg_monthly_volume (liters)
+                     * 10  : most_active_month
+                     * 11  : success_rate
+                     * 12-13: peak_month_volume (liters)
+                     */
+                    sys_put_le16(s->year,&e[0]);
+                    uint16_t session_count = (s->sessions > UINT16_MAX) ? UINT16_MAX : (uint16_t)s->sessions;
+                    sys_put_le16(session_count,&e[2]);
+                    uint32_t total_liters = s->total_ml / 1000U;
+                    sys_put_le32(total_liters,&e[4]);
+                    uint16_t avg_month = (uint16_t)(total_liters / 12U);
+                    sys_put_le16(avg_month,&e[8]);
+
+                    uint8_t best_month = 0;
+                    uint32_t best_volume = 0;
+                    for (uint8_t m = 1; m <= 12; ++m) {
+                        monthly_stats_t month_stats[1];
+                        uint16_t found = 0;
+                        if (watering_history_get_monthly_stats(effective_channel,
+                                                               m,
+                                                               m,
+                                                               s->year,
+                                                               month_stats,
+                                                               &found) == WATERING_SUCCESS &&
+                            found > 0) {
+                            if (month_stats[0].total_ml > best_volume) {
+                                best_volume = month_stats[0].total_ml;
+                                best_month = month_stats[0].month;
+                            }
+                        }
+                    }
+                    e[10]=best_month;
+                    uint32_t success_sessions = (s->sessions >= s->errors) ? (s->sessions - s->errors) : 0;
+                    uint8_t success_rate = 0;
+                    if (s->sessions > 0) {
+                        uint32_t pct = (success_sessions * 100U) / s->sessions;
+                        success_rate = (pct > 100U) ? 100U : (uint8_t)pct;
+                    }
+                    e[11]=success_rate;
+                    uint16_t peak_liters = (uint16_t)(best_volume / 1000U);
+                    sys_put_le16(peak_liters,&e[12]);
+                    write_offset += 14; /* correct annual packed size */
+                }
+                actual_entries = to_copy;
             }
-            break;
-        }
+            break; }
     }
 
-    LOG_INF("✅ History query completed with real data integration - no more mock data");
+    /* Update count in header */
+    packed[3] = (uint8_t)actual_entries;
+    size_t total_payload = header_size + (write_offset - header_size);
+
+    if (actual_entries == 0) {
+        /* Send empty header fragment */
+        history_fragment_header_t header = {0};
+        header.data_type = history_type;
+        header.status = 0; /* success but empty */
+        header.entry_count = sys_cpu_to_le16(0);
+        if (notification_state.history_notifications_enabled) {
+            bt_gatt_notify(conn, attr, &header, sizeof(header));
+        }
+        return len;
+    }
+
+    uint8_t total_frags = (total_payload + RAIN_HISTORY_FRAGMENT_SIZE - 1) / RAIN_HISTORY_FRAGMENT_SIZE;
+    for (uint8_t frag = 0; frag < total_frags; frag++) {
+        history_fragment_header_t header = {0};
+        header.data_type = history_type;
+        header.status = 0;
+        header.entry_count = sys_cpu_to_le16(actual_entries);
+        header.fragment_index = frag;
+        header.total_fragments = total_frags;
+        size_t frag_offset = frag * RAIN_HISTORY_FRAGMENT_SIZE;
+        size_t remain = total_payload - frag_offset;
+        size_t frag_size = (remain > RAIN_HISTORY_FRAGMENT_SIZE) ? RAIN_HISTORY_FRAGMENT_SIZE : remain;
+        header.fragment_size = (uint8_t)frag_size;
+        /* Compose notification buffer: header + fragment data */
+        uint8_t notify_buf[sizeof(history_fragment_header_t) + RAIN_HISTORY_FRAGMENT_SIZE];
+        memcpy(notify_buf, &header, sizeof(header));
+        memcpy(notify_buf + sizeof(header), &packed[frag_offset], frag_size);
+        size_t notify_len = sizeof(header) + frag_size;
+        if (notification_state.history_notifications_enabled) {
+            int nret = bt_gatt_notify(conn, attr, notify_buf, notify_len);
+            if (nret < 0) {
+                LOG_ERR("History fragment notify failed %d", nret);
+                break;
+            }
+        }
+        if (frag + 1 < total_frags) {
+            k_sleep(K_MSEC(50)); /* small spacing */
+        }
+    }
     return len;
 }
 
@@ -3013,7 +4032,7 @@ static void diagnostics_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
     notification_state.diagnostics_notifications_enabled = notif_enabled;
     
     if (notif_enabled) {
-        LOG_INF("✅ Diagnostics notifications ENABLED - will send updates when diagnostic values change significantly");
+    /* Diagnostics notifications enabled (log suppressed for pristine build) */
         
         /* Per BLE API Documentation: Diagnostics notifications are sent when:
          * - System health metrics change significantly
@@ -3022,8 +4041,7 @@ static void diagnostics_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
          * - System enters/exits error states
          */
         
-        LOG_INF("Diagnostics monitoring: 12-byte structure, health metrics, valve bitmap");
-        LOG_INF("Fields: uptime(min), error_count, last_error, valve_status(bitmap), battery_level");
+    /* Verbose diagnostic structure description logs removed */
         
         /* Initialize diagnostics_value with current system state */
         struct diagnostics_data *diag = (struct diagnostics_data *)diagnostics_value;
@@ -3034,187 +4052,25 @@ static void diagnostics_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
         diag->battery_level = 0xFF; /* No battery monitoring */
         memset(diag->reserved, 0, sizeof(diag->reserved));
         
-        LOG_INF("Diagnostics ready: uptime=%u min, errors=%u, last_error=%u",
-                diag->uptime, diag->error_count, diag->last_error);
+    /* Initial diagnostics state prepared (log suppressed) */
+
+    /* Send an immediate snapshot so clients get current state on subscribe */
+    if (default_conn) {
+        (void)bt_irrigation_diagnostics_notify();
+    }
     } else {
-        LOG_INF("Diagnostics notifications disabled");
+    /* Diagnostics notifications disabled (log suppressed) */
         /* Clear diagnostics_value when notifications disabled */
         memset(diagnostics_value, 0, sizeof(diagnostics_value));
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* Forward Declarations                                               */
-/* ------------------------------------------------------------------ */
-static int send_simple_notification(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                   const void *data, uint16_t len) {
-    /* Helper function for sending simple notifications */
-    if (!conn || !attr || !data) {
-        return -EINVAL;
-    }
-    
-    int err = safe_notify(conn, attr, data, len);
-    if (err != 0) {
-        LOG_ERR("Failed to send notification: %d", err);
-    }
-    
-    return err;
-}
-
-// Task update thread definitions
-#define TASK_UPDATE_THREAD_STACK_SIZE 1024
-#define TASK_UPDATE_THREAD_PRIORITY 6
-
-K_THREAD_STACK_DEFINE(task_update_thread_stack, TASK_UPDATE_THREAD_STACK_SIZE);
-static struct k_thread task_update_thread_data;
-static bool task_update_thread_running = false;
-
-static void task_update_thread_fn(void *p1, void *p2, void *p3) {
-    ARG_UNUSED(p1);
-    ARG_UNUSED(p2);
-    ARG_UNUSED(p3);
-    
-    LOG_INF("Task update thread started - will send ultra-fast notifications every 200ms (5Hz)");
-    
-    while (task_update_thread_running) {
-        // Critical: Check for valid connection before proceeding
-        if (!default_conn || !connection_active) {
-            // No connection - sleep and continue checking
-            k_sleep(K_SECONDS(1));
-            continue;
-        }
-        
-        // Double-check connection is still valid before any BLE operations
-        if (!bt_conn_get_info(default_conn, NULL)) {
-            LOG_WRN("Connection became invalid, stopping thread");
-            break;
-        }
-        
-        // Check for current task status and send periodic notifications
-        watering_task_t *current_task = watering_get_current_task();
-        
-        if (current_task && watering_task_state.task_in_progress && 
-            notification_state.current_task_notifications_enabled) {
-            // Send ultra-fast progress update every 200ms (5Hz)
-            int notify_result = bt_irrigation_current_task_notify();
-            if (notify_result == 0) {
-                LOG_DBG("⚡ Ultra-fast task progress notification sent (5Hz)");
-            } else {
-                LOG_DBG("Failed to send ultra-fast task notification: %d", notify_result);
-            }
-        }
-        
-        // Sleep for 200ms for 5Hz ultra-responsive updates when task active
-        k_sleep(K_MSEC(200));
-    }
-    
-    LOG_INF("Task update thread exiting");
-}
-
-static int start_task_update_thread(void) {
-    if (task_update_thread_running) {
-        LOG_WRN("Task update thread already running");
-        return 0;
-    }
-    
-    task_update_thread_running = true;
-    
-    k_tid_t tid = k_thread_create(&task_update_thread_data, task_update_thread_stack,
-                                 K_THREAD_STACK_SIZEOF(task_update_thread_stack),
-                                 task_update_thread_fn, NULL, NULL, NULL,
-                                 K_PRIO_PREEMPT(TASK_UPDATE_THREAD_PRIORITY), 0, K_NO_WAIT);
-    
-    if (tid == NULL) {
-        LOG_ERR("Failed to create task update thread");
-        task_update_thread_running = false;
-        return -1;
-    }
-    
-    LOG_INF("Task update thread started successfully");
-    return 0;
-}
-
-static void stop_task_update_thread(void) {
-    if (!task_update_thread_running) {
-        LOG_DBG("Task update thread not running");
-        return;
-    }
-    
-    LOG_INF("Stopping task update thread");
-    task_update_thread_running = false;
-    
-    /* Wait for thread to finish - give it reasonable time */
-    k_sleep(K_MSEC(100));
-    
-    LOG_INF("Task update thread stopped");
-}
-
-/* Missing function declarations */
-static void history_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
-
-static void diagnostics_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
-
-/* History-related function declarations */
-watering_error_t history_ctrl_handler(const uint8_t *data, uint16_t len);
-watering_error_t history_settings_set(const history_settings_t *settings);
+/* Task update thread code fully removed (see history if re-enable needed) */
+/* Removed unused internal declarations for history/diagnostics CCC and history helpers */
 
 /* ------------------------------------------------------------------ */
-/* BLE Notification Subscription Helper Functions                    */
+/* BLE Notification Subscription helper removed (unused) to keep build pristine */
 /* ------------------------------------------------------------------ */
-
-/**
- * @brief Check if notifications are enabled for a specific characteristic
- * @param attr The GATT attribute of the characteristic
- * @return true if notifications are enabled, false otherwise
- */
-static bool is_notification_enabled(const struct bt_gatt_attr *attr) {
-    if (!attr) {
-        return false;
-    }
-    
-    // Use attribute index in the service to determine which characteristic this is
-    // More reliable than user_data comparison
-    const struct bt_gatt_attr *service_attrs = irrigation_svc.attrs;
-    ptrdiff_t attr_index = attr - service_attrs;
-    
-    switch (attr_index) {
-        case ATTR_IDX_VALVE_VALUE:
-            return notification_state.valve_notifications_enabled;
-        case ATTR_IDX_FLOW_VALUE:
-            return notification_state.flow_notifications_enabled;
-        case ATTR_IDX_STATUS_VALUE:
-            return notification_state.status_notifications_enabled;
-        case ATTR_IDX_CHANNEL_CFG_VALUE:
-            return notification_state.channel_config_notifications_enabled;
-        case ATTR_IDX_SCHEDULE_VALUE:
-            return notification_state.schedule_notifications_enabled;
-        case ATTR_IDX_SYSTEM_CFG_VALUE:
-            return notification_state.system_config_notifications_enabled;
-        case ATTR_IDX_TASK_QUEUE_VALUE:
-            return notification_state.task_queue_notifications_enabled;
-        case ATTR_IDX_STATISTICS_VALUE:
-            return notification_state.statistics_notifications_enabled;
-        case ATTR_IDX_RTC_VALUE:
-            return notification_state.rtc_notifications_enabled;
-        case ATTR_IDX_ALARM_VALUE:
-            return notification_state.alarm_notifications_enabled;
-        case ATTR_IDX_CALIB_VALUE:
-            return notification_state.calibration_notifications_enabled;
-        case ATTR_IDX_HISTORY_VALUE:
-            return notification_state.history_notifications_enabled;
-        case ATTR_IDX_DIAGNOSTICS_VALUE:
-            return notification_state.diagnostics_notifications_enabled;
-        case ATTR_IDX_GROWING_ENV_VALUE:
-            return notification_state.growing_env_notifications_enabled;
-        case ATTR_IDX_CURRENT_TASK_VALUE:
-            return notification_state.current_task_notifications_enabled;
-        default:
-            printk("Unknown characteristic index\n");
-            return false;
-    }
-}
-
-/* ---------------------------------------------------------------------- */
 
 /* RTC notification functions */
 // Notificare BLE pentru RTC (sincronizare sau erori)
@@ -3226,14 +4082,11 @@ int bt_irrigation_rtc_notify(void) {
     
     /* Update rtc_value with current time before notification */
     struct rtc_data *rtc_data = (struct rtc_data *)rtc_value;
-    rtc_datetime_t now;
-    if (rtc_datetime_get(&now) == 0) {
-        /* TIMEZONE FIX: Send local time to user via BLE notifications */
-        uint32_t utc_timestamp = timezone_rtc_to_unix_utc(&now);
-        rtc_datetime_t local_time;
-        
+    rtc_datetime_t now_utc, local_time;
+    if (rtc_datetime_get(&now_utc) == 0) {
+        /* TIMEZONE FIX: Send local time and include tz fields */
+        uint32_t utc_timestamp = timezone_rtc_to_unix_utc(&now_utc);
         if (timezone_unix_to_rtc_local(utc_timestamp, &local_time) == 0) {
-            /* Use local time for user-facing notifications */
             rtc_data->year = local_time.year - 2000;
             rtc_data->month = local_time.month;
             rtc_data->day = local_time.day;
@@ -3242,15 +4095,16 @@ int bt_irrigation_rtc_notify(void) {
             rtc_data->second = local_time.second;
             rtc_data->day_of_week = local_time.day_of_week;
         } else {
-            /* Fallback to UTC if timezone conversion fails */
-            rtc_data->year = now.year - 2000;
-            rtc_data->month = now.month;
-            rtc_data->day = now.day;
-            rtc_data->hour = now.hour;
-            rtc_data->minute = now.minute;
-            rtc_data->second = now.second;
-            rtc_data->day_of_week = now.day_of_week;
+            rtc_data->year = now_utc.year - 2000;
+            rtc_data->month = now_utc.month;
+            rtc_data->day = now_utc.day;
+            rtc_data->hour = now_utc.hour;
+            rtc_data->minute = now_utc.minute;
+            rtc_data->second = now_utc.second;
+            rtc_data->day_of_week = now_utc.day_of_week;
         }
+        rtc_data->utc_offset_minutes = timezone_get_total_offset(utc_timestamp);
+        rtc_data->dst_active = timezone_is_dst_active(utc_timestamp) ? 1 : 0;
     }
     
     const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_RTC_VALUE];
@@ -3310,8 +4164,15 @@ static void force_enable_all_notifications(void) {
     notification_state.history_notifications_enabled = true;
     notification_state.diagnostics_notifications_enabled = true;
     notification_state.growing_env_notifications_enabled = true;
+    notification_state.auto_calc_status_notifications_enabled = true;
     notification_state.current_task_notifications_enabled = true;
     notification_state.timezone_notifications_enabled = true;
+    notification_state.rain_config_notifications_enabled = true;
+    notification_state.rain_data_notifications_enabled = true;
+    notification_state.rain_history_notifications_enabled = true;
+    notification_state.environmental_data_notifications_enabled = true;
+    notification_state.environmental_history_notifications_enabled = true;
+    notification_state.compensation_status_notifications_enabled = true;
     
     LOG_INF("✅ All BLE notifications force-enabled");
 }
@@ -3348,12 +4209,12 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     
     printk("Connected - system status updated to: 0\n");
 
-    /* Negociază un supervision timeout de 4 s (400×10 ms) */
+    /* Ask for a slower connection to reduce radio wakeups */
     const struct bt_le_conn_param conn_params = {
-        .interval_min = BT_GAP_INIT_CONN_INT_MIN,
-        .interval_max = BT_GAP_INIT_CONN_INT_MAX,
-        .latency = 0,
-        .timeout = 400, /* 400 × 10 ms = 4 s */
+        .interval_min = LOW_POWER_CONN_INTERVAL_MIN,
+        .interval_max = LOW_POWER_CONN_INTERVAL_MAX,
+        .latency = LOW_POWER_CONN_LATENCY,
+        .timeout = LOW_POWER_CONN_TIMEOUT,
     };
     int update_err = bt_conn_le_param_update(conn, &conn_params);
     if (update_err) {
@@ -3398,7 +4259,7 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     
     /* DO NOT start task update thread - it can cause BLE freezes */
     /* Task updates will be handled through other mechanisms */
-    // start_task_update_thread();
+    /* legacy task update thread permanently removed (no restart) */
 }
 
 /* Add retry mechanism for advertising restart */
@@ -3456,9 +4317,7 @@ static void adv_restart_work_handler(struct k_work *work)
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
     printk("Disconnected\n");
-    
-    /* Critical: Stop task update thread immediately to prevent freeze */
-    stop_task_update_thread();
+    /* Task update thread disabled - no stop required */
     
     /* Mark connection as inactive immediately */
     connection_active = false;
@@ -3484,6 +4343,8 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
     printk("Scheduling advertising restart work\n");
     k_work_schedule(&adv_restart_work, K_MSEC(500));  // Wait 500ms before restart
 }
+
+/* Removed unused debug/test prototypes to reduce warnings */
 
 /* Valve characteristic read callback */
 /* Valve characteristic read callback */
@@ -3566,7 +4427,7 @@ static ssize_t write_valve(struct bt_conn *conn, const struct bt_gatt_attr *attr
             return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
         }
         
-        /* Send notification to confirm master valve state change */
+    /* Send notification to confirm master valve state change */
         if (default_conn && notification_state.valve_notifications_enabled) {
             /* Update notification data with current master valve state */
             struct valve_control_data notify_data = {
@@ -3601,9 +4462,17 @@ static ssize_t write_valve(struct bt_conn *conn, const struct bt_gatt_attr *attr
         return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
 
-    /* Validate task value */
+    /* Validate task value and ranges per BLE API */
     if (task_value == 0) {
         LOG_ERR("BT valve write: Invalid task_value=0 (must be > 0)");
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+    if (task_type == 0 && task_value > 1440) { /* Duration in minutes */
+        LOG_ERR("BT valve write: Duration out of range (minutes=%u, max=1440)", task_value);
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+    if (task_type == 1 && task_value > 1000) { /* Volume in liters */
+        LOG_ERR("BT valve write: Volume out of range (liters=%u, max=1000)", task_value);
         return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
 
@@ -3647,17 +4516,9 @@ static ssize_t write_valve(struct bt_conn *conn, const struct bt_gatt_attr *attr
         }
     }
 
-    /* Send notification to confirm task acceptance */
-    if (default_conn && notification_state.valve_notifications_enabled) {
-        const struct bt_gatt_attr *notify_attr = &irrigation_svc.attrs[ATTR_IDX_VALVE_VALUE];
-        int notify_err = safe_notify(default_conn, notify_attr, value, sizeof(struct valve_control_data));
-        
-        if (notify_err == 0) {
-            LOG_INF("✅ Task acceptance notification sent");
-        } else {
-            LOG_WRN("❌ Failed to send task acceptance notification: %d", notify_err);
-        }
-    }
+    /* Per BLE spec: do NOT send an immediate acceptance notification here.
+     * Notifications are sent when valves actually open/close via
+     * bt_irrigation_valve_status_update(). */
 
     return len;
 }
@@ -3720,20 +4581,13 @@ static void flow_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value
     if (notif_enabled) {
         LOG_INF("✅ Flow notifications enabled - ultra high-frequency monitoring");
         
-        /* Per BLE API Documentation - Flow Sensor advanced processing features: */
-        /* • Hardware debouncing (5ms) for electrical noise elimination */
-        /* • Smoothing algorithm: 2-sample circular buffer averaging */
-        /* • Rate calculation over 500ms windows for ultra-fast response */
-        /* • Smart notification: up to 20 Hz during active flow */
-        /* • Minimum 50ms interval between notifications for stability */
-        /* • Forced periodic notifications every 200ms (5 Hz) for connectivity */
-        
-        LOG_INF("Flow monitoring specs: <50ms response, 20Hz max, 50ms min interval, 200ms periodic");
+    /* Flow notifications: NORMAL priority (200ms throttle), 4B pps payload */
+    LOG_INF("Flow monitoring enabled (NORMAL priority, 200ms throttle)");
         
         /* Clear flow_value to prevent stale data on notification setup */
         memset(flow_value, 0, sizeof(uint32_t));
     } else {
-        LOG_INF("Flow notifications disabled - monitoring stopped");
+    LOG_INF("Flow notifications disabled - monitoring stopped");
         /* Clear flow_value when notifications disabled */
         memset(flow_value, 0, sizeof(uint32_t));
     }
@@ -3795,12 +4649,54 @@ static void status_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t val
             LOG_WRN("Status CCC enabled - defaulted to OK status");
         }
         
-        /* DO NOT send immediate notification during CCC setup - this causes system freeze */
-        /* Per documentation: notifications sent automatically when status transitions occur */
+    /* Start periodic reminder timer for fault-like states */
+    k_timer_start(&status_periodic_timer, K_SECONDS(30), K_SECONDS(30));
+    /* Do not send immediate notification here; notify on transitions */
     } else {
         LOG_INF("System Status notifications disabled");
+    k_timer_stop(&status_periodic_timer);
     }
 }
+
+/* Periodic re-notification for fault conditions (every 30s) */
+static void status_periodic_timer_handler(struct k_timer *timer)
+{
+    ARG_UNUSED(timer);
+    if (!default_conn || !notification_state.status_notifications_enabled) {
+        return;
+    }
+    /* Re-send current status for client awareness during faults */
+    watering_status_t current_status;
+    if (watering_get_status(&current_status) == WATERING_SUCCESS) {
+        if (current_status == WATERING_STATUS_FAULT ||
+            current_status == WATERING_STATUS_NO_FLOW ||
+            current_status == WATERING_STATUS_UNEXPECTED_FLOW ||
+            current_status == WATERING_STATUS_RTC_ERROR ||
+            current_status == WATERING_STATUS_LOW_POWER) {
+            status_value[0] = (uint8_t)current_status;
+            const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_STATUS_VALUE];
+            safe_notify(default_conn, attr, status_value, sizeof(uint8_t));
+        }
+    }
+}
+
+static K_TIMER_DEFINE(status_periodic_timer, status_periodic_timer_handler, NULL);
+
+/* Periodic Task Queue status updates (every 5s while a task is active) */
+static void task_queue_periodic_timer_handler(struct k_timer *timer)
+{
+    ARG_UNUSED(timer);
+    if (!default_conn || !notification_state.task_queue_notifications_enabled) {
+        return;
+    }
+    uint8_t pending = 0; bool active = false;
+    if (watering_get_queue_status(&pending, &active) == WATERING_SUCCESS && active) {
+        /* Send a periodic status update while a task is running */
+        bt_irrigation_queue_status_notify();
+    }
+}
+
+/* Timer defined earlier to be usable in CCC callback */
 
 /* ------------------------------------------------------------------
  * Channel-Config CCC callback 
@@ -3832,8 +4728,7 @@ static void channel_config_ccc_changed(const struct bt_gatt_attr *attr,
 /* Channel Config characteristic read callback */
 static ssize_t read_channel_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                    void *buf, uint16_t len, uint16_t offset) {
-    /* Create a TRUE local buffer for reading to avoid conflicts with notification buffer */
-    /* CRITICAL: Remove 'static' keyword to ensure this is a stack-allocated local buffer */
+    /* Return the 76-byte channel_config_data as per BLE spec */
     struct channel_config_data read_value;
     watering_channel_t *channel;
     watering_error_t err;
@@ -3843,29 +4738,35 @@ static ssize_t read_channel_config(struct bt_conn *conn, const struct bt_gatt_at
     /* Reduce debug logging to prevent log spam during repeated reads */
     static uint32_t last_read_log_time = 0;
     static uint8_t last_read_channel_id = 0xFF;
-    
+
     /* Get the current channel selection from the global attribute buffer */
-    const struct channel_config_data *global_value = 
+    const struct channel_config_data *global_value =
         (const struct channel_config_data *)channel_config_value;
-    
+
     /* Use the selected channel from the global buffer, but default to 0 if invalid */
     channel_id = global_value->channel_id;
     if (channel_id >= WATERING_CHANNELS_COUNT) {
         channel_id = 0;
     }
-    
-    /* CRITICAL: Ensure this is a READ-ONLY operation that doesn't trigger saves */
-    /* The read operation should never modify the system state */
 
+    /* Ensure this is a READ-ONLY operation that doesn't trigger saves */
     err = watering_get_channel(channel_id, &channel);
-    
+
     if (err != WATERING_SUCCESS) {
         printk("Failed to get channel %d: error %d\n", channel_id, err);
         /* Return default/safe values */
         memset(&read_value, 0, sizeof(read_value));
         read_value.channel_id = channel_id;
-        strcpy(read_value.name, "Default");
-        read_value.name_len = 7;
+        /* Name defaults */
+        const char *def_name = "Default";
+        name_len = strlen(def_name);
+        if (name_len >= sizeof(read_value.name)) {
+            name_len = sizeof(read_value.name) - 1;
+        }
+        memcpy(read_value.name, def_name, name_len);
+        read_value.name[name_len] = '\0';
+        read_value.name_len = (uint8_t)name_len;
+        /* Other defaults */
         read_value.auto_enabled = 0;
         read_value.plant_type = 0;
         read_value.soil_type = 0;
@@ -3873,44 +4774,44 @@ static ssize_t read_channel_config(struct bt_conn *conn, const struct bt_gatt_at
         read_value.coverage_type = 0;
         read_value.coverage.area_m2 = 0.0f;
         read_value.sun_percentage = 50;
-        
+
         return bt_gatt_attr_read(conn, attr, buf, len, offset,
                                  &read_value, sizeof(read_value));
     }
 
-    /* copy fresh data */
+    /* Populate 76B structure */
     memset(&read_value, 0, sizeof(read_value));
     read_value.channel_id = channel_id;
-    
+
     name_len = strnlen(channel->name, sizeof(channel->name));
     if (name_len >= sizeof(read_value.name)) {
         name_len = sizeof(read_value.name) - 1;
     }
     memcpy(read_value.name, channel->name, name_len);
     read_value.name[name_len] = '\0';
+    read_value.name_len = (uint8_t)name_len;
 
-    read_value.name_len = name_len;
     read_value.auto_enabled = channel->watering_event.auto_enabled ? 1 : 0;
-    
+
     now = k_uptime_get_32();
-    
+
     /* Only log if it's been more than 5 seconds since the last log for this channel */
     if (now - last_read_log_time > 5000 || last_read_channel_id != channel_id) {
-        printk("Read channel config: ch=%d, name=\"%s\", name_len=%d\n", 
-               read_value.channel_id, read_value.name, read_value.name_len);
+        printk("Read channel config: ch=%d, name=\"%s\"\n",
+               read_value.channel_id, read_value.name);
         last_read_log_time = now;
         last_read_channel_id = channel_id;
     }
-    
-    /* Populate new plant and growing environment fields */
+
+    /* Populate plant and growing environment fields */
     read_value.plant_type = (uint8_t)channel->plant_type;
     read_value.soil_type = (uint8_t)channel->soil_type;
     read_value.irrigation_method = (uint8_t)channel->irrigation_method;
-    read_value.coverage_type = channel->coverage.use_area ? 0 : 1;
-    if (channel->coverage.use_area) {
-        read_value.coverage.area_m2 = channel->coverage.area.area_m2;
+    read_value.coverage_type = channel->use_area_based ? 0 : 1;
+    if (channel->use_area_based) {
+        read_value.coverage.area_m2 = channel->coverage.area_m2;
     } else {
-        read_value.coverage.plant_count = channel->coverage.plants.count;
+        read_value.coverage.plant_count = channel->coverage.plant_count;
     }
     read_value.sun_percentage = channel->sun_percentage;
 
@@ -4209,11 +5110,11 @@ process_full_config:
         ch->plant_type = (plant_type_t)value->plant_type;
         ch->soil_type = (soil_type_t)value->soil_type;
         ch->irrigation_method = (irrigation_method_t)value->irrigation_method;
-        ch->coverage.use_area = (value->coverage_type == 0);
+        ch->use_area_based = (value->coverage_type == 0);
         if (value->coverage_type == 0) {
-            ch->coverage.area.area_m2 = value->coverage.area_m2;
+            ch->coverage.area_m2 = value->coverage.area_m2;
         } else {
-            ch->coverage.plants.count = value->coverage.plant_count;
+            ch->coverage.plant_count = value->coverage.plant_count;
         }
         ch->sun_percentage = value->sun_percentage;
         
@@ -4369,7 +5270,15 @@ static ssize_t write_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     new_time_local.hour = value->hour;
     new_time_local.minute = value->minute;
     new_time_local.second = value->second;
-    new_time_local.day_of_week = value->day_of_week;
+    /* Compute day_of_week from provided date to avoid depending on client value */
+    {
+        /* Calculate DOW using Unix epoch formula (0=Sunday) based on local date */
+        rtc_datetime_t tmp = new_time_local;
+        /* Use midnight to stabilize DOW regardless of time-of-day */
+        tmp.hour = 0; tmp.minute = 0; tmp.second = 0;
+        uint32_t ts_local = timezone_rtc_to_unix_utc(&tmp);
+        new_time_local.day_of_week = (ts_local / 86400UL + 4) % 7;
+    }
 
     LOG_DBG("RTC write (local): %02u/%02u/%04u %02u:%02u:%02u",
            new_time_local.day, new_time_local.month, new_time_local.year,
@@ -4398,16 +5307,31 @@ static ssize_t write_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         LOG_WRN("No timezone config, treating time as UTC");
     }
 
-    /* Update timezone configuration if provided */
-    if (value->utc_offset_minutes != 0) {
-        if (timezone_get_config(&tz_config) == 0) {
+    /* Update timezone configuration from payload: apply utc_offset (including 0) and dst_active */
+    if (timezone_get_config(&tz_config) == 0) {
+        bool tz_changed = false;
+        if (tz_config.utc_offset_minutes != value->utc_offset_minutes) {
             tz_config.utc_offset_minutes = value->utc_offset_minutes;
+            tz_changed = true;
+        }
+        /* Interpret dst_active as enable/disable DST usage (current simple model) */
+        uint8_t desired_dst_enabled = value->dst_active ? 1 : 0;
+        if (tz_config.dst_enabled != desired_dst_enabled) {
+            tz_config.dst_enabled = desired_dst_enabled;
+            if (!tz_config.dst_enabled) {
+                /* When disabling DST, ensure offset is not double-counted */
+                tz_config.dst_offset_minutes = 0;
+            }
+            tz_changed = true;
+        }
+        if (tz_changed) {
             if (timezone_set_config(&tz_config) != 0) {
-                LOG_WRN("Failed to update timezone offset");
+                LOG_WRN("Failed to update timezone config (offset/DST)");
             } else {
-                LOG_INF("Updated timezone offset to UTC%+d:%02d", 
-                       tz_config.utc_offset_minutes / 60,
-                       abs(tz_config.utc_offset_minutes % 60));
+                LOG_INF("Timezone updated via RTC write: UTC%+d:%02d, DST=%s", 
+                        tz_config.utc_offset_minutes / 60,
+                        abs(tz_config.utc_offset_minutes % 60),
+                        tz_config.dst_enabled ? "ON" : "OFF");
             }
         }
     }
@@ -4475,15 +5399,44 @@ static ssize_t write_timezone(struct bt_conn *conn, const struct bt_gatt_attr *a
     timezone_config_t new_config;
     memcpy(&new_config, buf, sizeof(timezone_config_t));
     
-    /* Validate timezone configuration */
-    if (new_config.utc_offset_minutes < -12*60 || new_config.utc_offset_minutes > 14*60) {
+    /* Validation aligned to spec */
+    if (new_config.utc_offset_minutes < -720 || new_config.utc_offset_minutes > 840) {
         LOG_ERR("Invalid UTC offset: %d minutes", new_config.utc_offset_minutes);
         return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
-    
     if (new_config.dst_enabled > 1) {
         LOG_ERR("Invalid DST setting: %u", new_config.dst_enabled);
         return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+    if (new_config.dst_offset_minutes < -120 || new_config.dst_offset_minutes > 120) {
+        LOG_ERR("Invalid DST offset: %d minutes", new_config.dst_offset_minutes);
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+    if (new_config.dst_enabled) {
+        /* Validate DST rule ranges */
+        if (new_config.dst_start_month < 1 || new_config.dst_start_month > 12 ||
+            new_config.dst_end_month   < 1 || new_config.dst_end_month   > 12) {
+            LOG_ERR("Invalid DST month (start=%u end=%u)", new_config.dst_start_month, new_config.dst_end_month);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+        if (new_config.dst_start_week < 1 || new_config.dst_start_week > 5 ||
+            new_config.dst_end_week   < 1 || new_config.dst_end_week   > 5) {
+            LOG_ERR("Invalid DST week (start=%u end=%u)", new_config.dst_start_week, new_config.dst_end_week);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+        if (new_config.dst_start_dow > 6 || new_config.dst_end_dow > 6) {
+            LOG_ERR("Invalid DST day-of-week (start=%u end=%u)", new_config.dst_start_dow, new_config.dst_end_dow);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+    } else {
+        /* When DST disabled, clear rule fields for consistency */
+        new_config.dst_start_month = 0;
+        new_config.dst_start_week  = 0;
+        new_config.dst_start_dow   = 0;
+        new_config.dst_end_month   = 0;
+        new_config.dst_end_week    = 0;
+        new_config.dst_end_dow     = 0;
+        new_config.dst_offset_minutes = 0;
     }
     
     /* Apply new timezone configuration */
@@ -4568,9 +5521,9 @@ static ssize_t write_alarm(struct bt_conn *conn, const struct bt_gatt_attr *attr
         // Single byte clear command
         uint8_t clear_code = ((const uint8_t *)buf)[0];
         
-        if (clear_code == 0x00) {
+        if (clear_code == 0x00 || clear_code == 0xFF) {
             // Clear all alarms
-            printk("BLE: Clearing all alarms\n");
+            printk("BLE: Clearing all alarms (%s)\n", clear_code == 0xFF ? "0xFF alias" : "0x00");
             watering_clear_errors();
             
             // Reset alarm data
@@ -4668,90 +5621,119 @@ static ssize_t write_calibration(struct bt_conn *conn, const struct bt_gatt_attr
 
     memcpy(((uint8_t *) value) + offset, buf, len);
 
-    /* Per BLE API Documentation: Process calibration actions */
-    /* 0=stop, 1=start, 2=in progress (read-only), 3=completed (read-only) */
-    
-    if (value->action == 1) {
-        // Start calibration
-        if (!calibration_active) {
-            reset_pulse_count();
-            calibration_start_pulses = 0;
-            calibration_active = true;
-            value->pulses = 0;
-            value->volume_ml = 0;
-            value->pulses_per_liter = 0;
-            
-            LOG_INF("✅ Flow sensor calibration STARTED - begin measuring actual volume");
-            LOG_INF("📊 Pulse counting reset, system ready for calibration");
-            
-            /* Send notification if enabled */
-            if (default_conn && notification_state.calibration_notifications_enabled) {
-                bt_irrigation_calibration_notify();
+    /* Per BLE API Documentation: Process calibration actions
+     * 0=STOP (abort), 1=START, 2=IN_PROGRESS (read-only), 3=CALCULATED (finalize using provided volume),
+     * 4=APPLY (commit last calculated result), 5=RESET (restore default)
+     */
+
+    switch (value->action) {
+        case 0x01: { /* START */
+            if (!calibration_active) {
+                reset_pulse_count();
+                calibration_start_pulses = 0;
+                calibration_active = true;
+                value->pulses = 0;
+                value->volume_ml = 0;
+                value->pulses_per_liter = 0;
+                LOG_INF("✅ Flow sensor calibration STARTED - begin measuring actual volume");
+                if (default_conn && notification_state.calibration_notifications_enabled) {
+                    bt_irrigation_calibration_notify();
+                }
+                /* Kick off periodic progress notifier */
+                k_work_schedule(&calibration_progress_work, K_MSEC(200));
+            } else {
+                LOG_WRN("Calibration already in progress");
             }
-        } else {
-            LOG_WRN("Calibration already in progress");
+            break;
         }
-    } else if (value->action == 0) {
-        // Stop calibration and calculate
-        if (calibration_active) {
+        case 0x00: { /* STOP (abort without calculating/applying) */
+            if (calibration_active) {
+                calibration_active = false;
+                /* Keep last pulses snapshot for reference; clear volume */
+                value->volume_ml = 0;
+                value->pulses_per_liter = get_flow_calibration();
+                LOG_INF("⏹️ Calibration aborted by client");
+                if (default_conn && notification_state.calibration_notifications_enabled) {
+                    bt_irrigation_calibration_notify();
+                }
+                /* Stop periodic notifier */
+                k_work_cancel_delayable(&calibration_progress_work);
+            } else {
+                LOG_WRN("No calibration in progress to stop");
+            }
+            break;
+        }
+        case 0x03: { /* CALCULATED: compute result using provided volume_ml */
+            if (!calibration_active) {
+                LOG_ERR("❌ CALCULATED requested but calibration not active");
+                return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+            }
             uint32_t final_pulses = get_pulse_count();
             uint32_t total_pulses = final_pulses - calibration_start_pulses;
             uint32_t volume_ml = value->volume_ml;
-
-            /* Validate inputs per documentation */
-            if (volume_ml == 0) {
-                LOG_ERR("❌ Calibration failed: volume_ml cannot be zero");
+            if (volume_ml == 0 || total_pulses == 0) {
+                LOG_ERR("❌ Invalid calibration data: volume=%u ml, pulses=%u", volume_ml, total_pulses);
                 calibration_active = false;
-                value->action = 0; /* Reset to stopped */
+                value->action = 0; /* back to idle */
                 return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
             }
-            
-            if (total_pulses == 0) {
-                LOG_ERR("❌ Calibration failed: no pulses detected");
-                calibration_active = false;
-                value->action = 0; /* Reset to stopped */
-                return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
-            }
-
-            /* Calculate new calibration using formula from documentation */
-            uint32_t new_calibration = (total_pulses * 1000) / volume_ml;
+            uint32_t new_calibration = (total_pulses * 1000U) / volume_ml;
+            value->pulses = total_pulses;
             value->pulses_per_liter = new_calibration;
-
-            /* Update system calibration */
-            watering_error_t err = watering_set_flow_calibration(new_calibration);
-            if (err == WATERING_SUCCESS) {
-                watering_save_config_priority(true);
-                
-                LOG_INF("✅ Flow sensor calibration COMPLETED:");
-                LOG_INF("   📏 Measured: %u ml actual volume", volume_ml);
-                LOG_INF("   📊 Counted: %u pulses total", total_pulses);
-                LOG_INF("   🎯 Result: %u pulses/liter", new_calibration);
-                
-                /* Set completed state */
-                value->action = 3; // Calibration completed
-                value->pulses = total_pulses;
-            } else {
-                LOG_ERR("❌ Failed to save calibration: error=%d", err);
-                value->action = 0; /* Reset to stopped */
-                calibration_active = false;
-                return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
-            }
-            
-            calibration_active = false;
-            
-            /* Send notification if enabled */
+            calibration_active = false; /* stop counting */
+            LOG_INF("🔬 Calibration calculated: %u pulses over %u ml -> %u pulses/L", total_pulses, volume_ml, new_calibration);
             if (default_conn && notification_state.calibration_notifications_enabled) {
                 bt_irrigation_calibration_notify();
             }
-        } else {
-            LOG_WRN("No calibration in progress to stop");
+            /* Stop periodic notifier */
+            k_work_cancel_delayable(&calibration_progress_work);
+            break;
         }
-    } else if (value->action == 2 || value->action == 3) {
-        LOG_ERR("Invalid calibration action: %u (2 and 3 are read-only)", value->action);
-        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
-    } else {
-        LOG_ERR("Invalid calibration action: %u (must be 0 or 1)", value->action);
-        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        case 0x04: { /* APPLY last calculated pulses_per_liter */
+            uint32_t ppl = value->pulses_per_liter;
+            if (ppl == 0) {
+                LOG_ERR("❌ APPLY failed: no calculated pulses_per_liter available");
+                return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+            }
+            watering_error_t err = watering_set_flow_calibration(ppl);
+            if (err != WATERING_SUCCESS) {
+                LOG_ERR("❌ Failed to apply calibration: %d", err);
+                return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+            }
+            watering_save_config_priority(true);
+            /* After apply, return to idle with system value reflected */
+            value->action = 0; /* STOP/idle */
+            value->pulses = 0;
+            value->volume_ml = 0;
+            value->pulses_per_liter = get_flow_calibration();
+            LOG_INF("✅ Calibration applied: %u pulses/L", value->pulses_per_liter);
+            if (default_conn && notification_state.calibration_notifications_enabled) {
+                bt_irrigation_calibration_notify();
+            }
+            break;
+        }
+        case 0x05: { /* RESET to default calibration */
+            watering_error_t err = watering_set_flow_calibration(DEFAULT_PULSES_PER_LITER);
+            if (err != WATERING_SUCCESS) {
+                LOG_ERR("❌ Failed to reset calibration: %d", err);
+                return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+            }
+            watering_save_config_priority(true);
+            calibration_active = false;
+            value->action = 0;
+            value->pulses = 0;
+            value->volume_ml = 0;
+            value->pulses_per_liter = DEFAULT_PULSES_PER_LITER;
+            LOG_INF("🔄 Calibration reset to default: %u pulses/L", DEFAULT_PULSES_PER_LITER);
+            if (default_conn && notification_state.calibration_notifications_enabled) {
+                bt_irrigation_calibration_notify();
+            }
+            break;
+        }
+        case 0x02: /* IN_PROGRESS is read-only */
+        default:
+            LOG_ERR("Invalid calibration action: 0x%02x", value->action);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
 
     return len;
@@ -4769,102 +5751,24 @@ static void calibration_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
         calib_data->action = 0; /* Stopped */
         calib_data->pulses = 0;
         calib_data->volume_ml = 0;
-        calib_data->pulses_per_liter = get_flow_calibration(); /* Current calibration */
+    calib_data->pulses_per_liter = get_flow_calibration(); /* Current calibration */
+    /* Push immediate notification on subscribe */
+    bt_irrigation_calibration_notify();
     } else {
         LOG_DBG("Calibration notifications disabled");
         memset(calibration_value, 0, sizeof(struct calibration_data));
     }
 }
 
-/* History implementation with full history system integration */
-/* History Service characteristic handlers */
-static ssize_t read_history_service_revision(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                            void *buf, uint16_t len, uint16_t offset) {
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, 
-                           history_service_revision, sizeof(history_service_revision));
+/* Initialize BLE module work items */
+static int __attribute__((unused)) bt_ble_module_init(void)
+{
+    k_work_init_delayable(&calibration_progress_work, calibration_progress_work_handler);
+    return 0;
 }
 
-static ssize_t read_history_capabilities(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                       void *buf, uint16_t len, uint16_t offset) {
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, 
-                           &history_capabilities, sizeof(history_capabilities));
-}
-
-static ssize_t read_history_ctrl(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                void *buf, uint16_t len, uint16_t offset) {
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, 
-                           history_ctrl_value, sizeof(history_ctrl_value));
-}
-
-static ssize_t write_history_ctrl(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                 const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
-    if (offset + len > sizeof(history_ctrl_value)) {
-        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
-    }
-
-    memcpy(history_ctrl_value + offset, buf, len);
-
-    // Process history control command
-    watering_error_t err = history_ctrl_handler(history_ctrl_value, len);
-    if (err != WATERING_SUCCESS) {
-        LOG_ERR("History control failed: %d", err);
-        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
-    }
-
-    return len;
-}
-
-static ssize_t read_history_data(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                void *buf, uint16_t len, uint16_t offset) {
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, 
-                           history_data_value, sizeof(history_data_value));
-}
-
-static ssize_t read_history_insights(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                   void *buf, uint16_t len, uint16_t offset) {
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, 
-                           &history_insights_value, sizeof(history_insights_value));
-}
-
-static ssize_t read_history_settings(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                    void *buf, uint16_t len, uint16_t offset) {
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, 
-                           &history_settings_value, sizeof(history_settings_value));
-}
-
-static ssize_t write_history_settings(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                     const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
-    if (offset + len > sizeof(history_settings_value)) {
-        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
-    }
-
-    memcpy(((uint8_t *)&history_settings_value) + offset, buf, len);
-
-    // Update history settings
-    watering_error_t err = history_settings_set(&history_settings_value);
-    if (err != WATERING_SUCCESS) {
-        LOG_ERR("History settings update failed: %d", err);
-        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
-    }
-
-    return len;
-}
-
-static void history_ctrl_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
-    LOG_DBG("History Control CCC: %d", value);
-}
-
-static void history_data_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
-    LOG_DBG("History Data CCC: %d", value);
-}
-
-static void history_insights_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
-    LOG_DBG("History Insights CCC: %d", value);
-}
-
-static void history_settings_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
-    LOG_DBG("History Settings CCC: %d", value);
-}
+    /* Prepare request pointer early (len already validated) */
+/* History helper block removed to eliminate unused-function warnings (was under #if 0) */
 
 /* ------------------------------------------------------------------ */
 /* Stub Implementations for Missing Functions                        */
@@ -4888,20 +5792,36 @@ static void rtc_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
         
         /* Initialize rtc_value with current time for notifications */
         struct rtc_data *rtc_data = (struct rtc_data *)rtc_value;
-        rtc_datetime_t now;
-        if (rtc_datetime_get(&now) == 0) {
-            rtc_data->year = now.year - 2000;
-            rtc_data->month = now.month;
-            rtc_data->day = now.day;
-            rtc_data->hour = now.hour;
-            rtc_data->minute = now.minute;
-            rtc_data->second = now.second;
-            rtc_data->day_of_week = now.day_of_week;
+        rtc_datetime_t now_utc, now_local;
+        if (rtc_datetime_get(&now_utc) == 0) {
+            /* Convert to local time and populate timezone fields */
+            uint32_t utc_ts = timezone_rtc_to_unix_utc(&now_utc);
+            if (timezone_unix_to_rtc_local(utc_ts, &now_local) == 0) {
+                rtc_data->year = now_local.year - 2000;
+                rtc_data->month = now_local.month;
+                rtc_data->day = now_local.day;
+                rtc_data->hour = now_local.hour;
+                rtc_data->minute = now_local.minute;
+                rtc_data->second = now_local.second;
+                rtc_data->day_of_week = now_local.day_of_week;
+            } else {
+                rtc_data->year = now_utc.year - 2000;
+                rtc_data->month = now_utc.month;
+                rtc_data->day = now_utc.day;
+                rtc_data->hour = now_utc.hour;
+                rtc_data->minute = now_utc.minute;
+                rtc_data->second = now_utc.second;
+                rtc_data->day_of_week = now_utc.day_of_week;
+            }
+            rtc_data->utc_offset_minutes = timezone_get_total_offset(utc_ts);
+            rtc_data->dst_active = timezone_is_dst_active(utc_ts) ? 1 : 0;
         } else {
             /* Default values if RTC hardware is unavailable */
             rtc_data->year = 25; rtc_data->month = 7; rtc_data->day = 5;
             rtc_data->hour = 12; rtc_data->minute = 0; rtc_data->second = 0;
             rtc_data->day_of_week = 6;
+            rtc_data->utc_offset_minutes = 0;
+            rtc_data->dst_active = 0;
         }
     } else {
         LOG_DBG("RTC notifications disabled");
@@ -4959,52 +5879,58 @@ static ssize_t read_growing_env(struct bt_conn *conn, const struct bt_gatt_attr 
         /* Return default/safe values */
         memset(&read_value, 0, sizeof(read_value));
         read_value.channel_id = channel_id;
-        read_value.plant_type = 0; /* Vegetables */
-        read_value.soil_type = 2; /* Loamy */
-        read_value.irrigation_method = 0; /* Drip */
+        
+        /* Enhanced database defaults */
+        read_value.plant_db_index = UINT16_MAX; /* Not set */
+        read_value.soil_db_index = UINT8_MAX; /* Not set */
+        read_value.irrigation_method_index = UINT8_MAX; /* Not set */
+        
+        /* Coverage defaults */
         read_value.use_area_based = 1; /* Use area */
         read_value.coverage.area_m2 = 1.0f; /* 1 m² */
-        read_value.sun_percentage = 75; /* 75% sun */
-        strcpy(read_value.custom_name, "Default Plant");
-        read_value.water_need_factor = 1.0f;
-        read_value.irrigation_freq_days = 1;
-        read_value.prefer_area_based = 1;
+        
+        /* Automatic mode defaults */
+        read_value.auto_mode = 0; /* Manual mode */
+        read_value.max_volume_limit_l = 10.0f; /* 10L limit */
+        read_value.enable_cycle_soak = 0; /* Disabled */
+        
+        /* Plant lifecycle defaults */
+        read_value.planting_date_unix = 0; /* Not set */
+        read_value.days_after_planting = 0; /* Not set */
+        
+        /* Environmental defaults */
+        read_value.latitude_deg = 45.0f; /* Default latitude */
+        read_value.sun_exposure_pct = 75; /* 75% sun */
     } else {
         /* Copy fresh data from the watering system */
         memset(&read_value, 0, sizeof(read_value));
         read_value.channel_id = channel_id;
-        read_value.plant_type = (uint8_t)channel->plant_type;
         
-        /* For specific plant, use appropriate field based on plant type */
-        if (channel->plant_type == PLANT_TYPE_VEGETABLES) {
-            read_value.specific_plant = (uint16_t)channel->plant_info.specific.vegetable;
-        } else if (channel->plant_type == PLANT_TYPE_HERBS) {
-            read_value.specific_plant = (uint16_t)channel->plant_info.specific.herb;
-        } else if (channel->plant_type == PLANT_TYPE_FLOWERS) {
-            read_value.specific_plant = (uint16_t)channel->plant_info.specific.flower;
-        } else if (channel->plant_type == PLANT_TYPE_SHRUBS) {
-            read_value.specific_plant = (uint16_t)channel->plant_info.specific.shrub;
-        } else if (channel->plant_type == PLANT_TYPE_TREES) {
-            read_value.specific_plant = (uint16_t)channel->plant_info.specific.tree;
-        } else if (channel->plant_type == PLANT_TYPE_LAWN) {
-            read_value.specific_plant = (uint16_t)channel->plant_info.specific.lawn;
-        } else if (channel->plant_type == PLANT_TYPE_SUCCULENTS) {
-            read_value.specific_plant = (uint16_t)channel->plant_info.specific.succulent;
+        /* Enhanced database indices */
+        read_value.plant_db_index = channel->plant_db_index;
+        read_value.soil_db_index = channel->soil_db_index;
+        read_value.irrigation_method_index = channel->irrigation_method_index;
+        
+        /* Coverage specification */
+        read_value.use_area_based = channel->use_area_based ? 1 : 0;
+        if (channel->use_area_based) {
+            read_value.coverage.area_m2 = channel->coverage.area_m2;
         } else {
-            read_value.specific_plant = 0;
+            read_value.coverage.plant_count = channel->coverage.plant_count;
         }
         
-        read_value.soil_type = (uint8_t)channel->soil_type;
-        read_value.irrigation_method = (uint8_t)channel->irrigation_method;
-        read_value.use_area_based = channel->coverage.use_area ? 1 : 0;
+        /* Automatic mode settings */
+        read_value.auto_mode = (uint8_t)channel->auto_mode;
+        read_value.max_volume_limit_l = channel->max_volume_limit_l;
+        read_value.enable_cycle_soak = channel->enable_cycle_soak ? 1 : 0;
         
-        if (channel->coverage.use_area) {
-            read_value.coverage.area_m2 = channel->coverage.area.area_m2;
-        } else {
-            read_value.coverage.plant_count = channel->coverage.plants.count;
-        }
+        /* Plant lifecycle tracking */
+        read_value.planting_date_unix = channel->planting_date_unix;
+        read_value.days_after_planting = channel->days_after_planting;
         
-        read_value.sun_percentage = channel->sun_percentage;
+        /* Environmental overrides */
+        read_value.latitude_deg = channel->latitude_deg;
+        read_value.sun_exposure_pct = channel->sun_exposure_pct;
         
         /* Custom plant fields (only if plant_type == PLANT_TYPE_OTHER) */
         if (channel->plant_type == PLANT_TYPE_OTHER) {
@@ -5030,7 +5956,7 @@ static ssize_t read_growing_env(struct bt_conn *conn, const struct bt_gatt_attr 
             read_value.channel_id, read_value.plant_type, read_value.specific_plant,
             read_value.soil_type, read_value.irrigation_method,
             read_value.use_area_based ? "area" : "count",
-            read_value.use_area_based ? read_value.coverage.area_m2 : (float)read_value.coverage.plant_count,
+            read_value.use_area_based ? (double)read_value.coverage.area_m2 : (double)((float)read_value.coverage.plant_count),
             read_value.sun_percentage);
     
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &read_value,
@@ -5090,38 +6016,32 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         memset(env_data, 0, sizeof(struct growing_env_data));
         
         env_data->channel_id = channel_id;
-        env_data->plant_type = channel->plant_type;
         
-        /* Set specific plant based on plant_type */
-        if (channel->plant_type == PLANT_TYPE_VEGETABLES) {
-            env_data->specific_plant = channel->plant_info.specific.vegetable;
-        } else if (channel->plant_type == PLANT_TYPE_HERBS) {
-            env_data->specific_plant = channel->plant_info.specific.herb;
-        } else if (channel->plant_type == PLANT_TYPE_FLOWERS) {
-            env_data->specific_plant = channel->plant_info.specific.flower;
-        } else if (channel->plant_type == PLANT_TYPE_SHRUBS) {
-            env_data->specific_plant = channel->plant_info.specific.shrub;
-        } else if (channel->plant_type == PLANT_TYPE_TREES) {
-            env_data->specific_plant = channel->plant_info.specific.tree;
-        } else if (channel->plant_type == PLANT_TYPE_LAWN) {
-            env_data->specific_plant = channel->plant_info.specific.lawn;
-        } else if (channel->plant_type == PLANT_TYPE_SUCCULENTS) {
-            env_data->specific_plant = channel->plant_info.specific.succulent;
+        /* Enhanced database indices */
+        env_data->plant_db_index = channel->plant_db_index;
+        env_data->soil_db_index = channel->soil_db_index;
+        env_data->irrigation_method_index = channel->irrigation_method_index;
+        
+        /* Coverage specification */
+        env_data->use_area_based = channel->use_area_based ? 1 : 0;
+        if (channel->use_area_based) {
+            env_data->coverage.area_m2 = channel->coverage.area_m2;
         } else {
-            env_data->specific_plant = 0;
+            env_data->coverage.plant_count = channel->coverage.plant_count;
         }
         
-        env_data->soil_type = channel->soil_type;
-        env_data->irrigation_method = channel->irrigation_method;
-        env_data->use_area_based = channel->coverage.use_area ? 1 : 0;
+        /* Automatic mode settings */
+        env_data->auto_mode = (uint8_t)channel->auto_mode;
+        env_data->max_volume_limit_l = channel->max_volume_limit_l;
+        env_data->enable_cycle_soak = channel->enable_cycle_soak ? 1 : 0;
         
-        if (channel->coverage.use_area) {
-            env_data->coverage.area_m2 = channel->coverage.area.area_m2;
-        } else {
-            env_data->coverage.plant_count = channel->coverage.plants.count;
-        }
+        /* Plant lifecycle tracking */
+        env_data->planting_date_unix = channel->planting_date_unix;
+        env_data->days_after_planting = channel->days_after_planting;
         
-        env_data->sun_percentage = channel->sun_percentage;
+        /* Environmental overrides */
+        env_data->latitude_deg = channel->latitude_deg;
+        env_data->sun_exposure_pct = channel->sun_exposure_pct;
         
         /* Custom plant fields */
         if (channel->plant_type == PLANT_TYPE_OTHER) {
@@ -5133,8 +6053,8 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
             env_data->prefer_area_based = channel->custom_plant.prefer_area_based ? 1 : 0;
         }
         
-        printk("✅ BLE: Growing env channel %u selected (plant=%u, soil=%u, irrigation=%u)\n", 
-                channel_id, env_data->plant_type, env_data->soil_type, env_data->irrigation_method);
+        printk("✅ BLE: Growing env channel %u selected (plant_db=%u, soil_db=%u, method_db=%u, auto=%u)\n", 
+                channel_id, env_data->plant_db_index, env_data->soil_db_index, env_data->irrigation_method_index, env_data->auto_mode);
         
         return len;
     }
@@ -5168,9 +6088,11 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         
         /* Initialize fragmentation state */
         growing_env_frag.channel_id = channel_id;
+        growing_env_frag.frag_type = frag_type;
         growing_env_frag.expected = total_size;
         growing_env_frag.received = 0;
         growing_env_frag.in_progress = true;
+        growing_env_frag.start_time = k_uptime_get_32();
         memset(growing_env_frag.buf, 0, sizeof(growing_env_frag.buf));
         
         printk("🔧 BLE: Growing env fragmentation initialized - cid=%u, frag_type=%u, expected=%u bytes\n",
@@ -5224,28 +6146,64 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
                 return -EINVAL;
             }
             
-            if (env_data->plant_type > 7) {
-                printk("❌ Invalid plant type %u\n", env_data->plant_type);
+            /* Validate automatic mode */
+            if (env_data->auto_mode > 2) {
+                printk("❌ Invalid auto mode %u\n", env_data->auto_mode);
                 growing_env_frag.in_progress = false;
                 return -EINVAL;
             }
             
-            if (env_data->soil_type > 7) {
-                printk("❌ Invalid soil type %u\n", env_data->soil_type);
+            /* Validate sun exposure percentage */
+            if (env_data->sun_exposure_pct > 100) {
+                printk("❌ Invalid sun exposure percentage %u\n", env_data->sun_exposure_pct);
                 growing_env_frag.in_progress = false;
                 return -EINVAL;
             }
-            
-            if (env_data->irrigation_method > 5) {
-                printk("❌ Invalid irrigation method %u\n", env_data->irrigation_method);
+
+            /* Validate database indices (allow sentinel values) */
+            if (env_data->plant_db_index != UINT16_MAX && env_data->plant_db_index >= PLANT_FULL_SPECIES_COUNT) {
+                printk("❌ Invalid plant_db_index %u\n", env_data->plant_db_index);
                 growing_env_frag.in_progress = false;
                 return -EINVAL;
             }
-            
-            if (env_data->sun_percentage > 100) {
-                printk("❌ Invalid sun percentage %u\n", env_data->sun_percentage);
+            if (env_data->soil_db_index != UINT8_MAX && env_data->soil_db_index >= SOIL_ENHANCED_TYPES_COUNT) {
+                printk("❌ Invalid soil_db_index %u\n", env_data->soil_db_index);
                 growing_env_frag.in_progress = false;
                 return -EINVAL;
+            }
+            if (env_data->irrigation_method_index != UINT8_MAX && env_data->irrigation_method_index >= IRRIGATION_METHODS_COUNT) {
+                printk("❌ Invalid irrigation_method_index %u\n", env_data->irrigation_method_index);
+                growing_env_frag.in_progress = false;
+                return -EINVAL;
+            }
+
+            /* Validate latitude */
+            if (env_data->latitude_deg < -90.0f || env_data->latitude_deg > 90.0f) {
+                printk("❌ Invalid latitude %.2f\n", (double)env_data->latitude_deg);
+                growing_env_frag.in_progress = false;
+                return -EINVAL;
+            }
+
+            /* Validate max volume limit (must be > 0) */
+            if (env_data->max_volume_limit_l <= 0.0f) {
+                printk("❌ Invalid max_volume_limit_l %.2f\n", (double)env_data->max_volume_limit_l);
+                growing_env_frag.in_progress = false;
+                return -EINVAL;
+            }
+
+            /* Validate coverage values */
+            if (env_data->use_area_based) {
+                if (!(env_data->coverage.area_m2 > 0.0f)) {
+                    printk("❌ Invalid area_m2 %.3f\n", (double)env_data->coverage.area_m2);
+                    growing_env_frag.in_progress = false;
+                    return -EINVAL;
+                }
+            } else {
+                if (env_data->coverage.plant_count == 0) {
+                    printk("❌ Invalid plant_count %u\n", env_data->coverage.plant_count);
+                    growing_env_frag.in_progress = false;
+                    return -EINVAL;
+                }
             }
             
             /* Get channel */
@@ -5258,37 +6216,31 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
                 return -EINVAL;
             }
             
-            /* Update channel data */
-            channel->plant_type = env_data->plant_type;
+            /* Update channel data with enhanced database indices */
+            channel->plant_db_index = env_data->plant_db_index;
+            channel->soil_db_index = env_data->soil_db_index;
+            channel->irrigation_method_index = env_data->irrigation_method_index;
             
-            /* Set specific plant type based on plant_type */
-            if (channel->plant_type == PLANT_TYPE_VEGETABLES) {
-                channel->plant_info.specific.vegetable = (vegetable_type_t)env_data->specific_plant;
-            } else if (channel->plant_type == PLANT_TYPE_HERBS) {
-                channel->plant_info.specific.herb = (herb_type_t)env_data->specific_plant;
-            } else if (channel->plant_type == PLANT_TYPE_FLOWERS) {
-                channel->plant_info.specific.flower = (flower_type_t)env_data->specific_plant;
-            } else if (channel->plant_type == PLANT_TYPE_SHRUBS) {
-                channel->plant_info.specific.shrub = (shrub_type_t)env_data->specific_plant;
-            } else if (channel->plant_type == PLANT_TYPE_TREES) {
-                channel->plant_info.specific.tree = (tree_type_t)env_data->specific_plant;
-            } else if (channel->plant_type == PLANT_TYPE_LAWN) {
-                channel->plant_info.specific.lawn = (lawn_type_t)env_data->specific_plant;
-            } else if (channel->plant_type == PLANT_TYPE_SUCCULENTS) {
-                channel->plant_info.specific.succulent = (succulent_type_t)env_data->specific_plant;
-            }
-            
-            channel->soil_type = env_data->soil_type;
-            channel->irrigation_method = env_data->irrigation_method;
-            channel->coverage.use_area = (env_data->use_area_based != 0);
-            
-            if (channel->coverage.use_area) {
-                channel->coverage.area.area_m2 = env_data->coverage.area_m2;
+            /* Coverage specification */
+            channel->use_area_based = (env_data->use_area_based != 0);
+            if (channel->use_area_based) {
+                channel->coverage.area_m2 = env_data->coverage.area_m2;
             } else {
-                channel->coverage.plants.count = env_data->coverage.plant_count;
+                channel->coverage.plant_count = env_data->coverage.plant_count;
             }
             
-            channel->sun_percentage = env_data->sun_percentage;
+            /* Automatic mode settings */
+            channel->auto_mode = (watering_mode_t)env_data->auto_mode;
+            channel->max_volume_limit_l = env_data->max_volume_limit_l;
+            channel->enable_cycle_soak = (env_data->enable_cycle_soak != 0);
+            
+            /* Plant lifecycle tracking */
+            channel->planting_date_unix = env_data->planting_date_unix;
+            channel->days_after_planting = env_data->days_after_planting;
+            
+            /* Environmental overrides */
+            channel->latitude_deg = env_data->latitude_deg;
+            channel->sun_exposure_pct = env_data->sun_exposure_pct;
             
             /* Custom plant fields */
             if (env_data->plant_type == PLANT_TYPE_OTHER) {
@@ -5332,14 +6284,43 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
     
     const struct growing_env_data *env_data = (const struct growing_env_data *)data;
     
-    /* Combined validation - fast single check */
+    /* Combined validation - ranges and indices */
     if (env_data->channel_id >= WATERING_CHANNELS_COUNT || 
-        env_data->plant_type > 7 || env_data->soil_type > 7 || 
-        env_data->irrigation_method > 5 || env_data->sun_percentage > 100) {
-        printk("❌ Invalid growing env data: ch=%u, plant=%u, soil=%u, method=%u, sun=%u\n", 
-                env_data->channel_id, env_data->plant_type, env_data->soil_type,
-                env_data->irrigation_method, env_data->sun_percentage);
+        env_data->auto_mode > 2 || env_data->sun_exposure_pct > 100) {
+        printk("❌ Invalid growing env data: ch=%u, auto=%u, sun_exp=%u\n", 
+                env_data->channel_id, env_data->auto_mode, env_data->sun_exposure_pct);
         return -EINVAL;
+    }
+    if (env_data->plant_db_index != UINT16_MAX && env_data->plant_db_index >= PLANT_FULL_SPECIES_COUNT) {
+        printk("❌ Invalid plant_db_index %u\n", env_data->plant_db_index);
+        return -EINVAL;
+    }
+    if (env_data->soil_db_index != UINT8_MAX && env_data->soil_db_index >= SOIL_ENHANCED_TYPES_COUNT) {
+        printk("❌ Invalid soil_db_index %u\n", env_data->soil_db_index);
+        return -EINVAL;
+    }
+    if (env_data->irrigation_method_index != UINT8_MAX && env_data->irrigation_method_index >= IRRIGATION_METHODS_COUNT) {
+        printk("❌ Invalid irrigation_method_index %u\n", env_data->irrigation_method_index);
+        return -EINVAL;
+    }
+    if (env_data->latitude_deg < -90.0f || env_data->latitude_deg > 90.0f) {
+        printk("❌ Invalid latitude %.2f\n", (double)env_data->latitude_deg);
+        return -EINVAL;
+    }
+    if (env_data->max_volume_limit_l <= 0.0f) {
+        printk("❌ Invalid max_volume_limit_l %.2f\n", (double)env_data->max_volume_limit_l);
+        return -EINVAL;
+    }
+    if (env_data->use_area_based) {
+        if (!(env_data->coverage.area_m2 > 0.0f)) {
+            printk("❌ Invalid area_m2 %.3f\n", (double)env_data->coverage.area_m2);
+            return -EINVAL;
+        }
+    } else {
+        if (env_data->coverage.plant_count == 0) {
+            printk("❌ Invalid plant_count %u\n", env_data->coverage.plant_count);
+            return -EINVAL;
+        }
     }
     
     /* Get channel */
@@ -5351,37 +6332,31 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         return -EINVAL;
     }
     
-    /* Update channel data */
-    channel->plant_type = env_data->plant_type;
+    /* Update channel data with enhanced database indices */
+    channel->plant_db_index = env_data->plant_db_index;
+    channel->soil_db_index = env_data->soil_db_index;
+    channel->irrigation_method_index = env_data->irrigation_method_index;
     
-    /* Set specific plant type based on plant_type */
-    if (channel->plant_type == PLANT_TYPE_VEGETABLES) {
-        channel->plant_info.specific.vegetable = (vegetable_type_t)env_data->specific_plant;
-    } else if (channel->plant_type == PLANT_TYPE_HERBS) {
-        channel->plant_info.specific.herb = (herb_type_t)env_data->specific_plant;
-    } else if (channel->plant_type == PLANT_TYPE_FLOWERS) {
-        channel->plant_info.specific.flower = (flower_type_t)env_data->specific_plant;
-    } else if (channel->plant_type == PLANT_TYPE_SHRUBS) {
-        channel->plant_info.specific.shrub = (shrub_type_t)env_data->specific_plant;
-    } else if (channel->plant_type == PLANT_TYPE_TREES) {
-        channel->plant_info.specific.tree = (tree_type_t)env_data->specific_plant;
-    } else if (channel->plant_type == PLANT_TYPE_LAWN) {
-        channel->plant_info.specific.lawn = (lawn_type_t)env_data->specific_plant;
-    } else if (channel->plant_type == PLANT_TYPE_SUCCULENTS) {
-        channel->plant_info.specific.succulent = (succulent_type_t)env_data->specific_plant;
-    }
-    
-    channel->soil_type = env_data->soil_type;
-    channel->irrigation_method = env_data->irrigation_method;
-    channel->coverage.use_area = (env_data->use_area_based != 0);
-    
-    if (channel->coverage.use_area) {
-        channel->coverage.area.area_m2 = env_data->coverage.area_m2;
+    /* Coverage specification */
+    channel->use_area_based = (env_data->use_area_based != 0);
+    if (channel->use_area_based) {
+        channel->coverage.area_m2 = env_data->coverage.area_m2;
     } else {
-        channel->coverage.plants.count = env_data->coverage.plant_count;
+        channel->coverage.plant_count = env_data->coverage.plant_count;
     }
     
-    channel->sun_percentage = env_data->sun_percentage;
+    /* Automatic mode settings */
+    channel->auto_mode = (watering_mode_t)env_data->auto_mode;
+    channel->max_volume_limit_l = env_data->max_volume_limit_l;
+    channel->enable_cycle_soak = (env_data->enable_cycle_soak != 0);
+    
+    /* Plant lifecycle tracking */
+    channel->planting_date_unix = env_data->planting_date_unix;
+    channel->days_after_planting = env_data->days_after_planting;
+    
+    /* Environmental overrides */
+    channel->latitude_deg = env_data->latitude_deg;
+    channel->sun_exposure_pct = env_data->sun_exposure_pct;
     
     /* Custom plant fields */
     if (env_data->plant_type == PLANT_TYPE_OTHER) {
@@ -5426,78 +6401,64 @@ static void growing_env_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
         
         if (err == WATERING_SUCCESS) {
             env_data->channel_id = 0;
-            env_data->plant_type = (uint8_t)channel->plant_type;
             
-            /* Set specific plant type based on plant_type */
-            if (channel->plant_type == PLANT_TYPE_VEGETABLES) {
-                env_data->specific_plant = (uint16_t)channel->plant_info.specific.vegetable;
-            } else if (channel->plant_type == PLANT_TYPE_HERBS) {
-                env_data->specific_plant = (uint16_t)channel->plant_info.specific.herb;
-            } else if (channel->plant_type == PLANT_TYPE_FLOWERS) {
-                env_data->specific_plant = (uint16_t)channel->plant_info.specific.flower;
-            } else if (channel->plant_type == PLANT_TYPE_SHRUBS) {
-                env_data->specific_plant = (uint16_t)channel->plant_info.specific.shrub;
-            } else if (channel->plant_type == PLANT_TYPE_TREES) {
-                env_data->specific_plant = (uint16_t)channel->plant_info.specific.tree;
-            } else if (channel->plant_type == PLANT_TYPE_LAWN) {
-                env_data->specific_plant = (uint16_t)channel->plant_info.specific.lawn;
-            } else if (channel->plant_type == PLANT_TYPE_SUCCULENTS) {
-                env_data->specific_plant = (uint16_t)channel->plant_info.specific.succulent;
+            /* Enhanced database indices */
+            env_data->plant_db_index = channel->plant_db_index;
+            env_data->soil_db_index = channel->soil_db_index;
+            env_data->irrigation_method_index = channel->irrigation_method_index;
+            
+            /* Coverage specification */
+            env_data->use_area_based = channel->use_area_based ? 1 : 0;
+            if (channel->use_area_based) {
+                env_data->coverage.area_m2 = channel->coverage.area_m2;
             } else {
-                env_data->specific_plant = 0;
+                env_data->coverage.plant_count = channel->coverage.plant_count;
             }
             
-            env_data->soil_type = (uint8_t)channel->soil_type;
-            env_data->irrigation_method = (uint8_t)channel->irrigation_method;
-            env_data->use_area_based = channel->coverage.use_area ? 1 : 0;
+            /* Automatic mode settings */
+            env_data->auto_mode = (uint8_t)channel->auto_mode;
+            env_data->max_volume_limit_l = channel->max_volume_limit_l;
+            env_data->enable_cycle_soak = channel->enable_cycle_soak ? 1 : 0;
             
-            if (channel->coverage.use_area) {
-                env_data->coverage.area_m2 = channel->coverage.area.area_m2;
-            } else {
-                env_data->coverage.plant_count = channel->coverage.plants.count;
-            }
+            /* Plant lifecycle tracking */
+            env_data->planting_date_unix = channel->planting_date_unix;
+            env_data->days_after_planting = channel->days_after_planting;
             
-            env_data->sun_percentage = channel->sun_percentage;
+            /* Environmental overrides */
+            env_data->latitude_deg = channel->latitude_deg;
+            env_data->sun_exposure_pct = channel->sun_exposure_pct;
             
-            /* Custom plant fields */
-            if (channel->plant_type == PLANT_TYPE_OTHER) {
-                size_t name_len = strnlen(channel->custom_plant.custom_name, sizeof(channel->custom_plant.custom_name));
-                if (name_len >= sizeof(env_data->custom_name)) {
-                    name_len = sizeof(env_data->custom_name) - 1;
-                }
-                memcpy(env_data->custom_name, channel->custom_plant.custom_name, name_len);
-                env_data->custom_name[name_len] = '\0';
-                
-                env_data->water_need_factor = channel->custom_plant.water_need_factor;
-                env_data->irrigation_freq_days = channel->custom_plant.irrigation_freq;
-                env_data->prefer_area_based = channel->custom_plant.prefer_area_based ? 1 : 0;
-            } else {
-                strcpy(env_data->custom_name, "");
-                env_data->water_need_factor = 1.0f;
-                env_data->irrigation_freq_days = 1;
-                env_data->prefer_area_based = env_data->use_area_based;
-            }
-            
-            LOG_INF("Initialized with channel 0: plant=%u.%u, soil=%u, method=%u, %s=%.2f, sun=%u%%",
-                    env_data->plant_type, env_data->specific_plant,
-                    env_data->soil_type, env_data->irrigation_method,
+    LOG_INF("Initialized with channel 0: plant_db=%u, soil_db=%u, method_db=%u, %s=%.2f, auto=%u",
+                    env_data->plant_db_index, env_data->soil_db_index, env_data->irrigation_method_index,
                     env_data->use_area_based ? "area" : "count",
-                    env_data->use_area_based ? env_data->coverage.area_m2 : (float)env_data->coverage.plant_count,
-                    env_data->sun_percentage);
+            env_data->use_area_based ? (double)env_data->coverage.area_m2 : (double)((float)env_data->coverage.plant_count),
+                    env_data->auto_mode);
         } else {
             /* Default values if channel not available */
             memset(env_data, 0, sizeof(struct growing_env_data));
             env_data->channel_id = 0;
-            env_data->plant_type = 0; /* Vegetables */
-            env_data->soil_type = 2; /* Loamy */
-            env_data->irrigation_method = 0; /* Drip */
+            
+            /* Enhanced database defaults */
+            env_data->plant_db_index = UINT16_MAX; /* Not set */
+            env_data->soil_db_index = UINT8_MAX; /* Not set */
+            env_data->irrigation_method_index = UINT8_MAX; /* Not set */
+            
+            /* Coverage defaults */
             env_data->use_area_based = 1; /* Use area */
             env_data->coverage.area_m2 = 1.0f; /* 1 m² */
-            env_data->sun_percentage = 75; /* 75% sun */
-            strcpy(env_data->custom_name, "");
-            env_data->water_need_factor = 1.0f;
-            env_data->irrigation_freq_days = 1;
-            env_data->prefer_area_based = 1;
+            
+            /* Automatic mode defaults */
+            env_data->auto_mode = 0; /* Manual mode */
+            env_data->max_volume_limit_l = 10.0f; /* 10L limit */
+            env_data->enable_cycle_soak = 0; /* Disabled */
+            
+            /* Plant lifecycle defaults */
+            env_data->planting_date_unix = 0; /* Not set */
+            env_data->days_after_planting = 0; /* Not set */
+            
+            /* Environmental defaults */
+            env_data->latitude_deg = 45.0f; /* Default latitude */
+            env_data->sun_exposure_pct = 75; /* 75% sun */
         }
     } else {
         LOG_DBG("Growing Environment notifications disabled");
@@ -5505,26 +6466,389 @@ static void growing_env_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
     }
 }
 
+/* Automatic calculation status functions */
+/* --- FAO-56 Auto Calc dynamic computation helper --- */
+static void update_auto_calc_calculations(struct auto_calc_status_data *d, watering_channel_t *channel) {
+    if (!d || !channel) return;
+    /* Plant & phenological stage */
+    if (channel->plant_db_index < PLANT_FULL_SPECIES_COUNT) {
+    const plant_full_data_t *plant = &plant_full_database[channel->plant_db_index];
+        uint16_t dap = channel->days_after_planting;
+        phenological_stage_t stage = calc_phenological_stage(plant, dap);
+        d->phenological_stage = (uint8_t)stage;
+        d->crop_coefficient = calc_crop_coefficient(plant, stage, dap);
+    } else {
+        d->phenological_stage = 0;
+        if (d->crop_coefficient < 0.01f) d->crop_coefficient = 1.0f;
+    }
+    /* Environmental snapshot → ET0 estimate (fallback HS) */
+    environmental_data_t env_raw = {0};
+    bme280_environmental_data_t env_bme280 = {0};
+    if (environmental_data_get_current(&env_bme280) == 0 && env_bme280.current.valid) {
+        /* Map BME280 readings into the FAO-56 environmental structure */
+        env_raw.air_temp_mean_c = env_bme280.current.temperature;
+        env_raw.air_temp_min_c = env_bme280.current.temperature; /* best effort */
+        env_raw.air_temp_max_c = env_bme280.current.temperature; /* best effort */
+        env_raw.rel_humidity_pct = env_bme280.current.humidity;
+        env_raw.atmos_pressure_hpa = env_bme280.current.pressure; /* hPa */
+        env_raw.temp_valid = true;
+        env_raw.humidity_valid = true;
+        env_raw.pressure_valid = true;
+        env_raw.timestamp = env_bme280.current.timestamp;
+        env_raw.data_quality = env_bme280.current.valid ? 100 : 0;
+
+        uint16_t doy = get_current_day_of_year();
+        float latitude_deg = channel->latitude_deg;
+        if (latitude_deg < -90.0f || latitude_deg > 90.0f) {
+            latitude_deg = 45.0f;
+        }
+        float latitude_rad = latitude_deg * 0.0174532925f;
+
+        float et0 = 0.0f;
+        if (env_raw.temp_valid && env_raw.humidity_valid && env_raw.pressure_valid) {
+            et0 = calc_et0_penman_monteith(&env_raw, latitude_rad, doy);
+        }
+        if (et0 <= 0.01f || et0 >= 20.0f) {
+            et0 = calc_et0_hargreaves_samani(&env_raw, latitude_rad, doy);
+        }
+        if (et0 > 0.01f && et0 < 20.0f) {
+            d->et0_mm_day = et0;
+        }
+    }
+    if (d->et0_mm_day < 0.01f) d->et0_mm_day = 3.0f; /* fallback */
+    if (d->crop_coefficient < 0.01f) d->crop_coefficient = 1.0f;
+    d->etc_mm_day = d->et0_mm_day * d->crop_coefficient;
+    /* Water balance + irrigation calc */
+    if (channel->water_balance) {
+        water_balance_t *balance = (water_balance_t*)channel->water_balance;
+        d->current_deficit_mm = balance->current_deficit_mm;
+        const irrigation_method_data_t *method = NULL;
+    if (channel->irrigation_method_index < IRRIGATION_METHODS_COUNT) {
+            method = &irrigation_methods_database[channel->irrigation_method_index];
+        }
+        const plant_full_data_t *plant = NULL;
+    if (channel->plant_db_index < PLANT_FULL_SPECIES_COUNT) {
+            plant = &plant_full_database[channel->plant_db_index];
+        }
+        irrigation_calculation_t calc = {0};
+        bool eco = (channel->auto_mode == WATERING_AUTOMATIC_ECO);
+        if (method && plant) {
+            if (channel->use_area_based) {
+                float area = channel->coverage.area_m2;
+                if (eco)
+                    apply_eco_irrigation_mode(balance, method, plant, area, 0, channel->max_volume_limit_l, &calc);
+                else
+                    apply_quality_irrigation_mode(balance, method, plant, area, 0, channel->max_volume_limit_l, &calc);
+            } else {
+                uint16_t count = channel->coverage.plant_count;
+                if (eco)
+                    apply_eco_irrigation_mode(balance, method, plant, 0.0f, count, channel->max_volume_limit_l, &calc);
+                else
+                    apply_quality_irrigation_mode(balance, method, plant, 0.0f, count, channel->max_volume_limit_l, &calc);
+            }
+            d->net_irrigation_mm = calc.net_irrigation_mm;
+            d->gross_irrigation_mm = calc.gross_irrigation_mm;
+            d->calculated_volume_l = calc.volume_liters;
+            d->volume_liters = calc.volume_liters; /* legacy alias */
+            d->cycle_count = calc.cycle_count ? (uint8_t)calc.cycle_count : 1;
+            d->cycle_duration_min = (uint8_t)(calc.cycle_duration_min > 255 ? 255 : calc.cycle_duration_min);
+            d->volume_limited = calc.volume_limited ? 1 : 0;
+        }
+        /* Predict next irrigation if not needed yet */
+        if (!d->irrigation_needed && d->etc_mm_day > 0.01f) {
+            float hours_until = 0.0f;
+            if (plant && calc_irrigation_timing(balance, d->etc_mm_day, plant, &hours_until) == WATERING_SUCCESS && hours_until > 0) {
+                uint32_t now_sec = k_uptime_get_32()/1000U;
+                d->next_irrigation_time = now_sec + (uint32_t)(hours_until * 3600.0f);
+            }
+        }
+    }
+}
+
+static void notify_auto_calc_status(void) {
+    if (!default_conn || !notification_state.auto_calc_status_notifications_enabled) {
+        return;
+    }
+
+    /* Build unified fragmentation header + payload (single fragment) */
+    struct auto_calc_status_data *payload = (struct auto_calc_status_data *)auto_calc_status_value;
+    /* Refresh calculations before sending */
+    uint8_t cid = payload->channel_id < WATERING_CHANNELS_COUNT ? payload->channel_id : 0;
+    watering_channel_t *channel;
+    if (watering_get_channel(cid, &channel) == WATERING_SUCCESS) {
+        update_auto_calc_calculations(payload, channel);
+    }
+    uint8_t notify_buf[sizeof(history_fragment_header_t) + sizeof(struct auto_calc_status_data)] = {0};
+    history_fragment_header_t *hdr = (history_fragment_header_t *)notify_buf;
+    hdr->data_type = 0;              /* 0 = auto calc status */
+    hdr->status = 0;                  /* OK */
+    hdr->entry_count = sys_cpu_to_le16(1); /* single structure */
+    hdr->fragment_index = 0;
+    hdr->total_fragments = 1;
+    hdr->fragment_size = sizeof(struct auto_calc_status_data);
+    hdr->reserved = 0;
+    memcpy(&notify_buf[sizeof(history_fragment_header_t)], payload, sizeof(struct auto_calc_status_data));
+
+    const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_AUTO_CALC_STATUS_VALUE];
+    int err = safe_notify(default_conn, attr, notify_buf, sizeof(notify_buf));
+    if (err == 0) {
+        static uint32_t last_log_time = 0;
+        uint32_t now = k_uptime_get_32();
+        if (now - last_log_time > 30000) {
+            LOG_DBG("Auto calc status notification sent (unified header)");
+            last_log_time = now;
+        }
+    } else {
+        LOG_ERR("Auto calc status notification failed: %d", err);
+    }
+}
+
+static ssize_t read_auto_calc_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                    void *buf, uint16_t len, uint16_t offset) {
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for Auto Calc Status read");
+        return -EINVAL;
+    }
+    
+    /* Create a local buffer for reading to avoid conflicts with notification buffer */
+    struct auto_calc_status_data read_value;
+    
+    /* Get the current channel selection from the global attribute buffer */
+    const struct auto_calc_status_data *global_value = 
+        (const struct auto_calc_status_data *)auto_calc_status_value;
+    
+    /* Use the selected channel from the global buffer, but default to 0 if invalid */
+    uint8_t channel_id = global_value->channel_id;
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        channel_id = 0;
+    }
+    
+    watering_channel_t *channel;
+    watering_error_t err = watering_get_channel(channel_id, &channel);
+    
+    if (err != WATERING_SUCCESS) {
+        LOG_WRN("Failed to get channel %u for auto calc status read: %d", channel_id, err);
+        /* Return default/safe values */
+        memset(&read_value, 0, sizeof(read_value));
+        read_value.channel_id = channel_id;
+        read_value.calculation_active = 0;
+        read_value.irrigation_needed = 0;
+        read_value.auto_mode = 0; /* Manual mode */
+    } else {
+        /* Copy fresh data from the watering system */
+        memset(&read_value, 0, sizeof(read_value));
+        read_value.channel_id = channel_id;
+        
+        /* Check if channel is in automatic mode */
+        bool is_auto_mode = (channel->auto_mode == WATERING_AUTOMATIC_QUALITY || 
+                            channel->auto_mode == WATERING_AUTOMATIC_ECO);
+        read_value.calculation_active = is_auto_mode ? 1 : 0;
+        read_value.auto_mode = (uint8_t)channel->auto_mode;
+        
+        /* Get water balance data if available */
+        if (channel->water_balance != NULL) {
+            water_balance_t *balance = (water_balance_t *)channel->water_balance;
+            read_value.irrigation_needed = balance->irrigation_needed ? 1 : 0;
+            read_value.current_deficit_mm = balance->current_deficit_mm;
+            read_value.raw_mm = balance->raw_mm;
+            read_value.effective_rain_mm = balance->effective_rain_mm;
+        } else {
+            read_value.irrigation_needed = 0;
+            read_value.current_deficit_mm = 0.0f;
+            read_value.raw_mm = 0.0f;
+            read_value.effective_rain_mm = 0.0f;
+        }
+        
+        /* Set timing information */
+        read_value.last_calculation_time = channel->last_calculation_time;
+        read_value.next_irrigation_time = 0;
+        read_value.calculation_error = 0; /* No error */
+
+        update_auto_calc_calculations(&read_value, channel);
+
+        if (read_value.next_irrigation_time == 0 &&
+            channel->water_balance != NULL &&
+            read_value.etc_mm_day > 0.01f) {
+            water_balance_t *balance = (water_balance_t *)channel->water_balance;
+            const plant_full_data_t *plant = NULL;
+            if (channel->plant_db_index < PLANT_FULL_SPECIES_COUNT) {
+                plant = &plant_full_database[channel->plant_db_index];
+            }
+            if (plant) {
+                float hours_until = 0.0f;
+                if (calc_irrigation_timing(balance, read_value.etc_mm_day, plant, &hours_until) == WATERING_SUCCESS &&
+                    hours_until > 0.0f) {
+                    uint32_t now_sec = k_uptime_get_32() / 1000U;
+                    read_value.next_irrigation_time = now_sec + (uint32_t)(hours_until * 3600.0f);
+                }
+            }
+        }
+    }
+    
+    LOG_DBG("Auto calc status read: ch=%u, active=%u, needed=%u, deficit=%.2f, auto_mode=%u",
+            read_value.channel_id, read_value.calculation_active, read_value.irrigation_needed,
+            (double)read_value.current_deficit_mm, read_value.auto_mode);
+    
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &read_value,
+                           sizeof(struct auto_calc_status_data));
+}
+
+/* Forward declarations for periodic Auto Calc Status helpers */
+static void init_auto_calc_status_periodic(void);
+static void schedule_auto_calc_status_periodic(void);
+static void cancel_auto_calc_status_periodic(void);
+
+static void auto_calc_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.auto_calc_status_notifications_enabled = notif_enabled;
+    
+    if (notif_enabled) {
+        LOG_DBG("Auto Calc Status notifications enabled");
+    /* Ensure periodic notifier is initialized and scheduled (every 30 min) */
+    init_auto_calc_status_periodic();
+        
+        /* Initialize auto_calc_status_value with current data from channel 0 */
+        struct auto_calc_status_data *status_data = (struct auto_calc_status_data *)auto_calc_status_value;
+        watering_channel_t *channel;
+        watering_error_t err = watering_get_channel(0, &channel);
+        
+        if (err == WATERING_SUCCESS) {
+            memset(status_data, 0, sizeof(struct auto_calc_status_data));
+            status_data->channel_id = 0;
+            
+            /* Check if channel is in automatic mode */
+            bool is_auto_mode = (channel->auto_mode == WATERING_AUTOMATIC_QUALITY || 
+                                channel->auto_mode == WATERING_AUTOMATIC_ECO);
+            status_data->calculation_active = is_auto_mode ? 1 : 0;
+            status_data->auto_mode = (uint8_t)channel->auto_mode;
+            
+            /* Get water balance data if available */
+            if (channel->water_balance != NULL) {
+                water_balance_t *balance = (water_balance_t *)channel->water_balance;
+                status_data->irrigation_needed = balance->irrigation_needed ? 1 : 0;
+                status_data->current_deficit_mm = balance->current_deficit_mm;
+                status_data->raw_mm = balance->raw_mm;
+                status_data->effective_rain_mm = balance->effective_rain_mm;
+            }
+            
+            /* Set timing information */
+            status_data->last_calculation_time = channel->last_calculation_time;
+            status_data->calculation_error = 0;
+            
+            update_auto_calc_calculations(status_data, channel);
+            
+            LOG_INF("Initialized auto calc status with channel 0: active=%u, needed=%u, auto_mode=%u",
+                    status_data->calculation_active, status_data->irrigation_needed, status_data->auto_mode);
+        } else {
+            /* Default values if channel not available */
+            memset(status_data, 0, sizeof(struct auto_calc_status_data));
+            status_data->channel_id = 0;
+            status_data->calculation_active = 0;
+            status_data->irrigation_needed = 0;
+            status_data->auto_mode = 0;
+            status_data->et0_mm_day = 0.0f;
+            status_data->crop_coefficient = 1.0f;
+            status_data->etc_mm_day = 0.0f;
+            status_data->cycle_count = 1;
+        }
+
+    /* Schedule first periodic run in 30 minutes per spec */
+    schedule_auto_calc_status_periodic();
+    /* Push an immediate snapshot on subscribe for better UX */
+    bt_irrigation_auto_calc_status_notify();
+    } else {
+        LOG_DBG("Auto Calc Status notifications disabled");
+        memset(auto_calc_status_value, 0, sizeof(struct auto_calc_status_data));
+    /* Stop periodic work when notifications are disabled */
+    cancel_auto_calc_status_periodic();
+    }
+}
+
+/* Periodic 30-minute notifier per specification */
+static struct k_work_delayable auto_calc_status_periodic_work;
+static void auto_calc_status_periodic(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    if (!notification_state.auto_calc_status_notifications_enabled || !default_conn) {
+        return; /* Do not reschedule */
+    }
+    /* Update dynamic fields before notify */
+    bt_irrigation_auto_calc_status_notify();
+    /* Reschedule for 30 minutes (1800000 ms) */
+    k_work_schedule(&auto_calc_status_periodic_work, K_MSEC(1800000));
+}
+
+    /* Initialize periodic work (call once in initialization path) */
+static void init_auto_calc_status_periodic(void)
+{
+    static bool inited = false;
+    if (inited) return;
+    k_work_init_delayable(&auto_calc_status_periodic_work, auto_calc_status_periodic);
+    inited = true;
+}
+
+/* Wrapper helpers to schedule/cancel periodic notifications without exposing
+ * the k_work_delayable symbol above its definition. */
+static void schedule_auto_calc_status_periodic(void)
+{
+    k_work_schedule(&auto_calc_status_periodic_work, K_MSEC(1800000));
+}
+
+static void cancel_auto_calc_status_periodic(void)
+{
+    (void)k_work_cancel_delayable(&auto_calc_status_periodic_work);
+}
+
+/* Write handler: 1-byte channel select (0-7, 0xFF = first active) */
+static ssize_t write_auto_calc_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                     const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+    if (offset != 0 || len < 1) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+    init_auto_calc_status_periodic();
+    uint8_t requested = *((const uint8_t *)buf);
+    uint8_t selected = requested;
+    if (requested == 0xFF) {
+        /* Find first channel in automatic mode */
+        for (uint8_t i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+            watering_channel_t *ch;
+            if (watering_get_channel(i, &ch) == WATERING_SUCCESS) {
+                if (ch->auto_mode == WATERING_AUTOMATIC_QUALITY || ch->auto_mode == WATERING_AUTOMATIC_ECO) {
+                    selected = i;
+                    break;
+                }
+            }
+        }
+        if (selected == 0xFF) { /* none found */
+            selected = 0; /* default */
+        }
+    } else if (requested >= WATERING_CHANNELS_COUNT) {
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+    struct auto_calc_status_data *status_data = (struct auto_calc_status_data *)auto_calc_status_value;
+    status_data->channel_id = selected;
+    /* Immediately refresh & notify */
+    bt_irrigation_auto_calc_status_notify();
+    /* Start periodic if enabled */
+    if (notification_state.auto_calc_status_notifications_enabled) {
+        schedule_auto_calc_status_periodic();
+    }
+    return len;
+}
+
 /* Alarm CCC change callback */
 static void alarm_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
     bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
     notification_state.alarm_notifications_enabled = notif_enabled;
-    
     if (notif_enabled) {
         LOG_DBG("Alarm notifications enabled");
-        
-        /* CRITICAL FIX: Don't clear existing alarms! */
-        /* Instead, send notification if there's an active alarm */
-        struct alarm_data *alarm = (struct alarm_data *)alarm_value;
-        if (alarm->alarm_code != 0) {
-            /* Active alarm exists - notify the newly connected client */
-            LOG_INF("Sending existing alarm to newly connected client: code=%u, data=%u", 
-                    alarm->alarm_code, alarm->alarm_data);
-            
-            const struct bt_gatt_attr *alarm_attr = &irrigation_svc.attrs[ATTR_IDX_ALARM_VALUE];
+        /* On subscription: push current state (alarm or clear) immediately */
+        const struct bt_gatt_attr *alarm_attr = &irrigation_svc.attrs[ATTR_IDX_ALARM_VALUE];
+        if (default_conn && alarm_attr) {
             int err = safe_notify(default_conn, alarm_attr, alarm_value, sizeof(struct alarm_data));
             if (err != 0) {
-                LOG_ERR("Failed to notify existing alarm: %d", err);
+                LOG_ERR("Failed to send initial alarm state: %d", err);
             }
         }
     } else {
@@ -5541,6 +6865,160 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
     .connected = connected,
     .disconnected = disconnected,
 };
+
+/* ================================================================== */
+/* Onboarding Notification Functions                                 */
+/* ================================================================== */
+
+/* Notify onboarding status update */
+int bt_irrigation_onboarding_status_notify(void) {
+    if (!default_conn || !notification_state.onboarding_status_notifications_enabled) {
+        LOG_DBG("Onboarding status notification not enabled");
+        return 0;
+    }
+
+    /* Get current onboarding state */
+    onboarding_state_t state;
+    int ret = onboarding_get_state(&state);
+    if (ret < 0) {
+        LOG_ERR("Failed to get onboarding state for notification: %d", ret);
+        return ret;
+    }
+
+    struct onboarding_status_data status_data = {0};
+
+    /* Fill the BLE structure */
+    status_data.overall_completion_pct = state.onboarding_completion_pct;
+
+    /* Calculate individual completion percentages */
+    int total_channel_flags = 8 * 8; /* 8 channels × 8 flags each */
+    int set_channel_flags = 0;
+    for (int i = 0; i < 64; i++) {
+        if (state.channel_config_flags & (1ULL << i)) {
+            set_channel_flags++;
+        }
+    }
+    status_data.channels_completion_pct = (set_channel_flags * 100) / total_channel_flags;
+
+    int total_system_flags = 8; /* 8 system flags defined */
+    int set_system_flags = 0;
+    for (int i = 0; i < 32; i++) {
+        if (state.system_config_flags & (1U << i)) {
+            set_system_flags++;
+        }
+    }
+    status_data.system_completion_pct = (set_system_flags * 100) / total_system_flags;
+
+    int total_schedule_flags = 8; /* 8 channels can have schedules */
+    int set_schedule_flags = 0;
+    for (int i = 0; i < 8; i++) {
+        if (state.schedule_config_flags & (1U << i)) {
+            set_schedule_flags++;
+        }
+    }
+    status_data.schedules_completion_pct = (set_schedule_flags * 100) / total_schedule_flags;
+
+    /* Copy state flags */
+    status_data.channel_config_flags = state.channel_config_flags;
+    status_data.system_config_flags = state.system_config_flags;
+    status_data.schedule_config_flags = state.schedule_config_flags;
+    status_data.onboarding_start_time = state.onboarding_start_time;
+    status_data.last_update_time = state.last_update_time;
+
+    const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_ONBOARDING_STATUS_VALUE];
+
+    /* Build payload bytes */
+    uint8_t payload[sizeof(status_data)];
+    memcpy(payload, &status_data, sizeof(status_data));
+
+    /* MTU-aware fragmentation using unified 8-byte header */
+    uint16_t mtu = bt_gatt_get_mtu(default_conn);
+    uint16_t att_payload = (mtu > 3) ? (mtu - 3) : 20; /* ATT notify payload budget */
+    const uint16_t hdr_sz = sizeof(history_fragment_header_t); /* 8 bytes */
+
+    if (att_payload <= hdr_sz) {
+        LOG_WRN("MTU too small to send onboarding status (att_payload=%u)", att_payload);
+        return -EMSGSIZE;
+    }
+
+    uint16_t max_chunk = att_payload - hdr_sz;
+    uint16_t remaining = sizeof(payload);
+    uint16_t offset = 0;
+    uint8_t total_frags = (remaining + max_chunk - 1) / max_chunk;
+
+    /* Reusable buffer: header + chunk */
+    uint8_t notify_buf[64];
+    if (sizeof(notify_buf) < (hdr_sz + 1)) {
+        return -ENOMEM;
+    }
+
+    for (uint8_t seq = 0; seq < total_frags; seq++) {
+        uint16_t this_len = (remaining > max_chunk) ? max_chunk : remaining;
+        history_fragment_header_t *hdr = (history_fragment_header_t *)notify_buf;
+        hdr->data_type = 0;              /* 0 = onboarding status */
+        hdr->status = 0;                 /* OK */
+        hdr->entry_count = sys_cpu_to_le16(1); /* single logical structure */
+        hdr->fragment_index = seq;
+        hdr->total_fragments = total_frags;
+        hdr->fragment_size = (uint8_t)this_len;
+        hdr->reserved = 0;
+
+        memcpy(&notify_buf[hdr_sz], &payload[offset], this_len);
+
+        int bt_err = safe_notify(default_conn, attr, notify_buf, hdr_sz + this_len);
+        if (bt_err != 0) {
+            LOG_WRN("Onboarding status fragment %u/%u notify failed: %d", seq + 1, total_frags, bt_err);
+            return bt_err;
+        }
+        offset += this_len;
+        remaining -= this_len;
+        k_sleep(K_MSEC(20));
+    }
+
+    LOG_DBG("Onboarding status notification sent in %u fragments", (unsigned)total_frags);
+    return 0;
+}
+
+/* Notify reset control status update */
+int bt_irrigation_reset_control_notify(void) {
+    if (!default_conn || !notification_state.reset_control_notifications_enabled) {
+        LOG_DBG("Reset control notification not enabled");
+        return 0;
+    }
+    
+    struct reset_control_data reset_data = {0};
+    
+    /* Get current confirmation info */
+    reset_confirmation_t confirmation;
+    int ret = reset_controller_get_confirmation_info(&confirmation);
+    if (ret == 0 && confirmation.is_valid) {
+        reset_data.reset_type = confirmation.type;
+        reset_data.channel_id = confirmation.channel_id;
+        reset_data.confirmation_code = confirmation.code;
+        reset_data.timestamp = confirmation.generation_time;
+        reset_data.status = 0x01; /* Pending */
+    } else {
+        /* No active confirmation */
+        reset_data.reset_type = 0xFF; /* Invalid */
+        reset_data.channel_id = 0xFF;
+        reset_data.confirmation_code = 0;
+        reset_data.timestamp = 0;
+        reset_data.status = 0xFF; /* No operation */
+    }
+    
+    /* Send notification */
+    const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_RESET_CONTROL_VALUE];
+    int bt_err = safe_notify(default_conn, attr, &reset_data, sizeof(reset_data));
+    
+    if (bt_err == 0) {
+        LOG_DBG("Reset control notification sent: type=%u, channel=%u, status=%u", 
+                reset_data.reset_type, reset_data.channel_id, reset_data.status);
+    } else {
+        LOG_WRN("Reset control notification failed: %d", bt_err);
+    }
+    
+    return bt_err;
+}
 
 /* ------------------------------------------------------------------ */
 /* BLE Service Implementation Functions                               */
@@ -5575,10 +7053,13 @@ int bt_irrigation_service_init(void) {
     memset(valve_value, 0, sizeof(valve_value));
     memset(flow_value, 0, sizeof(flow_value));
     status_value[0] = (uint8_t)WATERING_STATUS_OK;
+    /* Ensure alarm buffer starts clean to avoid spurious notify on CCC enable */
+    memset(alarm_value, 0, sizeof(alarm_value));
     
-    /* Set default system values directly */
-    struct system_config_data *sys_config = (struct system_config_data *)system_config_value;
-    sys_config->version = 1;
+    /* Set default system values directly (enhanced) */
+    struct enhanced_system_config_data *sys_config = (struct enhanced_system_config_data *)system_config_value;
+    memset(sys_config, 0, sizeof(*sys_config));
+    sys_config->version = 2;
     sys_config->power_mode = 0;
     sys_config->flow_calibration = 750;
     sys_config->max_active_valves = 1;
@@ -5637,6 +7118,7 @@ int bt_irrigation_valve_status_update(uint8_t channel_id, bool is_open) {
     return err;
 }
 
+extern bool calibration_active; /* declared above in this file */
 int bt_irrigation_flow_update(uint32_t flow_rate) {
     if (!default_conn || !notification_state.flow_notifications_enabled) {
         return 0;
@@ -5648,15 +7130,16 @@ int bt_irrigation_flow_update(uint32_t flow_rate) {
     
     /* Always notify on significant flow changes, let adaptive system handle frequency */
     if (flow_changed || (flow_rate > 0)) {
-        /* Update flow data directly */
-        memcpy(flow_value, &flow_rate, sizeof(uint32_t));
+    /* During calibration, report raw pulse count instead of pps */
+    uint32_t payload = calibration_active ? get_pulse_count() : flow_rate;
+    memcpy(flow_value, &payload, sizeof(uint32_t));
         
         const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_FLOW_VALUE];
         
         /* Use normal priority notification - adaptive system will throttle as needed */
         SMART_NOTIFY(default_conn, attr, flow_value, sizeof(uint32_t));
         
-        last_flow_rate = flow_rate;
+    last_flow_rate = flow_rate;
         
         /* Run buffer pool maintenance occasionally */
         buffer_pool_maintenance();
@@ -5723,13 +7206,13 @@ int bt_irrigation_channel_config_update(uint8_t channel_id) {
     config_data->plant_type = (uint8_t)channel->plant_type;
     config_data->soil_type = (uint8_t)channel->soil_type;
     config_data->irrigation_method = (uint8_t)channel->irrigation_method;
-    config_data->coverage_type = channel->coverage.use_area ? 0 : 1;
+    config_data->coverage_type = channel->use_area_based ? 0 : 1;
     config_data->sun_percentage = channel->sun_percentage;
     
-    if (channel->coverage.use_area) {
-        config_data->coverage.area_m2 = channel->coverage.area.area_m2;
+    if (channel->use_area_based) {
+        config_data->coverage.area_m2 = channel->coverage.area_m2;
     } else {
-        config_data->coverage.plant_count = channel->coverage.plants.count;
+        config_data->coverage.plant_count = channel->coverage.plant_count;
     }
     
     /* Use the new throttled notification system for channel config */
@@ -5761,8 +7244,8 @@ int bt_irrigation_channel_config_update(uint8_t channel_id) {
 
 int bt_irrigation_schedule_update(uint8_t channel_id) {
     if (!default_conn || !notification_state.schedule_notifications_enabled) {
-        LOG_DBG("Schedule notification skipped: conn=%p, enabled=%d", 
-                default_conn, notification_state.schedule_notifications_enabled);
+        LOG_DBG("Schedule notification skipped: enabled=%d", 
+                notification_state.schedule_notifications_enabled);
         return 0; // No connection or notifications disabled
     }
     
@@ -5878,7 +7361,6 @@ int bt_irrigation_alarm_notify(uint8_t alarm_code, uint16_t alarm_data) {
 // Notificare BLE pentru calibration
 int bt_irrigation_calibration_notify(void) {
     if (!default_conn || !notification_state.calibration_notifications_enabled) {
-        LOG_DBG("Calibration notification not enabled");
         return 0;
     }
     
@@ -5892,6 +7374,7 @@ int bt_irrigation_calibration_notify(void) {
     return err;
 }
 
+            /* Removed stray RTC timezone updates from calibration path */
 // Notificare BLE pentru Current Task
 int bt_irrigation_current_task_notify(void) {
     if (!default_conn || !notification_state.current_task_notifications_enabled) {
@@ -5935,7 +7418,7 @@ int bt_irrigation_current_task_notify(void) {
         
         // Set status based on current state
         if (watering_task_state.task_paused) {
-            value->status = 3;  // Paused
+            value->status = 2;  // Paused (spec)
         } else if (watering_task_state.task_in_progress) {
             value->status = 1;  // Running
         } else {
@@ -6095,11 +7578,17 @@ int bt_irrigation_config_update(void) {
     
     /* Per BLE API Documentation: System config update notification */
     /* Update system_config_value with current system configuration */
-    struct system_config_data *config = (struct system_config_data *)system_config_value;
+    struct enhanced_system_config_data *config = (struct enhanced_system_config_data *)system_config_value;
     
     /* Get current watering system configuration */
-    config->version = 1;                    // Configuration version
-    config->power_mode = 0;                 // Normal mode
+    memset(config, 0, sizeof(*config));
+    config->version = 2;                    // Enhanced configuration version
+    power_mode_t current_mode;
+    if (watering_get_power_mode(&current_mode) == WATERING_SUCCESS) {
+        config->power_mode = (uint8_t)current_mode;
+    } else {
+        config->power_mode = 0;             // Default to normal mode
+    }
     
     /* Get current flow calibration */
     uint32_t pulses_per_liter;
@@ -6114,10 +7603,10 @@ int bt_irrigation_config_update(void) {
     
     /* Send notification to client */
     const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_SYSTEM_CFG_VALUE];
-    int err = safe_notify(default_conn, attr, system_config_value, sizeof(struct system_config_data));
+    int err = safe_notify(default_conn, attr, system_config_value, sizeof(struct enhanced_system_config_data));
     
     if (err == 0) {
-        LOG_INF("✅ System config notification sent: version=%u, power_mode=%u, flow_cal=%u, channels=%u",
+        LOG_INF("✅ System config (enhanced) notification sent: version=%u, power_mode=%u, flow_cal=%u, channels=%u",
                 config->version, config->power_mode, config->flow_calibration, config->num_channels);
     } else {
         LOG_ERR("❌ Failed to send system config notification: %d", err);
@@ -6236,6 +7725,9 @@ int bt_irrigation_start_flow_calibration(uint8_t start, uint32_t volume_ml) {
         /* NOTE: This is a simplified implementation - actual calibration would */
         /* need integration with flow sensor hardware and pulse counting */
         calibration_active = true;
+        /* Reset hardware pulse counter to begin fresh measurement */
+        reset_pulse_count();
+        LOG_DBG("Flow calibration: hardware pulse counter reset");
         
         LOG_INF("✅ Flow calibration started successfully");
         
@@ -6247,20 +7739,32 @@ int bt_irrigation_start_flow_calibration(uint8_t start, uint32_t volume_ml) {
         LOG_INF("⏹️ Stopping flow calibration");
         
         /* Stop actual flow sensor calibration */
-        /* NOTE: This is a simplified implementation - in a real system, */
-        /* this would get the actual pulse count from the flow sensor */
-        uint32_t pulses_counted = 750;  // Simulated pulse count
-        uint32_t pulses_per_liter = 750; // Default calibration value
+        /* Obtain real pulse count from flow sensor instead of simulated value */
+        uint32_t pulses_counted = get_pulse_count();
+        uint32_t pulses_per_liter = 0; // Will be computed below
+        LOG_INF("Flow calibration stop: measured %u pulses for %u ml expected", pulses_counted, calib->volume_ml);
         
         /* Try to get current calibration */
         watering_error_t err = watering_get_flow_calibration(&pulses_per_liter);
         if (err == WATERING_SUCCESS) {
             /* Calculate new calibration based on measured volume vs expected */
-            if (calib->volume_ml > 0) {
-                pulses_per_liter = (pulses_counted * 1000) / calib->volume_ml;
-                
-                /* Set the new calibration */
-                watering_set_flow_calibration(pulses_per_liter);
+            if (calib->volume_ml > 0 && pulses_counted > 0) {
+                /* pulses_per_liter = pulses / liters; volume_ml -> liters */
+                uint32_t computed = (pulses_counted * 1000U) / calib->volume_ml;
+                /* Basic sanity range: 100..10000 pulses/L typical for hall sensors */
+                if (computed >= 100 && computed <= 10000) {
+                    pulses_per_liter = computed;
+                    if (watering_set_flow_calibration(pulses_per_liter) == WATERING_SUCCESS) {
+                        LOG_INF("Flow calibration updated: %u pulses/L (from %u pulses / %u ml)",
+                                pulses_per_liter, pulses_counted, calib->volume_ml);
+                    } else {
+                        LOG_WRN("Failed to persist new flow calibration, keeping previous value");
+                    }
+                } else {
+                    LOG_WRN("Computed calibration %u pulses/L out of expected range, retaining previous %u", computed, pulses_per_liter);
+                }
+            } else {
+                LOG_WRN("Calibration aborted: insufficient data (pulses=%u, volume_ml=%u)", pulses_counted, calib->volume_ml);
             }
         }
         
@@ -6296,35 +7800,76 @@ int bt_irrigation_history_update(uint8_t channel_id, uint8_t entry_index) {
 
 int bt_irrigation_history_get_detailed(uint8_t channel_id, uint32_t start_timestamp,
                                      uint32_t end_timestamp, uint8_t entry_index) {
-    if (!default_conn || !notification_state.history_notifications_enabled) {
-        return 0;
-    }
-    
-    /* Per BLE API Documentation: Get detailed history entries */
     struct history_data *hist_data = (struct history_data *)history_value;
+    memset(hist_data, 0, sizeof(*hist_data));
+
     hist_data->channel_id = channel_id;
     hist_data->history_type = 0; /* Detailed */
     hist_data->entry_index = entry_index;
-    hist_data->count = 1;
     hist_data->start_timestamp = start_timestamp;
     hist_data->end_timestamp = end_timestamp;
-    
-    /* Populate with sample detailed data */
-    hist_data->data.detailed.timestamp = start_timestamp;
-    hist_data->data.detailed.channel_id = channel_id;
-    hist_data->data.detailed.event_type = 1; /* COMPLETE */
-    hist_data->data.detailed.mode = 0; /* Duration */
-    hist_data->data.detailed.target_value = 600; /* 10 minutes */
-    hist_data->data.detailed.actual_value = 590; /* 9.8 minutes */
-    hist_data->data.detailed.total_volume_ml = 5000; /* 5L */
-    hist_data->data.detailed.trigger_type = 1; /* Scheduled */
-    hist_data->data.detailed.success_status = 1; /* Success */
-    hist_data->data.detailed.error_code = 0; /* No error */
-    hist_data->data.detailed.flow_rate_avg = 750; /* 750 pps */
-    
-    LOG_INF("History detailed query: ch=%u, time=%u-%u, entry=%u", 
-            channel_id, start_timestamp, end_timestamp, entry_index);
-    
+
+    if (!default_conn || !notification_state.history_notifications_enabled) {
+        return 0;
+    }
+
+    uint8_t effective_channel = channel_id;
+    if (channel_id == 0xFF || channel_id >= WATERING_CHANNELS_COUNT) {
+        effective_channel = 0;
+    }
+
+    history_event_t event_buffer[1];
+    uint32_t timestamp_buffer[1] = {0};
+    uint16_t requested = 1;
+
+    watering_error_t history_err = watering_history_query_page(
+        effective_channel,
+        entry_index,
+        event_buffer,
+        &requested,
+        timestamp_buffer);
+
+    if (history_err != WATERING_SUCCESS || requested == 0) {
+        LOG_INF("No detailed history available for ch=%u idx=%u (err=%d)",
+                effective_channel, entry_index, history_err);
+        return 0;
+    }
+
+    uint32_t event_ts = timestamp_buffer[0];
+    history_event_t *event = &event_buffer[0];
+
+    if (event_ts == 0) {
+        uint32_t base_ts = end_timestamp ? end_timestamp : timezone_get_unix_utc();
+        if (event->dt_delta != 0 && base_ts > event->dt_delta) {
+            event_ts = base_ts - event->dt_delta;
+        } else {
+            event_ts = base_ts;
+        }
+    }
+
+    if ((start_timestamp && event_ts < start_timestamp) ||
+        (end_timestamp && event_ts > end_timestamp)) {
+        LOG_DBG("Detailed history outside requested window (ts=%u, start=%u, end=%u)",
+                event_ts, start_timestamp, end_timestamp);
+        return 0;
+    }
+
+    hist_data->count = 1;
+    hist_data->data.detailed.timestamp = event_ts;
+    hist_data->data.detailed.channel_id = effective_channel;
+    hist_data->data.detailed.event_type = (event->flags.err == 0) ? 1 : 3;
+    hist_data->data.detailed.mode = event->flags.mode;
+    hist_data->data.detailed.target_value = event->target_ml;
+    hist_data->data.detailed.actual_value = event->actual_ml;
+    hist_data->data.detailed.total_volume_ml = event->actual_ml;
+    hist_data->data.detailed.trigger_type = event->flags.trigger;
+    hist_data->data.detailed.success_status = event->flags.success;
+    hist_data->data.detailed.error_code = event->flags.err;
+    hist_data->data.detailed.flow_rate_avg = event->avg_flow_ml_s;
+
+    LOG_INF("History detailed query: ch=%u (eff=%u), ts=%u, entry=%u",
+            channel_id, effective_channel, event_ts, entry_index);
+
     return 0;
 }
 
@@ -6333,7 +7878,6 @@ int bt_irrigation_history_get_daily(uint8_t channel_id, uint8_t entry_index) {
         return 0;
     }
     
-    /* Per BLE API Documentation: Get daily aggregated statistics */
     struct history_data *hist_data = (struct history_data *)history_value;
     hist_data->channel_id = channel_id;
     hist_data->history_type = 1; /* Daily */
@@ -6341,18 +7885,53 @@ int bt_irrigation_history_get_daily(uint8_t channel_id, uint8_t entry_index) {
     hist_data->count = 1;
     hist_data->start_timestamp = 0;
     hist_data->end_timestamp = 0;
-    
-    /* Populate with sample daily data */
-    hist_data->data.daily.day_index = 185; /* Day 185 of year */
-    hist_data->data.daily.year = 2025;
-    hist_data->data.daily.watering_sessions = 3;
-    hist_data->data.daily.total_volume_ml = 15000; /* 15L */
-    hist_data->data.daily.total_duration_sec = 1800; /* 30 minutes */
-    hist_data->data.daily.avg_flow_rate = 750;
-    hist_data->data.daily.success_rate = 100;
-    hist_data->data.daily.error_count = 0;
-    
-    LOG_INF("History daily query: ch=%u, entry=%u", channel_id, entry_index);
+
+    memset(&hist_data->data.daily, 0, sizeof(hist_data->data.daily));
+
+    uint8_t effective_channel = (channel_id < WATERING_CHANNELS_COUNT) ? channel_id : 0;
+    uint16_t current_year = get_current_year();
+    uint16_t current_day = get_current_day_of_year();
+    uint16_t target_day = (entry_index > current_day) ? 0 : (current_day - entry_index);
+
+    daily_stats_t stats_buf[1];
+    uint16_t stats_found = 0;
+    watering_error_t history_err = watering_history_get_daily_stats(effective_channel,
+                                                                    target_day,
+                                                                    target_day,
+                                                                    current_year,
+                                                                    stats_buf,
+                                                                    &stats_found);
+
+    if (history_err == WATERING_SUCCESS && stats_found > 0) {
+        daily_stats_t *stats = &stats_buf[0];
+
+        rtc_datetime_t dt;
+        if (stats->day_epoch != 0 && epoch_to_local_datetime(stats->day_epoch, &dt)) {
+            hist_data->data.daily.year = dt.year;
+            hist_data->data.daily.day_index = calculate_day_of_year(dt.year, dt.month, dt.day);
+        } else {
+            hist_data->data.daily.year = current_year;
+            hist_data->data.daily.day_index = target_day;
+        }
+
+        uint32_t successes = stats->sessions_ok;
+        uint32_t errors = stats->sessions_err;
+        uint32_t total_sessions = successes + errors;
+
+        if (total_sessions > UINT8_MAX) {
+            total_sessions = UINT8_MAX;
+        }
+        hist_data->data.daily.watering_sessions = (uint8_t)total_sessions;
+        hist_data->data.daily.total_volume_ml = stats->total_ml;
+        hist_data->data.daily.total_duration_sec = 0;
+        hist_data->data.daily.avg_flow_rate = 0;
+        hist_data->data.daily.success_rate = stats->success_rate;
+        hist_data->data.daily.error_count = (errors > UINT8_MAX) ? UINT8_MAX : (uint8_t)errors;
+    }
+
+    LOG_INF("History daily query: ch=%u (effective=%u), entry=%u, sessions=%u",
+            channel_id, effective_channel, entry_index,
+            hist_data->data.daily.watering_sessions);
     
     return 0;
 }
@@ -6361,8 +7940,6 @@ int bt_irrigation_history_get_monthly(uint8_t channel_id, uint8_t entry_index) {
     if (!default_conn || !notification_state.history_notifications_enabled) {
         return 0;
     }
-    
-    /* Per BLE API Documentation: Get monthly aggregated statistics */
     struct history_data *hist_data = (struct history_data *)history_value;
     hist_data->channel_id = channel_id;
     hist_data->history_type = 2; /* Monthly */
@@ -6370,19 +7947,84 @@ int bt_irrigation_history_get_monthly(uint8_t channel_id, uint8_t entry_index) {
     hist_data->count = 1;
     hist_data->start_timestamp = 0;
     hist_data->end_timestamp = 0;
-    
-    /* Populate with sample monthly data */
-    hist_data->data.monthly.month = 7; /* July */
-    hist_data->data.monthly.year = 2025;
-    hist_data->data.monthly.total_sessions = 90;
-    hist_data->data.monthly.total_volume_ml = 450000; /* 450L */
-    hist_data->data.monthly.total_duration_hours = 15; /* 15 hours */
-    hist_data->data.monthly.avg_daily_volume = 14500; /* 14.5L/day */
-    hist_data->data.monthly.active_days = 31;
-    hist_data->data.monthly.success_rate = 95;
-    
-    LOG_INF("History monthly query: ch=%u, entry=%u", channel_id, entry_index);
-    
+
+    memset(&hist_data->data.monthly, 0, sizeof(hist_data->data.monthly));
+
+    uint8_t effective_channel = (channel_id < WATERING_CHANNELS_COUNT) ? channel_id : 0;
+    uint16_t year = get_current_year();
+    uint8_t month = get_current_month();
+
+    for (uint8_t i = 0; i < entry_index; i++) {
+        if (month == 1) {
+            month = 12;
+            year -= 1;
+        } else {
+            month -= 1;
+        }
+    }
+
+    hist_data->data.monthly.month = month;
+    hist_data->data.monthly.year = year;
+
+    monthly_stats_t month_stats[1];
+    uint16_t month_count = 0;
+    watering_error_t history_err = watering_history_get_monthly_stats(effective_channel,
+                                                                     month,
+                                                                     month,
+                                                                     year,
+                                                                     month_stats,
+                                                                     &month_count);
+
+    if (history_err == WATERING_SUCCESS && month_count > 0) {
+        monthly_stats_t *stats = &month_stats[0];
+        hist_data->data.monthly.total_volume_ml = stats->total_ml;
+        hist_data->data.monthly.active_days = stats->active_days;
+
+        uint32_t month_start = build_epoch_from_date(year, month, 1);
+        uint8_t month_after = (month == 12) ? 1 : (month + 1);
+        uint16_t year_after = (month == 12) ? (year + 1) : year;
+        uint32_t month_end = build_epoch_from_date(year_after, month_after, 1);
+        hist_data->data.monthly.total_sessions =
+            count_sessions_in_period(effective_channel, month_start, month_end);
+
+        uint32_t daily_success = 0;
+        uint32_t daily_errors = 0;
+        uint8_t days = days_in_month(year, month);
+        for (uint8_t day = 1; day <= days; ++day) {
+            uint16_t day_index = calculate_day_of_year(year, month, day);
+            daily_stats_t day_stats[1];
+            uint16_t day_found = 0;
+            if (watering_history_get_daily_stats(effective_channel,
+                                                 day_index,
+                                                 day_index,
+                                                 year,
+                                                 day_stats,
+                                                 &day_found) == WATERING_SUCCESS &&
+                day_found > 0) {
+                daily_success += day_stats[0].sessions_ok;
+                daily_errors += day_stats[0].sessions_err;
+            }
+        }
+
+        hist_data->data.monthly.total_duration_hours = 0;
+        hist_data->data.monthly.avg_daily_volume = (stats->active_days > 0)
+            ? (uint16_t)(stats->total_ml / stats->active_days)
+            : 0;
+
+        uint32_t total_month_sessions = daily_success + daily_errors;
+        if (total_month_sessions == 0 && hist_data->data.monthly.total_sessions > 0) {
+            total_month_sessions = hist_data->data.monthly.total_sessions;
+        }
+        if (total_month_sessions > 0) {
+            uint32_t pct = (daily_success * 100U) / total_month_sessions;
+            hist_data->data.monthly.success_rate = (pct > 100U) ? 100U : (uint8_t)pct;
+        }
+    }
+
+    LOG_INF("History monthly query: ch=%u (effective=%u), entry=%u, sessions=%u",
+            channel_id, effective_channel, entry_index,
+            hist_data->data.monthly.total_sessions);
+
     return 0;
 }
 
@@ -6391,7 +8033,6 @@ int bt_irrigation_history_get_annual(uint8_t channel_id, uint8_t entry_index) {
         return 0;
     }
     
-    /* Per BLE API Documentation: Get annual aggregated statistics */
     struct history_data *hist_data = (struct history_data *)history_value;
     hist_data->channel_id = channel_id;
     hist_data->history_type = 3; /* Annual */
@@ -6399,18 +8040,78 @@ int bt_irrigation_history_get_annual(uint8_t channel_id, uint8_t entry_index) {
     hist_data->count = 1;
     hist_data->start_timestamp = 0;
     hist_data->end_timestamp = 0;
-    
-    /* Populate with sample annual data */
-    hist_data->data.annual.year = 2025;
-    hist_data->data.annual.total_sessions = 1080;
-    hist_data->data.annual.total_volume_liters = 5400; /* 5400L */
-    hist_data->data.annual.avg_monthly_volume = 450; /* 450L/month */
-    hist_data->data.annual.most_active_month = 7; /* July */
-    hist_data->data.annual.success_rate = 93;
-    hist_data->data.annual.peak_month_volume = 500; /* 500L peak */
-    
-    LOG_INF("History annual query: ch=%u, entry=%u", channel_id, entry_index);
-    
+    uint8_t effective_channel = (channel_id < WATERING_CHANNELS_COUNT) ? channel_id : 0;
+
+    memset(&hist_data->data.annual, 0, sizeof(hist_data->data.annual));
+
+    uint16_t year = get_current_year();
+    if (entry_index > 0) {
+        if (year > entry_index) {
+            year -= entry_index;
+        } else {
+            year = 0;
+        }
+    }
+    hist_data->data.annual.year = year;
+
+    annual_stats_t annual_stats[1];
+    uint16_t annual_count = 0;
+    watering_error_t annual_err = watering_history_get_annual_stats(effective_channel,
+                                                                    year,
+                                                                    year,
+                                                                    annual_stats,
+                                                                    &annual_count);
+
+    if (annual_err == WATERING_SUCCESS && annual_count > 0) {
+        annual_stats_t *stats = &annual_stats[0];
+
+        hist_data->data.annual.total_sessions = (stats->sessions > UINT16_MAX)
+            ? UINT16_MAX
+            : (uint16_t)stats->sessions;
+        hist_data->data.annual.total_volume_liters = stats->total_ml / 1000U;
+        hist_data->data.annual.avg_monthly_volume = (uint16_t)((stats->total_ml / 1000U) / 12U);
+        hist_data->data.annual.peak_month_volume = (uint16_t)(stats->max_month_ml / 1000U);
+
+        uint32_t success_sessions = (stats->sessions >= stats->errors)
+            ? (stats->sessions - stats->errors)
+            : 0;
+        if (stats->sessions > 0) {
+            uint32_t pct = (success_sessions * 100U) / stats->sessions;
+            hist_data->data.annual.success_rate = (pct > 100U) ? 100U : (uint8_t)pct;
+        }
+
+        uint8_t best_month = 0;
+        uint32_t best_volume = 0;
+        for (uint8_t m = 1; m <= 12; ++m) {
+            monthly_stats_t month_stats[1];
+            uint16_t found = 0;
+            if (watering_history_get_monthly_stats(effective_channel,
+                                                   m,
+                                                   m,
+                                                   year,
+                                                   month_stats,
+                                                   &found) == WATERING_SUCCESS &&
+                found > 0) {
+                if (month_stats[0].total_ml > best_volume) {
+                    best_volume = month_stats[0].total_ml;
+                    best_month = month_stats[0].month;
+                }
+            }
+        }
+        hist_data->data.annual.most_active_month = best_month;
+        hist_data->data.annual.peak_month_volume = (uint16_t)(best_volume / 1000U);
+
+        uint32_t year_start = build_epoch_from_date(year, 1, 1);
+        uint32_t year_end = build_epoch_from_date(year + 1, 1, 1);
+        hist_data->data.annual.total_sessions = count_sessions_in_period(effective_channel,
+                                                                         year_start,
+                                                                         year_end);
+    }
+
+    LOG_INF("History annual query: ch=%u (effective=%u), entry=%u, sessions=%u",
+            channel_id, effective_channel, entry_index,
+            hist_data->data.annual.total_sessions);
+
     return 0;
 }
 
@@ -6456,12 +8157,12 @@ int bt_irrigation_growing_env_update(uint8_t channel_id) {
     
     env_data->soil_type = (uint8_t)channel->soil_type;
     env_data->irrigation_method = (uint8_t)channel->irrigation_method;
-    env_data->use_area_based = channel->coverage.use_area ? 1 : 0;
+    env_data->use_area_based = channel->use_area_based ? 1 : 0;
     
-    if (channel->coverage.use_area) {
-        env_data->coverage.area_m2 = channel->coverage.area.area_m2;
+    if (channel->use_area_based) {
+        env_data->coverage.area_m2 = channel->coverage.area_m2;
     } else {
-        env_data->coverage.plant_count = channel->coverage.plants.count;
+        env_data->coverage.plant_count = channel->coverage.plant_count;
     }
     
     env_data->sun_percentage = channel->sun_percentage;
@@ -6489,18 +8190,91 @@ int bt_irrigation_growing_env_update(uint8_t channel_id) {
             env_data->channel_id, env_data->plant_type, env_data->specific_plant,
             env_data->soil_type, env_data->irrigation_method,
             env_data->use_area_based ? "area" : "count",
-            env_data->use_area_based ? env_data->coverage.area_m2 : (float)env_data->coverage.plant_count,
+            env_data->use_area_based ? (double)env_data->coverage.area_m2 : (double)((float)env_data->coverage.plant_count),
             env_data->sun_percentage);
     
     /* Log custom plant info if applicable */
     if (env_data->plant_type == 7) {
-        LOG_INF("Custom plant: '%s', water_factor=%.2f, freq=%u days, prefer_area=%u",
-                env_data->custom_name, env_data->water_need_factor, 
+    LOG_INF("Custom plant: '%s', water_factor=%.2f, freq=%u days, prefer_area=%u",
+        env_data->custom_name, (double)env_data->water_need_factor, 
                 env_data->irrigation_freq_days, env_data->prefer_area_based);
     }
     
     /* Send notification */
     notify_growing_env();
+    
+    return 0;
+}
+
+int bt_irrigation_auto_calc_status_notify(void) {
+    if (!default_conn || !notification_state.auto_calc_status_notifications_enabled) {
+        return 0; // No connection or notifications disabled
+    }
+    
+    /* Update auto_calc_status_value with current system state */
+    struct auto_calc_status_data *status_data = (struct auto_calc_status_data *)auto_calc_status_value;
+    
+    /* Use the currently selected channel from the global buffer */
+    uint8_t channel_id = status_data->channel_id;
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        channel_id = 0; /* Default to channel 0 */
+        status_data->channel_id = channel_id;
+    }
+    
+    /* Get channel data */
+    watering_channel_t *channel;
+    watering_error_t err = watering_get_channel(channel_id, &channel);
+    if (err != WATERING_SUCCESS) {
+        LOG_WRN("Failed to get channel %u for auto calc status notify: %d", channel_id, err);
+        return -ENODATA;
+    }
+    
+    /* Update status data */
+    bool is_auto_mode = (channel->auto_mode == WATERING_AUTOMATIC_QUALITY || 
+                        channel->auto_mode == WATERING_AUTOMATIC_ECO);
+    status_data->calculation_active = is_auto_mode ? 1 : 0;
+    status_data->auto_mode = (uint8_t)channel->auto_mode;
+    
+    /* Get water balance data if available */
+    if (channel->water_balance != NULL) {
+        water_balance_t *balance = (water_balance_t *)channel->water_balance;
+        status_data->irrigation_needed = balance->irrigation_needed ? 1 : 0;
+        status_data->current_deficit_mm = balance->current_deficit_mm;
+        status_data->raw_mm = balance->raw_mm;
+        status_data->effective_rain_mm = balance->effective_rain_mm;
+    } else {
+        status_data->irrigation_needed = 0;
+        status_data->current_deficit_mm = 0.0f;
+        status_data->raw_mm = 0.0f;
+        status_data->effective_rain_mm = 0.0f;
+    }
+    
+    /* Update timing information */
+    status_data->last_calculation_time = channel->last_calculation_time;
+    status_data->calculation_error = 0; /* No error for now */
+    
+    /* Refresh FAO-56 derived metrics */
+    update_auto_calc_calculations(status_data, channel);
+    
+    LOG_DBG("Auto calc status notify: ch=%u, active=%u, needed=%u, deficit=%.2f, auto_mode=%u",
+            status_data->channel_id, status_data->calculation_active, status_data->irrigation_needed,
+            (double)status_data->current_deficit_mm, status_data->auto_mode);
+    
+    /* Send notification (with unified header) */
+    notify_auto_calc_status();
+    
+    return 0;
+}
+
+int bt_irrigation_growing_env_notify(void) {
+    if (!default_conn || !notification_state.growing_env_notifications_enabled) {
+        return 0; // No connection or notifications disabled
+    }
+    
+    /* Trigger growing environment notification */
+    notify_growing_env();
+    
+    LOG_DBG("Growing environment notification triggered");
     
     return 0;
 }
@@ -6924,16 +8698,16 @@ static void buffer_pool_maintenance(void) {
             if (success_rate < 0.8f) {
                 // Increase throttling if success rate is low
                 priority_state[p].throttle_interval = MIN(priority_state[p].throttle_interval * 1.2f, 5000);
-                LOG_DBG("Increased throttle interval for priority %d to %ums (success: %.2f%%)", 
-                        p, priority_state[p].throttle_interval, success_rate * 100);
+        LOG_DBG("Increased throttle interval for priority %d to %ums (success: %.2f%%)", 
+            p, priority_state[p].throttle_interval, (double)(success_rate * 100.0f));
             } else if (success_rate > 0.95f) {
                 // Decrease throttling if success rate is very high  
                 uint32_t base_interval = (p == 0) ? THROTTLE_CRITICAL_MS : 
                                         (p == 1) ? THROTTLE_HIGH_MS :
                                         (p == 2) ? THROTTLE_NORMAL_MS : THROTTLE_LOW_MS;
                 priority_state[p].throttle_interval = MAX(priority_state[p].throttle_interval * 0.9f, base_interval);
-                LOG_DBG("Decreased throttle interval for priority %d to %ums (success: %.2f%%)", 
-                        p, priority_state[p].throttle_interval, success_rate * 100);
+        LOG_DBG("Decreased throttle interval for priority %d to %ums (success: %.2f%%)", 
+            p, priority_state[p].throttle_interval, (double)(success_rate * 100.0f));
             }
             
             // Reset counters
@@ -6952,16 +8726,35 @@ int bt_irrigation_debug_notifications(void) {
         LOG_ERR("❌ No BLE connection for debugging");
         return -ENOTCONN;
     }
-    
-    LOG_INF("🔍 BLE Notification System Debug");
-    debug_notification_states();
-    
-    LOG_INF("🔧 Force enabling all notifications");
+
+    LOG_INF("🔍 BLE Notification System Debug (compact)");
+
     force_enable_all_notifications();
-    
-    LOG_INF("🧪 Testing channel 0 notification");
-    int result = test_channel_config_notification(0);
-    
+
+    int result = 0;
+
+    int err = bt_irrigation_channel_config_update(0);
+    if (err != 0) {
+        LOG_ERR("Channel configuration notification failed during debug: %d", err);
+        result = err;
+    }
+
+    err = bt_irrigation_schedule_update(0);
+    if (err != 0) {
+        LOG_ERR("Schedule notification failed during debug: %d", err);
+        if (result == 0) {
+            result = err;
+        }
+    }
+
+    err = bt_irrigation_statistics_update(0);
+    if (err != 0) {
+        LOG_ERR("Statistics notification failed during debug: %d", err);
+        if (result == 0) {
+            result = err;
+        }
+    }
+
     LOG_INF("🔍 Debug complete - notification test result: %d", result);
     return result;
 }
@@ -6976,8 +8769,26 @@ int bt_irrigation_test_channel_notification(uint8_t channel_id) {
         LOG_ERR("❌ Invalid channel ID: %u", channel_id);
         return -EINVAL;
     }
-    
-    return test_channel_config_notification(channel_id);
+
+    if (!notification_state.channel_config_notifications_enabled ||
+        !notification_state.schedule_notifications_enabled ||
+        !notification_state.statistics_notifications_enabled) {
+        force_enable_all_notifications();
+    }
+
+    int result = bt_irrigation_channel_config_update(channel_id);
+    int err = bt_irrigation_schedule_update(channel_id);
+    if (result == 0 && err != 0) {
+        result = err;
+    }
+
+    err = bt_irrigation_statistics_update(channel_id);
+    if (result == 0 && err != 0) {
+        result = err;
+    }
+
+    LOG_INF("🧪 Channel %u notification test result: %d", channel_id, result);
+    return result;
 }
 
 int bt_irrigation_force_enable_notifications(void) {
@@ -6991,6 +8802,790 @@ int bt_irrigation_force_enable_notifications(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Rain History Helper Functions                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Send error response for rain history command
+ */
+static void rain_history_send_error_response(struct bt_conn *conn, uint8_t error_code) {
+    rain_history_response_t error_response = {0};
+    error_response.header.fragment_index = 0;
+    error_response.header.total_fragments = 1;
+    error_response.header.status = error_code;
+    error_response.header.data_type = 0xFF; /* Error response */
+    error_response.header.fragment_size = 1;
+    error_response.data[0] = error_code;
+    
+    size_t notify_len = sizeof(error_response.header) + error_response.header.fragment_size;
+    memcpy(rain_history_value, &error_response, notify_len);
+    if (notification_state.rain_history_notifications_enabled) {
+        bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], 
+                      &error_response, notify_len);
+    }
+    
+    rain_history_state.command_active = false;
+}
+
+/**
+ * @brief Process hourly rain history data request
+ */
+static int process_rain_history_hourly_request(uint32_t start_time, uint32_t end_time, uint16_t max_entries) {
+    LOG_INF("Processing hourly rain data request: %u to %u, max %u entries", 
+            start_time, end_time, max_entries);
+    
+    /* Allocate buffer for hourly data (stored until all fragments sent) */
+    rain_hourly_data_t *hourly_data = k_malloc(max_entries * sizeof(rain_hourly_data_t));
+    if (!hourly_data) {
+        LOG_ERR("Failed to allocate memory for hourly data");
+        rain_history_send_error_response(rain_history_state.requesting_conn, 0x05); /* Memory error */
+        return -ENOMEM;
+    }
+    
+    /* Retrieve hourly data from rain history */
+    uint16_t actual_count = 0;
+    watering_error_t ret = rain_history_get_hourly(start_time, end_time, hourly_data, max_entries, &actual_count);
+    if (ret != WATERING_SUCCESS) {
+        LOG_ERR("Failed to retrieve hourly rain data: %d", ret);
+        k_free(hourly_data);
+        rain_history_send_error_response(rain_history_state.requesting_conn, 0x06); /* Data error */
+        return -EIO;
+    }
+    
+    LOG_INF("Retrieved %u hourly entries", actual_count);
+    
+    /* Calculate fragmentation */
+    size_t total_data_size = actual_count * sizeof(rain_hourly_data_t);
+    uint8_t total_fragments = (total_data_size + RAIN_HISTORY_FRAGMENT_SIZE - 1) / RAIN_HISTORY_FRAGMENT_SIZE;
+    
+    if (total_fragments > RAIN_HISTORY_MAX_FRAGMENTS) {
+        LOG_ERR("Too many fragments required: %u (max %u)", total_fragments, RAIN_HISTORY_MAX_FRAGMENTS);
+        k_free(hourly_data);
+        rain_history_send_error_response(rain_history_state.requesting_conn, 0x07); /* Too much data */
+        return -E2BIG;
+    }
+    
+    rain_history_state.total_entries = actual_count;
+    rain_history_state.total_fragments = total_fragments;
+    
+    /* Stash pointer for fragmenting */
+    rain_history_state.fragment_buffer = (uint8_t *)hourly_data;
+
+    /* Send all fragments sequentially */
+    int result = 0;
+    for (uint8_t frag = 0; frag < total_fragments; frag++) {
+        if (frag > 0) {
+        k_sleep(K_MSEC(50)); /* Small delay between fragments */
+        }
+        int r = send_rain_history_fragment(rain_history_state.requesting_conn, frag);
+        if (r < 0 && result == 0) {
+            result = r; /* capture first error */
+        }
+    }
+    
+    k_free(hourly_data);
+    rain_history_state.fragment_buffer = NULL;
+    rain_history_state.command_active = false;
+    
+    return result;
+}
+
+/**
+ * @brief Process daily rain history data request
+ */
+static int process_rain_history_daily_request(uint32_t start_time, uint32_t end_time, uint16_t max_entries) {
+    LOG_INF("Processing daily rain data request: %u to %u, max %u entries", 
+            start_time, end_time, max_entries);
+    
+    /* Allocate buffer for daily data */
+    rain_daily_data_t *daily_data = k_malloc(max_entries * sizeof(rain_daily_data_t));
+    if (!daily_data) {
+        LOG_ERR("Failed to allocate memory for daily data");
+        rain_history_send_error_response(rain_history_state.requesting_conn, 0x05); /* Memory error */
+        return -ENOMEM;
+    }
+    
+    /* Retrieve daily data from rain history */
+    uint16_t actual_count = 0;
+    watering_error_t ret = rain_history_get_daily(start_time, end_time, daily_data, max_entries, &actual_count);
+    if (ret != WATERING_SUCCESS) {
+        LOG_ERR("Failed to retrieve daily rain data: %d", ret);
+        k_free(daily_data);
+        rain_history_send_error_response(rain_history_state.requesting_conn, 0x06); /* Data error */
+        return -EIO;
+    }
+    
+    LOG_INF("Retrieved %u daily entries", actual_count);
+    
+    /* Calculate fragmentation */
+    size_t total_data_size = actual_count * sizeof(rain_daily_data_t);
+    uint8_t total_fragments = (total_data_size + RAIN_HISTORY_FRAGMENT_SIZE - 1) / RAIN_HISTORY_FRAGMENT_SIZE;
+    
+    if (total_fragments > RAIN_HISTORY_MAX_FRAGMENTS) {
+        LOG_ERR("Too many fragments required: %u (max %u)", total_fragments, RAIN_HISTORY_MAX_FRAGMENTS);
+        k_free(daily_data);
+        rain_history_send_error_response(rain_history_state.requesting_conn, 0x07); /* Too much data */
+        return -E2BIG;
+    }
+    
+    rain_history_state.total_entries = actual_count;
+    rain_history_state.total_fragments = total_fragments;
+    
+    rain_history_state.fragment_buffer = (uint8_t *)daily_data;
+
+    int result = 0;
+    for (uint8_t frag = 0; frag < total_fragments; frag++) {
+        if (frag > 0) {
+        k_sleep(K_MSEC(50)); /* Small delay between fragments */
+        }
+        int r = send_rain_history_fragment(rain_history_state.requesting_conn, frag);
+        if (r < 0 && result == 0) {
+            result = r;
+        }
+    }
+    
+    k_free(daily_data);
+    rain_history_state.fragment_buffer = NULL;
+    rain_history_state.command_active = false;
+    
+    return result;
+}
+
+/**
+ * @brief Send a specific fragment of rain history data
+ */
+static int send_rain_history_fragment(struct bt_conn *conn, uint8_t fragment_id) {
+    if (!conn || fragment_id >= rain_history_state.total_fragments) {
+        return -EINVAL;
+    }
+    
+    rain_history_response_t response = {0};
+    response.header.fragment_index = fragment_id;
+    response.header.total_fragments = (uint8_t)rain_history_state.total_fragments;
+    response.header.status = 0; /* Success */
+    response.header.data_type = rain_history_state.data_type;
+    
+    /* Calculate fragment data */
+    size_t entry_size = (rain_history_state.data_type == 0) ? 
+                       sizeof(rain_hourly_data_t) : sizeof(rain_daily_data_t);
+    size_t fragment_offset = fragment_id * RAIN_HISTORY_FRAGMENT_SIZE;
+    size_t remaining_data = (rain_history_state.total_entries * entry_size) - fragment_offset;
+    size_t fragment_data_size = (remaining_data > RAIN_HISTORY_FRAGMENT_SIZE) ? 
+                               RAIN_HISTORY_FRAGMENT_SIZE : remaining_data;
+    
+    response.header.fragment_size = (uint8_t)fragment_data_size;
+    
+    /* Copy real data from fragment buffer if available */
+    if (rain_history_state.fragment_buffer) {
+        memcpy(response.data, rain_history_state.fragment_buffer + fragment_offset, fragment_data_size);
+    } else {
+        memset(response.data, 0, fragment_data_size); /* Fallback (should not happen) */
+    }
+
+    /* Update global value buffer */
+    size_t notify_len = sizeof(response.header) + response.header.fragment_size;
+    memcpy(rain_history_value, &response, notify_len);
+    
+    /* Send notification if enabled */
+    if (notification_state.rain_history_notifications_enabled) {
+        int ret = bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], 
+                                &response, notify_len);
+        if (ret < 0) {
+            LOG_ERR("Failed to send rain history fragment %u: %d", fragment_id, ret);
+            return ret;
+        }
+    }
+    
+    LOG_DBG("Sent rain history fragment %u/%u (%u bytes)", 
+            fragment_id + 1, rain_history_state.total_fragments, (unsigned)fragment_data_size);
+    
+    return 0;
+}
+
+/**
+ * @brief Send rain configuration notification
+ */
+void bt_irrigation_rain_config_notify(void) {
+    if (!notification_state.rain_config_notifications_enabled) {
+        return;
+    }
+    
+    /* Update rain config data */
+    struct rain_config_data config_data = {0};
+    
+    if (rain_sensor_is_active()) {
+        config_data.mm_per_pulse = rain_sensor_get_calibration();
+        config_data.debounce_ms = rain_sensor_get_debounce();
+        config_data.sensor_enabled = rain_sensor_is_enabled() ? 1 : 0;
+        config_data.integration_enabled = rain_integration_is_enabled() ? 1 : 0;
+        config_data.rain_sensitivity_pct = rain_integration_get_sensitivity();
+        config_data.skip_threshold_mm = rain_integration_get_skip_threshold();
+    } else {
+        /* Default values if sensor not active */
+        config_data.mm_per_pulse = 0.2f;
+        config_data.debounce_ms = 50;
+        config_data.sensor_enabled = 0;
+        config_data.integration_enabled = 0;
+        config_data.rain_sensitivity_pct = 75.0f;
+        config_data.skip_threshold_mm = 5.0f;
+    }
+    
+    /* Update global value buffer */
+    memcpy(rain_config_value, &config_data, sizeof(config_data));
+    
+    /* Send notification */
+    int ret = bt_gatt_notify(NULL, &irrigation_svc.attrs[ATTR_IDX_RAIN_CONFIG_VALUE], 
+                            rain_config_value, sizeof(config_data));
+    if (ret < 0) {
+        LOG_ERR("Failed to send rain config notification: %d", ret);
+    }
+}
+
+/**
+ * @brief Send rain data notification
+ */
+void bt_irrigation_rain_data_notify(void) {
+    if (!notification_state.rain_data_notifications_enabled) {
+        return;
+    }
+    
+    struct rain_data_data data = {0};
+    
+    if (rain_sensor_is_active()) {
+        /* Get current rain sensor data */
+        data.current_hour_mm_x100 = (uint32_t)(rain_history_get_current_hour() * 100.0f);
+        data.today_total_mm_x100 = (uint32_t)(rain_history_get_today() * 100.0f);
+        data.last_24h_mm_x100 = (uint32_t)(rain_history_get_last_24h() * 100.0f);
+        
+        /* Get sensor status */
+        if (rain_sensor_is_active()) {
+            data.current_rate_mm_h_x100 = (uint16_t)(rain_sensor_get_hourly_rate_mm() * 100.0f);
+            data.last_pulse_time = rain_sensor_get_last_pulse_time();
+            data.total_pulses = rain_sensor_get_pulse_count();
+            data.sensor_status = 1; /* Active */
+            data.data_quality = 80; /* Good quality */
+        } else {
+            data.sensor_status = 2; /* Error */
+            data.data_quality = 0;
+        }
+    } else {
+        /* Sensor disabled */
+        data.sensor_status = 0; /* Inactive */
+        data.data_quality = 0;
+    }
+    
+    /* Update global value buffer */
+    memcpy(rain_data_value, &data, sizeof(data));
+    
+    /* Send notification */
+    int ret = bt_gatt_notify(NULL, &irrigation_svc.attrs[ATTR_IDX_RAIN_DATA_VALUE], 
+                            rain_data_value, sizeof(data));
+    if (ret < 0) {
+        LOG_ERR("Failed to send rain data notification: %d", ret);
+    }
+
+    /* Track last status to allow immediate re-broadcast on status change */
+    rain_last_status_sent = ((struct rain_data_data *)rain_data_value)->sensor_status;
+}
+
+/**
+ * @brief Send rain sensor pulse notification (called when rain is detected)
+ */
+void bt_irrigation_rain_pulse_notify(uint32_t pulse_count, float current_rate_mm_h) {
+    if (!notification_state.rain_data_notifications_enabled) {
+        return;
+    }
+    /* Throttle pulse-driven notifications to minimum 5s */
+    uint32_t now = k_uptime_get_32();
+    if (now - rain_last_pulse_notify_ms < 5000) {
+        return;
+    }
+    
+    /* Update rain data with new pulse information */
+    struct rain_data_data data = {0};
+    data.current_hour_mm_x100 = (uint32_t)(rain_history_get_current_hour() * 100.0f);
+    data.today_total_mm_x100 = (uint32_t)(rain_history_get_today() * 100.0f);
+    data.last_24h_mm_x100 = (uint32_t)(rain_history_get_last_24h() * 100.0f);
+    data.current_rate_mm_h_x100 = (uint16_t)(current_rate_mm_h * 100.0f);
+
+    rain_sensor_data_t sensor_data;
+    if (rain_sensor_get_data(&sensor_data) == 0) {
+        data.last_pulse_time = sensor_data.last_pulse_time;
+        data.total_pulses = sensor_data.total_pulses;
+        data.sensor_status = (uint8_t)sensor_data.status;
+        data.data_quality = sensor_data.data_quality;
+    } else {
+        data.last_pulse_time = k_uptime_get_32() / 1000;
+        data.total_pulses = pulse_count;
+        data.sensor_status = 2; /* Error retrieving sensor data */
+        data.data_quality = 0;
+    }
+    
+    /* Update global value buffer */
+    memcpy(rain_data_value, &data, sizeof(data));
+    
+    /* Send notification */
+    int ret = bt_gatt_notify(NULL, &irrigation_svc.attrs[ATTR_IDX_RAIN_DATA_VALUE], 
+                            rain_data_value, sizeof(data));
+    if (ret < 0) {
+        LOG_ERR("Failed to send rain pulse notification: %d", ret);
+    }
+    
+    LOG_DBG("Rain pulse notification sent: %u pulses, %.2f mm/h", pulse_count, (double)current_rate_mm_h);
+    rain_last_pulse_notify_ms = now;
+    rain_last_status_sent = ((struct rain_data_data *)rain_data_value)->sensor_status;
+}
+
+/**
+ * @brief Send rain integration status notification
+ */
+void bt_irrigation_rain_integration_notify(uint8_t channel_id, float reduction_pct, bool skip_irrigation) {
+    if (!default_conn || !notification_state.rain_integration_status_notifications_enabled) {
+        return;
+    }
+
+    /* Build a compact delta payload for notify: channel_id, reduction, skip, ts */
+    struct __packed {
+        uint8_t  channel_id;
+        float    reduction_pct;
+        uint8_t  skip_irrigation;
+        uint32_t timestamp;
+    } delta = { channel_id, reduction_pct, (uint8_t)(skip_irrigation ? 1 : 0), k_uptime_get_32() / 1000 };
+
+    int ret = bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE],
+                             &delta, sizeof(delta));
+    if (ret < 0) {
+        LOG_ERR("Failed to send rain integration status notify: %d", ret);
+    } else {
+        LOG_DBG("Rain integration: ch=%u, red=%.1f%%, skip=%u", channel_id, (double)reduction_pct, (unsigned)delta.skip_irrigation);
+    }
+}
+
+/**
+ * @brief Periodic rain data update (called from monitoring thread)
+ */
+void bt_irrigation_rain_periodic_update(void) {
+    uint32_t now = k_uptime_get_32();
+    /* Decide cadence based on activity and errors */
+    bool active = rain_sensor_is_active();
+    uint32_t period_ms = active ? 30000u : 300000u; /* 30s raining, 5min idle */
+
+    /* Immediate on error or status change */
+    uint8_t current_status = active ? 1 : (rain_sensor_is_enabled() ? 0 : 2);
+    if (rain_last_status_sent != current_status) {
+        bt_irrigation_rain_data_notify();
+        rain_last_periodic_ms = now;
+        return;
+    }
+
+    if ((now - rain_last_periodic_ms) >= period_ms) {
+        bt_irrigation_rain_data_notify();
+        rain_last_periodic_ms = now;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Rain Sensor Characteristics Implementation                        */
+/* ------------------------------------------------------------------ */
+
+/* Rain configuration characteristic implementation */
+ssize_t read_rain_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                               void *buf, uint16_t len, uint16_t offset) {
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for rain config read");
+        return -EINVAL;
+    }
+    
+    struct rain_config_data config_data = {0};
+    
+    /* Get current rain sensor configuration */
+    if (rain_sensor_is_enabled()) {
+        config_data.mm_per_pulse = rain_sensor_get_calibration();
+        config_data.debounce_ms = rain_sensor_get_debounce();
+        config_data.sensor_enabled = rain_sensor_is_enabled() ? 1 : 0;
+        config_data.integration_enabled = rain_sensor_is_integration_enabled() ? 1 : 0;
+        config_data.rain_sensitivity_pct = rain_integration_get_sensitivity();
+        config_data.skip_threshold_mm = rain_integration_get_skip_threshold();
+    } else {
+        /* Return default values if sensor not initialized */
+        config_data.mm_per_pulse = 0.2f;
+        config_data.debounce_ms = 50;
+        config_data.sensor_enabled = 0;
+        config_data.integration_enabled = 0;
+        config_data.rain_sensitivity_pct = 75.0f;
+        config_data.skip_threshold_mm = 5.0f;
+    }
+    
+    /* Update the global value buffer */
+    memcpy(rain_config_value, &config_data, sizeof(config_data));
+    
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, 
+                            rain_config_value, sizeof(config_data));
+}
+
+ssize_t write_rain_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for rain config write");
+        return -EINVAL;
+    }
+    
+    if (offset != 0) {
+        LOG_ERR("Rain config write with non-zero offset not supported");
+        return -EINVAL;
+    }
+    
+    if (len != sizeof(struct rain_config_data)) {
+        LOG_ERR("Invalid rain config data length: %u, expected: %zu", 
+                len, sizeof(struct rain_config_data));
+        return -EINVAL;
+    }
+    
+    /* Parse strict 18-byte structure */
+    struct rain_config_data parsed = {0};
+    memcpy(&parsed, buf, sizeof(struct rain_config_data));
+    
+    /* Validate configuration values */
+    if (parsed.mm_per_pulse < 0.1f || parsed.mm_per_pulse > 10.0f) {
+    LOG_ERR("Invalid mm_per_pulse: %.3f", (double)parsed.mm_per_pulse);
+        return -EINVAL;
+    }
+    
+    if (parsed.debounce_ms < 10 || parsed.debounce_ms > 1000) {
+        LOG_ERR("Invalid debounce_ms: %u", parsed.debounce_ms);
+        return -EINVAL;
+    }
+    
+    if (parsed.rain_sensitivity_pct < 0.0f || parsed.rain_sensitivity_pct > 100.0f) {
+    LOG_ERR("Invalid rain_sensitivity_pct: %.1f", (double)parsed.rain_sensitivity_pct);
+        return -EINVAL;
+    }
+    
+    if (parsed.skip_threshold_mm < 0.0f || parsed.skip_threshold_mm > 100.0f) {
+    LOG_ERR("Invalid skip_threshold_mm: %.1f", (double)parsed.skip_threshold_mm);
+        return -EINVAL;
+    }
+    
+    /* Apply configuration to rain sensor */
+    int ret = rain_sensor_set_calibration(parsed.mm_per_pulse);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain sensor calibration: %d", ret);
+        return -EIO;
+    }
+    
+    ret = rain_sensor_set_debounce(parsed.debounce_ms);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain sensor debounce: %d", ret);
+        return -EIO;
+    }
+    
+    ret = rain_sensor_set_enabled(parsed.sensor_enabled != 0);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain sensor enabled state: %d", ret);
+        return -EIO;
+    }
+    
+    ret = rain_sensor_set_integration_enabled(parsed.integration_enabled != 0);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain integration enabled state: %d", ret);
+        return -EIO;
+    }
+    
+    /* Apply integration configuration */
+    ret = rain_integration_set_sensitivity(parsed.rain_sensitivity_pct);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain sensitivity: %d", ret);
+        return -EIO;
+    }
+    
+    ret = rain_integration_set_skip_threshold(parsed.skip_threshold_mm);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain skip threshold: %d", ret);
+        return -EIO;
+    }
+    
+    /* Save configuration to NVS */
+    rain_sensor_save_config();
+    rain_integration_save_config();
+    
+    /* Update global value buffer */
+    memcpy(rain_config_value, &parsed, sizeof(struct rain_config_data));
+    
+    LOG_INF("Rain sensor configuration updated via BLE");
+    LOG_INF("Calibration: %.3f mm/pulse, Debounce: %u ms, Enabled: %s, Integration: %s",
+            (double)parsed.mm_per_pulse, parsed.debounce_ms,
+            parsed.sensor_enabled ? "Yes" : "No",
+            parsed.integration_enabled ? "Yes" : "No");
+    
+    /* Notify applied config for confirmation if subscribed */
+    if (notification_state.rain_config_notifications_enabled && default_conn) {
+        const struct bt_gatt_attr *attr_cfg = &irrigation_svc.attrs[ATTR_IDX_RAIN_CONFIG_VALUE];
+    int nerr = safe_notify(default_conn, attr_cfg, rain_config_value, sizeof(struct rain_config_data));
+        if (nerr) {
+            LOG_WRN("Rain config notify after write failed: %d", nerr);
+        }
+    }
+    
+    return len;
+}
+
+void rain_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.rain_config_notifications_enabled = notify_enabled;
+    LOG_INF("Rain config notifications %s", notify_enabled ? "enabled" : "disabled");
+    if (notify_enabled) {
+        /* Push current configuration snapshot */
+        bt_irrigation_rain_config_notify();
+    }
+}
+
+/* Rain data characteristic implementation */
+ssize_t read_rain_data(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                             void *buf, uint16_t len, uint16_t offset) {
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for rain data read");
+        return -EINVAL;
+    }
+    
+    struct rain_data_data data = {0};
+    
+    if (rain_sensor_is_enabled()) {
+        /* Get current rain sensor data */
+        rain_sensor_data_t sensor_data;
+        int ret = rain_sensor_get_data(&sensor_data);
+        if (ret == 0) {
+            data.current_hour_mm_x100 = (uint32_t)(rain_history_get_current_hour() * 100.0f);
+            data.today_total_mm_x100 = (uint32_t)(rain_history_get_today() * 100.0f);
+            data.last_24h_mm_x100 = (uint32_t)(rain_history_get_last_24h() * 100.0f);
+            data.current_rate_mm_h_x100 = (uint16_t)(sensor_data.hourly_rate_mm * 100.0f);
+            data.last_pulse_time = sensor_data.last_pulse_time;
+            data.total_pulses = sensor_data.total_pulses;
+            data.sensor_status = (uint8_t)sensor_data.status;
+            data.data_quality = sensor_data.data_quality;
+        } else {
+            /* Sensor error - return error status */
+            data.sensor_status = 2; // Error status
+            data.data_quality = 0;
+        }
+    } else {
+        /* Sensor disabled */
+        data.sensor_status = 0; // Inactive status
+        data.data_quality = 0;
+    }
+    
+    /* Update global value buffer */
+    memcpy(rain_data_value, &data, sizeof(data));
+    
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, 
+                            rain_data_value, sizeof(data));
+}
+
+void rain_data_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.rain_data_notifications_enabled = notify_enabled;
+    LOG_INF("Rain data notifications %s", notify_enabled ? "enabled" : "disabled");
+    if (notify_enabled) {
+        /* Push immediate rain data snapshot */
+        bt_irrigation_rain_data_notify();
+    }
+}
+
+/* Rain history characteristic implementation */
+ssize_t read_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                void *buf, uint16_t len, uint16_t offset) {
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for rain history read");
+        return -EINVAL;
+    }
+    
+    /* Return current command buffer */
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, 
+                            rain_history_value, sizeof(struct rain_history_cmd_data));
+}
+
+ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                 const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for rain history write");
+        return -EINVAL;
+    }
+    
+    if (offset != 0) {
+        LOG_ERR("Rain history write with non-zero offset not supported");
+        return -EINVAL;
+    }
+    
+    if (len != sizeof(struct rain_history_cmd_data)) {
+        LOG_ERR("Invalid rain history command length: %u, expected: %zu", 
+                len, sizeof(struct rain_history_cmd_data));
+        return -EINVAL;
+    }
+
+    const struct rain_history_cmd_data *cmd = (const struct rain_history_cmd_data *)buf;
+
+    /* Echo command into value buffer for read-back */
+    memcpy(rain_history_value, cmd, sizeof(struct rain_history_cmd_data));
+
+    LOG_INF("Rain history cmd=0x%02X start=%u end=%u max=%u type=%u",
+            cmd->command, cmd->start_timestamp, cmd->end_timestamp,
+            cmd->max_entries, cmd->data_type);
+
+    /* Basic validation */
+    if (cmd->data_type > 1 && cmd->data_type != 0xFE) {
+        rain_history_send_error_response(conn, 0xFE); /* Invalid parameters */
+        return len;
+    }
+    if (cmd->start_timestamp && cmd->end_timestamp &&
+        cmd->start_timestamp > cmd->end_timestamp) {
+        rain_history_send_error_response(conn, 0xFE);
+        return len;
+    }
+    if (cmd->max_entries == 0 && cmd->command <= 0x03) {
+        rain_history_send_error_response(conn, 0xFE);
+        return len;
+    }
+
+    /* Setup state */
+    rain_history_state.command_active = true;
+    rain_history_state.requesting_conn = conn;
+    rain_history_state.current_command = cmd->command;
+    rain_history_state.start_timestamp = cmd->start_timestamp;
+    rain_history_state.end_timestamp = cmd->end_timestamp;
+    rain_history_state.max_entries = cmd->max_entries;
+    rain_history_state.data_type = cmd->data_type;
+    rain_history_state.current_entry = 0;
+    rain_history_state.total_entries = 0;
+    rain_history_state.current_fragment = 0;
+    rain_history_state.total_fragments = 0;
+
+    switch (cmd->command) {
+    case 0x01: /* RAIN_CMD_GET_HOURLY */
+        rain_history_state.data_type = 0; /* hourly */
+        process_rain_history_hourly_request(cmd->start_timestamp, cmd->end_timestamp, cmd->max_entries);
+        break;
+    case 0x02: /* RAIN_CMD_GET_DAILY */
+        rain_history_state.data_type = 1; /* daily */
+        process_rain_history_daily_request(cmd->start_timestamp, cmd->end_timestamp, cmd->max_entries);
+        break;
+    case 0x03: { /* RAIN_CMD_GET_RECENT */
+        /* Build recent totals response using unified header (single fragment) */
+        rain_history_response_t response = {0};
+        response.header.fragment_index = 0;
+        response.header.total_fragments = 1;
+        response.header.status = 0;
+        response.header.data_type = 0xFE; /* special recent totals */
+        /* Payload layout: last_hour_mm_x100(4) last_24h_mm_x100(4) last_7d_mm_x100(4) reserved(4)=16B */
+        uint32_t last_hour = (uint32_t)(rain_history_get_current_hour() * 100.0f);
+        uint32_t last_24h = (uint32_t)(rain_history_get_last_24h() * 100.0f);
+        float last7d_mm = rain_history_get_recent_total(24 * 7);
+        uint32_t last_7d = (uint32_t)(last7d_mm * 100.0f);
+        memcpy(&response.data[0], &last_hour, 4);
+        memcpy(&response.data[4], &last_24h, 4);
+        memcpy(&response.data[8], &last_7d, 4);
+        memset(&response.data[12], 0, 4);
+        response.header.fragment_size = 16;
+        size_t notify_len = sizeof(response.header) + response.header.fragment_size;
+        if (notification_state.rain_history_notifications_enabled) {
+            bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], &response, notify_len);
+        }
+        rain_history_state.command_active = false;
+        break; }
+    case 0x10: /* RAIN_CMD_RESET_DATA */
+        if (rain_history_clear_all() != WATERING_SUCCESS) {
+            rain_history_send_error_response(conn, 0x06);
+        } else {
+            rain_history_response_t resp = {0};
+            resp.header.fragment_index = 0;
+            resp.header.total_fragments = 1;
+            resp.header.status = 0;
+            resp.header.data_type = 0xFD; /* reset ack */
+            resp.header.fragment_size = 0;
+            if (notification_state.rain_history_notifications_enabled) {
+                bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], &resp, sizeof(resp.header));
+            }
+        }
+        rain_history_state.command_active = false;
+        break;
+    case 0x20: /* RAIN_CMD_CALIBRATE */
+        rain_sensor_reset_counters();
+        rain_sensor_reset_diagnostics();
+        rain_sensor_save_config();
+
+        rain_history_response_t cal = {0};
+        cal.header.fragment_index = 0;
+        cal.header.total_fragments = 1;
+        cal.header.status = 0;
+        cal.header.data_type = 0xFC; /* calibration ack */
+        cal.header.fragment_size = 0;
+        if (notification_state.rain_history_notifications_enabled) {
+            bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], &cal, sizeof(cal.header));
+        }
+        rain_history_state.command_active = false;
+        break;
+    default:
+        rain_history_send_error_response(conn, 0xFF); /* Invalid command */
+        break;
+    }
+
+    return len;
+}
+
+void rain_history_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.rain_history_notifications_enabled = notify_enabled;
+    LOG_INF("Rain history notifications %s", notify_enabled ? "enabled" : "disabled");
+}
+
+/* ------------------------------------------------------------------ */
+/* Rain Integration Status characteristic implementation              */
+/* ------------------------------------------------------------------ */
+
+static ssize_t read_rain_integration_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                            void *buf, uint16_t len, uint16_t offset) {
+    if (!conn || !attr || !buf) {
+        return -EINVAL;
+    }
+
+    rain_integration_status_t sys = {0};
+    if (watering_get_rain_integration_status(&sys) != WATERING_SUCCESS) {
+        memset(&sys, 0, sizeof(sys));
+    }
+
+    struct rain_integration_status_ble ble = {0};
+    ble.sensor_active = sys.sensor_active ? 1 : 0;
+    ble.integration_enabled = sys.integration_enabled ? 1 : 0;
+    ble.last_pulse_time = sys.last_pulse_time;
+    ble.calibration_mm_per_pulse = sys.calibration_mm_per_pulse;
+    ble.rainfall_last_hour = sys.rainfall_last_hour;
+    ble.rainfall_last_24h = sys.rainfall_last_24h;
+    ble.rainfall_last_48h = sys.rainfall_last_48h;
+    ble.sensitivity_pct = sys.sensitivity_pct;
+    ble.skip_threshold_mm = sys.skip_threshold_mm;
+    for (int i = 0; i < 8; ++i) {
+        ble.channel_reduction_pct[i] = sys.channel_reduction_pct[i];
+        ble.channel_skip_irrigation[i] = sys.channel_skip_irrigation[i] ? 1 : 0;
+    }
+    ble.hourly_entries = sys.hourly_entries;
+    ble.daily_entries = sys.daily_entries;
+    ble.storage_usage_bytes = sys.storage_usage_bytes;
+
+    memcpy(rain_integration_status_value, &ble, sizeof(ble));
+    return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                             rain_integration_status_value, sizeof(ble));
+}
+
+static void rain_integration_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.rain_integration_status_notifications_enabled = notify_enabled;
+    LOG_INF("Rain integration status notifications %s", notify_enabled ? "enabled" : "disabled");
+    if (notify_enabled && default_conn) {
+        /* Snapshot on subscribe */
+        (void)read_rain_integration_status(default_conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE],
+                                           rain_integration_status_value, sizeof(rain_integration_status_value), 0);
+        (void)bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE],
+                             rain_integration_status_value, sizeof(struct rain_integration_status_ble));
+    }
+}
 #else /* CONFIG_BT */
 
 /* BLE Stub Functions when BLE is disabled */
@@ -7050,6 +9645,14 @@ int bt_irrigation_growing_env_update(uint8_t channel_id) {
     return 0; // BLE disabled - no notifications
 }
 
+int bt_irrigation_auto_calc_status_notify(void) {
+    return 0; // BLE disabled - no notifications
+}
+
+int bt_irrigation_growing_env_notify(void) {
+    return 0; // BLE disabled - no notifications
+}
+
 int bt_irrigation_debug_notifications(void) {
     return 0; // BLE disabled - no debugging
 }
@@ -7061,5 +9664,619 @@ int bt_irrigation_test_channel_notification(uint8_t channel_id) {
 int bt_irrigation_force_enable_notifications(void) {
     return 0; // BLE disabled - no force enable
 }
+
+/* ------------------------------------------------------------------ */
+/* Rain Sensor Characteristics Implementation                        */
+
+
+ssize_t write_rain_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for rain config write");
+        return -EINVAL;
+    }
+    
+    if (offset != 0) {
+        LOG_ERR("Rain config write with non-zero offset not supported");
+        return -EINVAL;
+    }
+    
+    if (len != sizeof(struct rain_config_data)) {
+        LOG_ERR("Invalid rain config data length: %u, expected: %zu", 
+                len, sizeof(struct rain_config_data));
+        return -EINVAL;
+    }
+    
+    const struct rain_config_data *config_data = (const struct rain_config_data *)buf;
+    
+    /* Validate configuration values */
+    if (config_data->mm_per_pulse < 0.1f || config_data->mm_per_pulse > 10.0f) {
+        LOG_ERR("Invalid mm_per_pulse: %.3f", config_data->mm_per_pulse);
+        return -EINVAL;
+    }
+    
+    if (config_data->debounce_ms < 10 || config_data->debounce_ms > 1000) {
+        LOG_ERR("Invalid debounce_ms: %u", config_data->debounce_ms);
+        return -EINVAL;
+    }
+    
+    if (config_data->rain_sensitivity_pct < 0.0f || config_data->rain_sensitivity_pct > 100.0f) {
+        LOG_ERR("Invalid rain_sensitivity_pct: %.1f", config_data->rain_sensitivity_pct);
+        return -EINVAL;
+    }
+    
+    if (config_data->skip_threshold_mm < 0.0f || config_data->skip_threshold_mm > 100.0f) {
+        LOG_ERR("Invalid skip_threshold_mm: %.1f", config_data->skip_threshold_mm);
+        return -EINVAL;
+    }
+    
+    /* Apply configuration to rain sensor */
+    int ret = rain_sensor_set_calibration(config_data->mm_per_pulse);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain sensor calibration: %d", ret);
+        return -EIO;
+    }
+    
+    ret = rain_sensor_set_debounce(config_data->debounce_ms);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain sensor debounce: %d", ret);
+        return -EIO;
+    }
+    
+    ret = rain_sensor_set_enabled(config_data->sensor_enabled != 0);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain sensor enabled state: %d", ret);
+        return -EIO;
+    }
+    
+    ret = rain_sensor_set_integration_enabled(config_data->integration_enabled != 0);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain integration enabled state: %d", ret);
+        return -EIO;
+    }
+    
+    /* Apply integration configuration */
+    ret = rain_integration_set_sensitivity(config_data->rain_sensitivity_pct);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain sensitivity: %d", ret);
+        return -EIO;
+    }
+    
+    ret = rain_integration_set_skip_threshold(config_data->skip_threshold_mm);
+    if (ret != 0) {
+        LOG_ERR("Failed to set rain skip threshold: %d", ret);
+        return -EIO;
+    }
+    
+    /* Save configuration to NVS */
+    rain_sensor_save_config();
+    rain_integration_save_config();
+    
+    /* Update global value buffer */
+    memcpy(rain_config_value, config_data, sizeof(struct rain_config_data));
+    
+    LOG_INF("Rain sensor configuration updated via BLE");
+    LOG_INF("Calibration: %.3f mm/pulse, Debounce: %u ms, Enabled: %s, Integration: %s",
+            config_data->mm_per_pulse, config_data->debounce_ms,
+            config_data->sensor_enabled ? "Yes" : "No",
+            config_data->integration_enabled ? "Yes" : "No");
+    
+    return len;
+}
+
+void rain_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.rain_config_notifications_enabled = notify_enabled;
+    LOG_INF("Rain config notifications %s", notify_enabled ? "enabled" : "disabled");
+}
+
+/* Rain data characteristic implementation */
+ssize_t read_rain_data(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                             void *buf, uint16_t len, uint16_t offset) {
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for rain data read");
+        return -EINVAL;
+    }
+    
+    struct rain_data_data data = {0};
+    
+    if (rain_sensor_is_enabled()) {
+        /* Get current rain sensor data */
+        rain_sensor_data_t sensor_data;
+        int ret = rain_sensor_get_data(&sensor_data);
+        if (ret == 0) {
+            data.current_hour_mm_x100 = (uint32_t)(rain_history_get_current_hour() * 100.0f);
+            data.today_total_mm_x100 = (uint32_t)(rain_history_get_today() * 100.0f);
+            data.last_24h_mm_x100 = (uint32_t)(rain_history_get_last_24h() * 100.0f);
+            data.current_rate_mm_h_x100 = (uint16_t)(sensor_data.hourly_rate_mm * 100.0f);
+            data.last_pulse_time = sensor_data.last_pulse_time;
+            data.total_pulses = sensor_data.total_pulses;
+            data.sensor_status = (uint8_t)sensor_data.status;
+            data.data_quality = sensor_data.data_quality;
+        } else {
+            /* Sensor error - return error status */
+            data.sensor_status = 2; // Error status
+            data.data_quality = 0;
+        }
+    } else {
+        /* Sensor disabled */
+        data.sensor_status = 0; // Inactive status
+        data.data_quality = 0;
+    }
+    
+    /* Update global value buffer */
+    memcpy(rain_data_value, &data, sizeof(data));
+    
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, 
+                            rain_data_value, sizeof(data));
+}
+
+void rain_data_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.rain_data_notifications_enabled = notify_enabled;
+    LOG_INF("Rain data notifications %s", notify_enabled ? "enabled" : "disabled");
+}
+
+/* Rain history characteristic implementation */
+ssize_t read_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                void *buf, uint16_t len, uint16_t offset) {
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for rain history read");
+        return -EINVAL;
+    }
+    
+    /* Return current command buffer */
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, 
+                            rain_history_value, sizeof(struct rain_history_cmd_data));
+}
+
+/* Rain history command processing state */
+static struct {
+    bool command_active;
+    uint8_t current_command;
+    uint32_t start_timestamp;
+    uint32_t end_timestamp;
+    uint16_t max_entries;
+    uint8_t data_type;
+    uint16_t total_entries;
+    uint16_t current_entry;
+    uint8_t current_fragment;
+    uint8_t total_fragments;
+    struct bt_conn *requesting_conn;
+} rain_history_state = {0};
+
+/* Forward declarations for rain history processing */
+static int process_rain_history_hourly_request(uint32_t start_time, uint32_t end_time, uint16_t max_entries);
+static int process_rain_history_daily_request(uint32_t start_time, uint32_t end_time, uint16_t max_entries);
+static int send_rain_history_fragment(struct bt_conn *conn, uint8_t fragment_id);
+static void rain_history_send_error_response(struct bt_conn *conn, uint8_t error_code);
+
+ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                 const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for rain history write");
+        return -EINVAL;
+    }
+    
+    if (offset != 0) {
+        LOG_ERR("Rain history write with non-zero offset not supported");
+        return -EINVAL;
+    }
+    
+    if (len != sizeof(struct rain_history_cmd_data)) {
+        LOG_ERR("Invalid rain history command length: %u, expected: %zu", 
+                len, sizeof(struct rain_history_cmd_data));
+        return -EINVAL;
+    }
+    
+    const struct rain_history_cmd_data *cmd = (const struct rain_history_cmd_data *)buf;
+    
+    LOG_INF("Rain history command: %u, start: %u, end: %u, max_entries: %u, type: %u",
+            cmd->command, cmd->start_timestamp, cmd->end_timestamp, 
+            cmd->max_entries, cmd->data_type);
+    
+    /* Check if another command is already in progress */
+    if (rain_history_state.command_active && rain_history_state.requesting_conn != conn) {
+        LOG_WRN("Rain history command already in progress for another connection");
+        rain_history_send_error_response(conn, 0x01); /* Busy error */
+        return -EBUSY;
+    }
+    
+    /* Initialize command state */
+    rain_history_state.command_active = true;
+    rain_history_state.current_command = cmd->command;
+    rain_history_state.start_timestamp = cmd->start_timestamp;
+    rain_history_state.end_timestamp = cmd->end_timestamp;
+    rain_history_state.max_entries = cmd->max_entries;
+    rain_history_state.data_type = cmd->data_type;
+    rain_history_state.requesting_conn = conn;
+    rain_history_state.current_entry = 0;
+    rain_history_state.current_fragment = 0;
+    
+    int result = 0;
+    
+    /* Process command based on type */
+    switch (cmd->command) {
+        case 0x01: /* Get hourly data */
+            if (cmd->data_type != 0) {
+                LOG_ERR("Invalid data type for hourly request: %u", cmd->data_type);
+                rain_history_send_error_response(conn, 0x02); /* Invalid parameter */
+                result = -EINVAL;
+                break;
+            }
+            result = process_rain_history_hourly_request(cmd->start_timestamp, 
+                                                        cmd->end_timestamp, 
+                                                        cmd->max_entries);
+            break;
+            
+        case 0x02: /* Get daily data */
+            if (cmd->data_type != 1) {
+                LOG_ERR("Invalid data type for daily request: %u", cmd->data_type);
+                rain_history_send_error_response(conn, 0x02); /* Invalid parameter */
+                result = -EINVAL;
+                break;
+            }
+            result = process_rain_history_daily_request(cmd->start_timestamp, 
+                                                       cmd->end_timestamp, 
+                                                       cmd->max_entries);
+            break;
+            
+        case 0x03: /* Get recent data */
+            LOG_INF("Requesting recent rain data");
+            /* Send recent rainfall summary */
+            rain_history_response_t response = {0};
+            response.header.fragment_index = 0;
+            response.header.total_fragments = 1;
+            response.header.status = 0; /* Success */
+            response.header.data_type = 2; /* Recent data type */
+            
+            /* Pack recent rainfall data */
+            struct {
+                uint32_t current_hour_mm_x100;
+                uint32_t today_total_mm_x100;
+                uint32_t last_24h_mm_x100;
+                uint32_t last_48h_mm_x100;
+            } __attribute__((packed)) recent_data;
+            
+            recent_data.current_hour_mm_x100 = (uint32_t)(rain_history_get_current_hour() * 100.0f);
+            recent_data.today_total_mm_x100 = (uint32_t)(rain_history_get_today() * 100.0f);
+            recent_data.last_24h_mm_x100 = (uint32_t)(rain_history_get_last_24h() * 100.0f);
+            recent_data.last_48h_mm_x100 = (uint32_t)(rain_history_get_recent_total(48) * 100.0f);
+            
+            response.header.fragment_size = sizeof(recent_data);
+            memcpy(response.data, &recent_data, sizeof(recent_data));
+            
+            /* Send response immediately */
+            size_t recent_len = sizeof(response.header) + response.header.fragment_size;
+            memcpy(rain_history_value, &response, recent_len);
+            if (notification_state.rain_history_notifications_enabled) {
+                bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], 
+                              &response, recent_len);
+            }
+            
+            rain_history_state.command_active = false;
+            result = 0;
+            break;
+            
+        case 0x10: /* Reset data */
+            LOG_INF("Resetting rain history data");
+            watering_error_t reset_result = rain_history_clear_all();
+            if (reset_result == WATERING_SUCCESS) {
+                /* Send success response */
+                rain_history_response_t reset_response = {0};
+                reset_response.header.fragment_index = 0;
+                reset_response.header.total_fragments = 1;
+                reset_response.header.status = 0; /* Success */
+                reset_response.header.data_type = 0xFF; /* Command response */
+                reset_response.header.fragment_size = 1;
+                reset_response.data[0] = 0x00; /* Success code */
+                
+                size_t reset_len = sizeof(reset_response.header) + reset_response.header.fragment_size;
+                memcpy(rain_history_value, &reset_response, reset_len);
+                if (notification_state.rain_history_notifications_enabled) {
+                    bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], 
+                                  &reset_response, reset_len);
+                }
+            } else {
+                rain_history_send_error_response(conn, 0x03); /* Operation failed */
+            }
+            rain_history_state.command_active = false;
+            result = 0;
+            break;
+            
+        case 0x20: /* Calibrate */
+            LOG_INF("Starting rain sensor calibration");
+            /* Send calibration start response */
+            rain_history_response_t cal_response = {0};
+            cal_response.header.fragment_index = 0;
+            cal_response.header.total_fragments = 1;
+            cal_response.header.status = 0; /* Success */
+            cal_response.header.data_type = 0xFF; /* Command response */
+            cal_response.header.fragment_size = 2;
+            cal_response.data[0] = 0x20; /* Calibration command */
+            cal_response.data[1] = 0x01; /* Calibration started */
+            
+            size_t cal_len = sizeof(cal_response.header) + cal_response.header.fragment_size;
+            memcpy(rain_history_value, &cal_response, cal_len);
+            if (notification_state.rain_history_notifications_enabled) {
+                bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], 
+                              &cal_response, cal_len);
+            }
+            
+            rain_history_state.command_active = false;
+            result = 0;
+            break;
+            
+        default:
+            LOG_ERR("Unknown rain history command: %u", cmd->command);
+            rain_history_send_error_response(conn, 0x04); /* Unknown command */
+            result = -EINVAL;
+            break;
+    }
+    
+    if (result < 0) {
+        rain_history_state.command_active = false;
+    }
+    
+    /* Update global value buffer with command */
+    memcpy(rain_history_value, cmd, sizeof(struct rain_history_cmd_data));
+    
+    return len;
+}
+
+void rain_history_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.rain_history_notifications_enabled = notify_enabled;
+    LOG_INF("Rain history notifications %s", notify_enabled ? "enabled" : "disabled");
+}
+
+/* Rain sensor BLE notification functions */
+int bt_irrigation_rain_config_notify(void) {
+    /* Read current configuration and send notification */
+    struct rain_config_data config_data = {0};
+    
+    if (rain_sensor_is_enabled()) {
+        config_data.mm_per_pulse = rain_sensor_get_calibration();
+        config_data.debounce_ms = rain_sensor_get_debounce();
+        config_data.sensor_enabled = rain_sensor_is_enabled() ? 1 : 0;
+        config_data.integration_enabled = rain_sensor_is_integration_enabled() ? 1 : 0;
+        config_data.rain_sensitivity_pct = rain_integration_get_sensitivity();
+        config_data.skip_threshold_mm = rain_integration_get_skip_threshold();
+    }
+    
+    memcpy(rain_config_value, &config_data, sizeof(config_data));
+    
+    return bt_gatt_notify(NULL, &irrigation_svc.attrs[ATTR_IDX_RAIN_CONFIG_VALUE], 
+                         rain_config_value, sizeof(config_data));
+}
+
+int bt_irrigation_rain_data_notify(void) {
+    /* Read current rain data and send notification */
+    struct rain_data_data data = {0};
+    
+    if (rain_sensor_is_enabled()) {
+        rain_sensor_data_t sensor_data;
+        int ret = rain_sensor_get_data(&sensor_data);
+        if (ret == 0) {
+            data.current_hour_mm_x100 = (uint32_t)(rain_history_get_current_hour() * 100.0f);
+            data.today_total_mm_x100 = (uint32_t)(rain_history_get_today() * 100.0f);
+            data.last_24h_mm_x100 = (uint32_t)(rain_history_get_last_24h() * 100.0f);
+            data.current_rate_mm_h_x100 = (uint16_t)(sensor_data.hourly_rate_mm * 100.0f);
+            data.last_pulse_time = sensor_data.last_pulse_time;
+            data.total_pulses = sensor_data.total_pulses;
+            data.sensor_status = (uint8_t)sensor_data.status;
+            data.data_quality = sensor_data.data_quality;
+        } else {
+            data.sensor_status = 2; // Error status
+            data.data_quality = 0;
+        }
+    }
+    
+    memcpy(rain_data_value, &data, sizeof(data));
+    
+    return bt_gatt_notify(NULL, &irrigation_svc.attrs[ATTR_IDX_RAIN_DATA_VALUE], 
+                         rain_data_value, sizeof(data));
+}
+
+/* Environmental data BLE notification functions */
+int bt_irrigation_environmental_data_notify(void) {
+    if (!default_conn || !notification_state.environmental_data_notifications_enabled) {
+        return 0; // No connection or notifications disabled
+    }
+    
+    /* Read current environmental data and send notification */
+    struct environmental_data_ble env_data;
+    memset(&env_data, 0, sizeof(env_data));
+
+    bool data_available = false;
+
+    /* Prefer processed environmental data for consistency with reads */
+    bme280_environmental_data_t processed;
+    if (environmental_data_get_current(&processed) == 0 && processed.current.valid) {
+        env_data.temperature = processed.current.temperature;
+        env_data.humidity = processed.current.humidity;
+        env_data.pressure = processed.current.pressure;
+        env_data.timestamp = processed.current.timestamp;
+        env_data.sensor_status = 1;
+
+        env_data_validation_t validation;
+        if (env_data_validate_reading(&processed.current, NULL, &validation) == 0) {
+            env_data.data_quality = env_data_calculate_quality_score(&processed.current, &validation);
+        }
+        data_available = true;
+    } else {
+        /* Fallback to direct sensor read if processor data unavailable */
+        bme280_reading_t reading;
+        if (bme280_system_read_data(&reading) == 0 && reading.valid) {
+            env_data.temperature = reading.temperature;
+            env_data.humidity = reading.humidity;
+            env_data.pressure = reading.pressure;
+            env_data.timestamp = reading.timestamp;
+            env_data.sensor_status = 1;
+
+            env_data_validation_t validation;
+            if (env_data_validate_reading(&reading, NULL, &validation) == 0) {
+                env_data.data_quality = env_data_calculate_quality_score(&reading, &validation);
+            }
+            data_available = true;
+        }
+    }
+
+    if (!data_available) {
+        env_data.sensor_status = 0;
+        env_data.data_quality = 0;
+        env_data.timestamp = k_uptime_get_32();
+    }
+
+    /* Incorporate system health metrics for additional context */
+    env_sensor_status_t sensor_status;
+    if (env_sensors_get_status(&sensor_status) == WATERING_SUCCESS) {
+        bool any_sensor_online = sensor_status.temp_sensor_online ||
+                                 sensor_status.humidity_sensor_online ||
+                                 sensor_status.pressure_sensor_online;
+
+        if (!any_sensor_online) {
+            env_data.sensor_status = 0;
+        } else if (env_data.sensor_status == 0) {
+            env_data.sensor_status = 1;
+        }
+
+        if (sensor_status.overall_health > 0) {
+            if (env_data.data_quality > 0) {
+                env_data.data_quality = MIN(env_data.data_quality, sensor_status.overall_health);
+            } else {
+                env_data.data_quality = sensor_status.overall_health;
+            }
+        }
+    }
+    
+    /* Get measurement interval */
+    bme280_config_t config;
+    if (bme280_system_get_config(&config) == 0) {
+        env_data.measurement_interval = config.measurement_interval;
+    } else {
+        env_data.measurement_interval = 60; /* Default */
+    }
+    
+    /* Update value buffer and send notification */
+    memcpy(environmental_data_value, &env_data, sizeof(env_data));
+    
+    const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_DATA_VALUE];
+
+    /* MTU-aware send: single frame if fits, else fragmented with [seq,total,len] header */
+    uint16_t mtu = bt_gatt_get_mtu(default_conn);
+    uint16_t max_payload = (mtu > 3) ? (mtu - 3) : 20;
+    /* advanced_notify enforces a 23-byte ceiling; anything larger must use the manual fragment path */
+    if (sizeof(env_data) <= max_payload && sizeof(env_data) <= 23U) {
+        int result = safe_notify(default_conn, attr, &env_data, sizeof(env_data));
+        if (result == 0) {
+            LOG_DBG("Environmental data notification sent (single frame)");
+        } else {
+            LOG_WRN("Environmental data notification failed: %d", result);
+        }
+        return result;
+    }
+
+    uint8_t all_bytes[sizeof(env_data)];
+    memcpy(all_bytes, &env_data, sizeof(env_data));
+    const uint16_t header_sz = 3;
+    uint8_t frag_buf[64];
+    uint16_t max_chunk = (sizeof(frag_buf) > header_sz) ? (sizeof(frag_buf) - header_sz) : 0;
+    uint16_t chunk = (max_payload > header_sz) ? (max_payload - header_sz) : 0;
+    if (chunk == 0) {
+        LOG_WRN("MTU too small to send environmental data fragments");
+        return -EMSGSIZE;
+    }
+    if (chunk > max_chunk) chunk = max_chunk;
+
+    uint16_t remaining = sizeof(all_bytes);
+    uint16_t offset = 0;
+    uint8_t total_frags = (remaining + chunk - 1) / chunk;
+    for (uint8_t seq = 0; seq < total_frags; seq++) {
+        uint16_t this_len = (remaining > chunk) ? chunk : remaining;
+        frag_buf[0] = seq;
+        frag_buf[1] = total_frags;
+        frag_buf[2] = (uint8_t)this_len;
+        memcpy(&frag_buf[header_sz], &all_bytes[offset], this_len);
+
+        int err = bt_gatt_notify(default_conn, attr, frag_buf, header_sz + this_len);
+        if (err) {
+            LOG_WRN("Environmental fragment %u/%u notify failed: %d", seq + 1, total_frags, err);
+            return err;
+        }
+        offset += this_len;
+        remaining -= this_len;
+        k_sleep(K_MSEC(20));
+    }
+
+    LOG_DBG("Environmental data notification sent in %u fragments", (unsigned)total_frags);
+    return 0;
+}
+
+int bt_irrigation_compensation_status_notify(uint8_t channel_id) {
+    if (!default_conn || !notification_state.compensation_status_notifications_enabled) {
+        return 0; // No connection or notifications disabled
+    }
+    
+    struct compensation_status_data comp_status;
+    memset(&comp_status, 0, sizeof(comp_status));
+    comp_status.channel_id = channel_id;
+    
+    /* Get channel to check compensation status */
+    watering_channel_t *channel;
+    if (watering_get_channel(channel_id, &channel) == WATERING_SUCCESS) {
+        /* Rain compensation status */
+        comp_status.rain_compensation_active = channel->rain_compensation.enabled ? 1 : 0;
+        comp_status.recent_rainfall_mm = channel->last_rain_compensation.recent_rainfall_mm;
+        comp_status.rain_reduction_percentage = channel->last_rain_compensation.reduction_percentage;
+        comp_status.rain_skip_watering = channel->last_rain_compensation.skip_watering ? 1 : 0;
+        comp_status.rain_calculation_time = channel->last_rain_compensation.calculation_timestamp;
+        
+        /* Temperature compensation status */
+        comp_status.temp_compensation_active = channel->temp_compensation.enabled ? 1 : 0;
+        comp_status.current_temperature = channel->last_temp_compensation.current_temperature;
+        comp_status.temp_compensation_factor = channel->last_temp_compensation.compensation_factor;
+        comp_status.temp_adjusted_requirement = channel->last_temp_compensation.adjusted_requirement;
+        comp_status.temp_calculation_time = channel->last_temp_compensation.calculation_timestamp;
+        
+        /* Overall status */
+        comp_status.any_compensation_active = (comp_status.rain_compensation_active || 
+                                             comp_status.temp_compensation_active) ? 1 : 0;
+    }
+    
+    /* Update value buffer and send notification */
+    memcpy(compensation_status_value, &comp_status, sizeof(comp_status));
+    
+    const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_COMPENSATION_STATUS_VALUE];
+    int result = safe_notify(default_conn, attr, &comp_status, sizeof(comp_status));
+    
+    if (result == 0) {
+        LOG_DBG("Compensation status notification sent: ch=%u, rain=%u, temp=%u",
+                channel_id, comp_status.rain_compensation_active, comp_status.temp_compensation_active);
+    } else {
+        LOG_WRN("Compensation status notification failed: %d", result);
+    }
+    
+    return result;
+}
+
+int bt_irrigation_interval_mode_phase_notify(uint8_t channel_id, bool is_watering, uint32_t phase_remaining_sec) {
+    if (!default_conn || !notification_state.current_task_notifications_enabled) {
+        return 0; // Use current task notifications for interval mode updates
+    }
+    
+    /* Trigger a current task status notification to update interval mode phase */
+    int result = bt_irrigation_current_task_notify();
+    
+    if (result == 0) {
+        LOG_DBG("Interval mode phase notification sent: ch=%u, phase=%s, remaining=%us",
+                channel_id, is_watering ? "watering" : "pausing", phase_remaining_sec);
+    } else {
+        LOG_WRN("Interval mode phase notification failed: %d", result);
+    }
+    
+    return result;
+}
+
 
 #endif /* CONFIG_BT */

@@ -1,158 +1,137 @@
-# Installation Guide
+# AutoWatering Firmware Installation Guide
 
-This guide covers the process of installing, building, and flashing the AutoWatering system.
+This guide explains how to prepare a Zephyr development environment, fetch the AutoWatering sources, and build the firmware for both hardware targets and the native simulation build.
 
-## Prerequisites
+> **Tip**: These steps track the Zephyr 4.1.0 toolchain used in this repository. If you already maintain a working Zephyr workspace, jump straight to the "Fetch the sources" and "Build" sections.
 
-Before you begin, make sure you have the following:
+## 1. Prerequisites
 
-- **Zephyr RTOS Environment** (version 3.0 or newer)
-- **ARM GCC Compiler** 
-- **West build tool**
-- **Development environment** (recommended: Visual Studio Code with Zephyr extension)
-- **Hardware components** listed in the [Hardware Guide](HARDWARE.md)
+- 64-bit Windows 11/10, Linux, or macOS (Ventura or newer)
+- 16 GB RAM recommended when building under virtualization/WSL
+- 15 GB free disk space for the Zephyr SDK, workspace, and build outputs
+- Git 2.40+ and Python 3.10+
+- For flashing hardware: nRF52840 Pro Micro (or compatible) plus Segger J-Link or CMSIS-DAP debugger
 
-## Setting Up the Development Environment
+> **Reference**: The Zephyr [Getting Started Guide](https://docs.zephyrproject.org/latest/develop/getting_started/index.html) provides platform-specific prerequisites. Follow it if any package commands differ on your OS.
 
-### 1. Install Zephyr RTOS
+## 2. Install the Zephyr Toolchain
 
-Follow the [official Zephyr getting started guide](https://docs.zephyrproject.org/latest/develop/getting_started/index.html) to set up your development environment.
+### Windows (via WSL2, recommended)
+
+1. Enable WSL and install Ubuntu 22.04:
+
+```powershell
+wsl --install -d Ubuntu-22.04
+```
+
+2. Inside the Ubuntu shell install the build toolchain and Python helpers:
 
 ```bash
-# Install dependencies (Ubuntu example)
-sudo apt install --no-install-recommends git cmake ninja-build gperf ccache dfu-util device-tree-compiler wget python3-dev python3-pip python3-setuptools python3-tk python3-wheel xz-utils file make gcc gcc-multilib g++-multilib libsdl2-dev
+sudo apt update
+sudo apt install --yes git cmake ninja-build gperf ccache dfu-util device-tree-compiler
+sudo apt install --yes gcc gcc-multilib g++ g++-multilib python3 python3-pip python3-venv
+sudo apt install --yes wget curl xz-utils file libsdl2-dev libmagic1
+python3 -m pip install --user --upgrade west
+```
 
-# Install west
-pip3 install west
+3. Download and install the Zephyr SDK (0.17.0 is validated with Zephyr 4.1.0):
 
-# Get Zephyr source code
-west init ~/zephyrproject
-cd ~/zephyrproject
+```bash
+cd ~
+wget https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.0/zephyr-sdk-0.17.0_linux-x86_64.tar.xz
+tar xf zephyr-sdk-0.17.0_linux-x86_64.tar.xz
+cd zephyr-sdk-0.17.0
+./setup.sh -t all -c
+```
+
+### Linux
+
+- Install the same package set as above using your distribution's package manager.
+- Install the Zephyr SDK (0.17.0 or another release compatible with Zephyr 4.1.0).
+- Install west with `python3 -m pip install --user west`.
+
+### macOS
+
+- Install Homebrew packages: `brew install cmake ninja gperf python@3.11 wget`.
+- Install west with `python3 -m pip install --user west`.
+- Either build inside a Linux container/WSL for SDK support or use the macOS cross-compilers from the official guide.
+
+## 3. Create the Workspace and Fetch Sources
+
+Choose a workspace directory (examples assume `~/autowatering-workspace`):
+
+```bash
+mkdir -p ~/autowatering-workspace
+cd ~/autowatering-workspace
+west init -m https://github.com/AlexMihai1804/AutoWatering.git
 west update
-west zephyr-export
-
-# Install Python dependencies
-pip3 install -r ~/zephyrproject/zephyr/scripts/requirements.txt
 ```
 
-### 2. Clone the AutoWatering Repository
+This clones the AutoWatering application alongside the Zephyr upstream tree declared in `west-manifest/west.yml` (Zephyr v4.1.0).
+
+## 4. Install Python Dependencies
+
+From the workspace root run:
 
 ```bash
-cd ~/zephyrproject
-git clone https://github.com/AlexMihai1804/AutoWatering.git
-cd AutoWatering
+pip3 install --user -r zephyr/scripts/requirements.txt
 ```
 
-### 3. Install Additional Dependencies
+Create and activate a virtual environment first if you prefer an isolated Python setup.
+
+## 5. Build the Firmware
+
+### nRF52840 Pro Micro (primary target)
 
 ```bash
-pip3 install -r requirements.txt
-west update
+cd autowatering
+west build -b nrf52840_promicro --pristine
 ```
 
-## Building the Project
+The build output lives in `build/nrf52840_promicro/`. Board overlays (`boards/promicro_52840.overlay`, `boards/usb.overlay`) are pulled in automatically by the CMake configuration.
 
-### 1. Build for NRF52840 ProMicro
+### Native Simulation (desktop testing)
 
 ```bash
-# Navigate to the project directory
-cd ~/zephyrproject/AutoWatering
-
-# Build the project for the default target (nrf52840_promicro)
-west build -b promicro_nrf52840
-
-# Alternative build with specific board configuration
-west build -b nrf52840_promicro -- -DDTC_OVERLAY_FILE="boards/promicro_52840.overlay"
+cd autowatering
+west build -b native_sim --pristine -- -DEXTRA_DTC_OVERLAY_FILE=boards/native_sim.overlay
 ```
 
-### 2. Configuration Options
+Native simulation enables emulated RTC, GPIO, and BLE for host-side testing. Always add `--pristine` when switching boards to avoid configuration artifacts.
 
-You can customize the build using the following commands:
+## 6. Flash the Hardware
 
-```bash
-# Open menuconfig to adjust settings
-west build -t menuconfig
-
-# Edit the prj.conf file directly to modify configuration
-nano prj.conf
-
-# Common configuration changes:
-# - Enable/disable Bluetooth: CONFIG_BT=y/n
-# - Adjust log levels: CONFIG_LOG_DEFAULT_LEVEL=3
-# - USB configuration: CONFIG_USB_DEVICE_STACK=y
-```
-
-### 3. Flash to the Device
-
-Connect your NRF52840 ProMicro board and flash the firmware:
+1. Connect the nRF52840 board through a J-Link or CMSIS-DAP debugger.
+2. From the `autowatering/` directory run:
 
 ```bash
-# Standard flash command
 west flash
-
-# Alternative methods if needed
-west flash --runner nrfjprog
-west flash --runner jlink
-
-# For development with USB console support
-west flash && west attach
 ```
 
-**Important**: The device provides both USB CDC-ACM (virtual COM port) and Bluetooth interfaces. After flashing:
-- USB console is available for debugging and configuration
-- Bluetooth is automatically enabled for remote control
-- Device will appear as "AutoWatering" in Bluetooth scans
+Select a specific runner (e.g., `--runner jlink`) when required by your hardware setup.
 
-### 4. Monitor Debug Output
+## 7. Post-Install Checks
 
-To view the system logs and debug information:
+- Confirm tool versions:
 
 ```bash
-west attach
+west --version
+cmake --version
+ninja --version
 ```
 
-## Devicetree Configuration
+- Inspect the serial console to verify the firmware boots and logs as described in `docs/system-architecture.md`.
 
-The system uses Devicetree for hardware configuration. The main overlay file is:
+## 8. Troubleshooting
 
-```
-boards/promicro_52840.overlay
-```
+- Build failures or runtime issues: review `docs/TROUBLESHOOTING.md` and the Zephyr getting-started FAQ.
+- Missing SDK headers or toolchain failures usually mean the Zephyr SDK environment is not exported; rerun `<SDK>/setup.sh` and restart the terminal.
+- If `west update` fails, verify network/proxy settings and rerun the command.
 
-Edit this file if you need to change pin assignments for valves or the flow sensor.
+## 9. Next Steps
 
-## Updating the Firmware
+- See `docs/README.md` for the rest of the documentation index.
+- Consult `docs/ble-api/README.md` before integrating with the BLE service.
+- Use `docs/system-architecture.md` when modifying initialization or background tasks.
 
-To update an existing installation:
-
-1. Pull the latest changes:
-   ```bash
-   git pull
-   ```
-
-2. Clean the build directory if necessary:
-   ```bash
-   west build -t clean
-   ```
-
-3. Rebuild and flash:
-   ```bash
-   west build -b nrf52840_promicro
-   west flash
-   ```
-
-## Next Steps
-
-After successful installation:
-
-- Configure your hardware following the [Hardware Guide](HARDWARE.md)
-- Learn about the software architecture in the [Software Guide](SOFTWARE.md)
-- Set up remote control using the [BLE Documentation](ble/README.md)
-- Test the system with the examples in the documentation
-- Check [Troubleshooting Guide](TROUBLESHOOTING.md) if you encounter issues
-
-## Documentation Version
-
-This installation guide is current as of June 2025 and reflects firmware version 1.6 with comprehensive Bluetooth API support.
-
-[Back to main README](../README.md)
+With the environment prepared, iterate on firmware changes using `west build`, flash updates with `west flash`, and refer to the remaining docs for module-specific detail.

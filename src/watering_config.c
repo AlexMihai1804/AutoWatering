@@ -14,19 +14,8 @@
  * channel settings and calibration values using Zephyr's settings subsystem.
  */
 
-/**
- * @brief Configuration data header for versioning
- */
-typedef struct {
-    uint8_t version;      /**< Configuration version number */
-    uint32_t timestamp;   /**< Last save timestamp */
-} config_header_t;
-
-/** Current configuration header */
-static config_header_t config_header = {
-    .version = WATERING_CONFIG_VERSION,
-    .timestamp = 0
-};
+/** Last save timestamp for logging throttling */
+static uint32_t last_save_timestamp = 0;
 
 /** Mutex for protecting configuration operations */
 K_MUTEX_DEFINE(config_mutex);
@@ -115,8 +104,8 @@ watering_error_t load_default_config(void) {
         watering_channels[i].sun_percentage = 75;                 // Default to 75% sun exposure
         
         // Default to area-based coverage with 1 square meter
-        watering_channels[i].coverage.use_area = true;
-        watering_channels[i].coverage.area.area_m2 = 1.0f;
+        watering_channels[i].use_area_based = true;
+        watering_channels[i].coverage.area_m2 = 1.0f;
         
         // Initialize custom plant configuration
         memset(&watering_channels[i].custom_plant, 0, sizeof(watering_channels[i].custom_plant));
@@ -166,17 +155,8 @@ watering_error_t watering_save_config_priority(bool is_priority) {
         return WATERING_ERROR_TIMEOUT;
     }
     
-    // Update configuration header
-    config_header.version = WATERING_CONFIG_VERSION;
-    config_header.timestamp = k_uptime_get_32();
-    
-    // Save header using direct NVS
-    ret = nvs_save_watering_config(&config_header, sizeof(config_header));
-    if (ret < 0) {
-        LOG_ERROR("Error saving configuration header", ret);
-        k_mutex_unlock(&config_mutex);
-        return WATERING_ERROR_STORAGE;
-    }
+    // Update save timestamp
+    last_save_timestamp = k_uptime_get_32();
     
     // Save flow sensor calibration
     uint32_t calibration;
@@ -188,17 +168,16 @@ watering_error_t watering_save_config_priority(bool is_priority) {
         return WATERING_ERROR_STORAGE;
     }
     
-    // Save each channel's configuration (COMPLETE CHANNEL, not just watering_event)
+    // Save each channel's configuration (COMPLETE CHANNEL with enhanced parameters)
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
-        ret = nvs_save_channel_config(i, &watering_channels[i], 
-                                     sizeof(watering_channel_t));
+        ret = nvs_save_complete_channel_config(i, &watering_channels[i]);
         if (ret < 0) {
-            LOG_ERROR("Error saving channel configuration", ret);
+            LOG_ERROR("Error saving enhanced channel configuration", ret);
             k_mutex_unlock(&config_mutex);
             return WATERING_ERROR_STORAGE;
         }
         
-        printk("🔧 SUCCESS: Complete channel %d configuration saved\n", i);
+        printk("🔧 SUCCESS: Enhanced channel %d configuration saved\n", i);
     }
     
     // Save days_since_start to persistent storage
@@ -213,8 +192,7 @@ watering_error_t watering_save_config_priority(bool is_priority) {
     static uint32_t last_save_log_time = 0;          /* ms since boot */
     uint32_t now_log = k_uptime_get_32();
     if (now_log - last_save_log_time > 1000) {           /* 1 s debounce */
-        printk("Configurations successfully saved (version %d)\n",
-               WATERING_CONFIG_VERSION);
+        printk("Configurations successfully saved\n");
         last_save_log_time = now_log;
     }
     
@@ -226,28 +204,7 @@ watering_error_t watering_save_config_priority(bool is_priority) {
     return WATERING_SUCCESS;
 }
 
-/**
- * @brief Callback for loading header from settings
- */
-__attribute__((unused))
-static int header_load_cb(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg, void *param) {
-    config_header_t *header = (config_header_t *) param;
-    int rc;
-    
-    // Validate data length
-    if (len != sizeof(*header)) {
-        return -EINVAL;
-    }
-    
-    // Read data from storage
-    rc = read_cb(cb_arg, header, len);
-    if (rc >= 0) {
-        printk("Configuration header loaded: version %d, timestamp %u\n", 
-              header->version, header->timestamp);
-    }
-    
-    return rc;
-}
+
 
 /**
  * @brief Callback for loading calibration value from settings
@@ -349,30 +306,10 @@ static int days_since_load_cb(const char *name, size_t len, settings_read_cb rea
  */
 watering_error_t watering_load_config(void) {
     int ret;
-    config_header_t loaded_header = {0};
     uint32_t saved_calibration;
     int loaded_configs = 0;
     
     k_mutex_lock(&config_mutex, K_FOREVER);
-    
-    // Try to load the configuration header
-    ret = nvs_load_watering_config(&loaded_header, sizeof(loaded_header));
-    if (ret < 0 && ret != -ENOENT) {
-        printk("Error loading configuration header: %d\n", ret);
-        printk("Using default configuration\n");
-        k_mutex_unlock(&config_mutex);
-        return load_default_config();
-    }
-    
-    if (ret >= 0) {
-        // Check version compatibility
-        if (loaded_header.version > WATERING_CONFIG_VERSION) {
-            printk("WARNING: Saved configuration version (%d) is newer than current version (%d)\n",
-                   loaded_header.version, WATERING_CONFIG_VERSION);
-            printk("Configuration might not be fully compatible\n");
-        }
-        config_header = loaded_header;
-    }
     
     // Load flow sensor calibration
     ret = nvs_load_flow_calibration(&saved_calibration);
@@ -383,31 +320,22 @@ watering_error_t watering_load_config(void) {
         LOG_ERROR("Error reading calibration", ret);
     }
     
-    // Load each channel's configuration (COMPLETE CHANNEL, not just watering_event)
+    // Load each channel's configuration (COMPLETE CHANNEL with enhanced parameters)
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
-        // First load the complete channel configuration  
-        ret = nvs_load_channel_config(i, &watering_channels[i], 
-                               sizeof(watering_channel_t));
+        // Try to load the complete enhanced channel configuration  
+        ret = nvs_load_complete_channel_config(i, &watering_channels[i]);
         if (ret >= 0) {
-            printk("Channel %d configuration loaded (complete)\n", i + 1);
+            printk("Channel %d configuration loaded\n", i + 1);
             loaded_configs++;
         } else if (ret == -ENOENT) {
-            // If no saved config exists, try to load just the old watering_event for backward compatibility
-            ret = nvs_load_channel_config(i, &watering_channels[i].watering_event, 
-                                   sizeof(watering_event_t));
-            if (ret >= 0) {
-                printk("Channel %d legacy configuration loaded (watering_event only)\n", i + 1);
-                loaded_configs++;
-            } else {
-                printk("Channel %d no configuration found, using defaults\n", i + 1);
-            }
+            printk("Channel %d no configuration found, using defaults\n", i + 1);
         } else {
             LOG_ERROR("Error reading channel configuration", ret);
         }
         
-        /* NOTE: Channel name and environment data are now part of the complete 
-         * channel configuration loaded above. Legacy separate loading is no 
-         * longer needed for new configurations. */
+        /* Enhanced configuration includes all channel parameters including
+         * growing environment settings, water balance state, and automatic
+         * irrigation parameters. */
     }
     
     // Load days_since_start counter
@@ -420,8 +348,18 @@ watering_error_t watering_load_config(void) {
         LOG_ERROR("Error reading days_since_start", ret);
     }
     
-    printk("%d configurations loaded from persistent memory (version %d)\n", 
-          loaded_configs, config_header.version);
+    // Load automatic calculation system state
+    automatic_calc_state_t calc_state;
+    ret = nvs_load_automatic_calc_state(&calc_state);
+    if (ret >= 0) {
+        printk("Automatic calculation state loaded (enabled: %s)\n", 
+               calc_state.system_enabled ? "yes" : "no");
+        loaded_configs++;
+    } else if (ret != -ENOENT) {
+        LOG_ERROR("Error reading automatic calculation state", ret);
+    }
+    
+    printk("%d configurations loaded from persistent memory\n", loaded_configs);
     
     k_mutex_unlock(&config_mutex);
     

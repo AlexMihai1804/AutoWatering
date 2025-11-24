@@ -1,11 +1,16 @@
 /*
- * AutoWatering – ProMicro nRF52840 optimized storage overlay
- * (Optimized storage configuration with 32KB history partition)
+ * AutoWatering – ProMicro nRF52840 enhanced storage overlay
+ * (Enhanced storage configuration for advanced irrigation features)
  *
- * This overlay provides efficient storage for full history capability:
- * - 32 KB NVS Storage partition (history data and settings)
+ * This overlay provides comprehensive storage for enhanced features:
+ * - ~150 KB NVS Storage partition (enhanced data + multi-resolution history)
+ *   - System Configuration: ~8 KB
+ *   - Channel Configurations: ~32 KB
+ *   - Environmental History: ~80 KB
+ *   - Watering History: ~20 KB
+ *   - Reserved/Overhead: ~10 KB (metadata, indexes, future expansion)
  * - 8 KB Settings partition (Bluetooth settings)
- * - Total: 40 KB allocated (efficient use of flash memory)
+ * - Total: ~158 KB allocated (ample headroom for features)
  */
 
  / {
@@ -19,11 +24,23 @@
         };
     };
 
+    /* ------------ rain sensor (GPIO INT) ------------ */
+    rain_sensor: rain_sensor {
+        compatible = "gpio-keys";
+        status = "okay";
+        rain_key {
+            gpios = <&gpio0 31 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+            label = "Tipping Bucket Rain Sensor";
+        };
+    };
+
     /* ------------ application constants ------------- */
     sensor_config: sensor_config {
         compatible       = "zephyr,sensor-config";
         flow-calibration = <750>;   /* pulses per litre */
         debounce-ms      = <2>;     /* optimized for 30 L/min capability */
+        rain-calibration = <200>;   /* 0.2mm per pulse (×1000 for integer) */
+        rain-debounce-ms = <50>;    /* rain sensor debounce time */
     };
 
     /* ------------ valve outputs --------------------- */
@@ -47,8 +64,10 @@
     /* ------------ aliases ---------------------------- */
     aliases {
         rtc0               = &rtc_ds3231;
+        bme280             = &bme280;
         settings-partition = &settings_partition;
         nvs-storage        = &nvs_storage;
+        rain-sensor        = &rain_sensor;
 
         console            = &cdc_acm_uart0;
         shell-uart         = &cdc_acm_uart0;
@@ -104,6 +123,16 @@
             isw-gpios = <&gpio0 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
         };
     };
+
+    /* BME280 Environmental Sensor */
+    bme280: bme280@77 {
+        compatible = "bosch,bme280";
+        reg = <0x77>;
+        status = "okay";
+        label = "BME280";
+        /* Optional interrupt pin for data ready */
+        /* int-gpios = <&gpio0 3 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>; */
+    };
 };
 
 /* ---------- flash partitions -------------------- */
@@ -114,18 +143,25 @@
         #size-cells    = <1>;
         ranges;
 
-        /* Optimized NVS partition: 32 KiB = 8 × 4096 B for efficient history storage */
-        nvs_storage: partition@d1000 {
+    /* Enhanced NVS partition: ~150 KiB for advanced irrigation features */
+    /* Supports: System config (~8KB), Channel configs (~32KB), */
+    /* Environmental history (~80KB), Watering history (~20KB), Reserved (~10KB) */
+        nvs_storage: partition@d8000 {
             label = "nvs_storage";
-            reg   = <0x000d1000 0x00008000>;  /* 32 KiB */
+            reg   = <0x000d8000 0x00026000>;  /* ~150 KiB (38 × 4 KiB sectors) */
         };
 
-        /* Settings partition: 8 KiB = 2 × 4096 B for Bluetooth settings */
-        settings_partition: partition@d9000 {
+        /* Settings partition: 8 KiB for Bluetooth settings */
+        settings_partition: partition@fe000 {
             label = "settings";
-            reg   = <0x000d9000 0x00002000>;  /* 8 KiB */
+            reg   = <0x000fe000 0x00002000>;  /* 8 KiB */
         };
     };
+};
+
+/* ---------- expand application code partition ------------------- */
+&code_partition {
+    reg = <0x00010000 0x000c8000>;  /* enlarge code region up to NVS */
 };
 
 /* ---------- USB CDC ACM UART --------------------- */

@@ -1,0 +1,348 @@
+#include "onboarding_state.h"
+#include "nvs_config.h"
+#include "bt_irrigation_service.h"  /* For BLE notifications */
+#include <zephyr/kernel.h>
+#include <zephyr/sys/printk.h>
+#include <string.h>
+#include <errno.h>
+
+/* Local forward declaration to avoid implicit declaration warning if
+ * the header prototype is excluded by build-time conditionals.
+ * (Prototype also lives in bt_irrigation_service.h when enabled.)
+ */
+int bt_irrigation_onboarding_status_notify(void);
+
+/**
+ * @file onboarding_state.c
+ * @brief Implementation of onboarding state management
+ * 
+ * This module tracks configuration completeness and provides
+ * progress calculation for user onboarding workflows.
+ */
+
+/* Global onboarding state */
+static onboarding_state_t current_state;
+static bool state_initialized = false;
+
+/* Mutex for thread safety */
+K_MUTEX_DEFINE(onboarding_mutex);
+
+/* Helper function to get current timestamp */
+static uint32_t get_current_timestamp(void) {
+    return k_uptime_get_32() / 1000; /* Convert to seconds */
+}
+
+/* Helper function to count set bits in a value */
+static int count_set_bits(uint64_t value) {
+    int count = 0;
+    while (value) {
+        count += value & 1;
+        value >>= 1;
+    }
+    return count;
+}
+
+/* Helper function to count set bits in 32-bit value */
+static int count_set_bits_32(uint32_t value) {
+    int count = 0;
+    while (value) {
+        count += value & 1;
+        value >>= 1;
+    }
+    return count;
+}
+
+/* Helper function to count set bits in 8-bit value */
+static int count_set_bits_8(uint8_t value) {
+    int count = 0;
+    while (value) {
+        count += value & 1;
+        value >>= 1;
+    }
+    return count;
+}
+
+int onboarding_state_init(void) {
+    k_mutex_lock(&onboarding_mutex, K_FOREVER);
+    
+    /* Try to load existing state from NVS */
+    int ret = nvs_load_onboarding_state(&current_state);
+    if (ret < 0) {
+        printk("Failed to load onboarding state: %d\n", ret);
+        k_mutex_unlock(&onboarding_mutex);
+        return ret;
+    }
+    
+    /* If this is a fresh state, set the start time */
+    if (current_state.onboarding_start_time == 0) {
+        current_state.onboarding_start_time = get_current_timestamp();
+        current_state.last_update_time = current_state.onboarding_start_time;
+        
+        /* Save updated state */
+        ret = nvs_save_onboarding_state(&current_state);
+        if (ret < 0) {
+            printk("Failed to save initial onboarding state: %d\n", ret);
+            k_mutex_unlock(&onboarding_mutex);
+            return ret;
+        }
+        
+        printk("Onboarding state initialized with defaults\n");
+    } else {
+        printk("Onboarding state loaded from NVS\n");
+    }
+    
+    state_initialized = true;
+    k_mutex_unlock(&onboarding_mutex);
+    
+    return 0;
+}
+
+int onboarding_get_state(onboarding_state_t *state) {
+    if (!state) {
+        return -EINVAL;
+    }
+    
+    if (!state_initialized) {
+        return -ENODEV;
+    }
+    
+    k_mutex_lock(&onboarding_mutex, K_FOREVER);
+    *state = current_state;
+    k_mutex_unlock(&onboarding_mutex);
+    
+    return 0;
+}
+
+int onboarding_update_channel_flag(uint8_t channel_id, uint8_t flag, bool set) {
+    if (channel_id >= 8) {
+        return -EINVAL;
+    }
+    
+    if (!state_initialized) {
+        return -ENODEV;
+    }
+    
+    k_mutex_lock(&onboarding_mutex, K_FOREVER);
+    
+    /* Calculate bit position for this channel and flag */
+    uint8_t bit_position = (channel_id * 8) + flag;
+    if (bit_position >= 64) {
+        k_mutex_unlock(&onboarding_mutex);
+        return -EINVAL;
+    }
+    
+    uint64_t flag_mask = 1ULL << bit_position;
+    
+    if (set) {
+        current_state.channel_config_flags |= flag_mask;
+    } else {
+        current_state.channel_config_flags &= ~flag_mask;
+    }
+    
+    /* Update timestamp and recalculate completion */
+    current_state.last_update_time = get_current_timestamp();
+    current_state.onboarding_completion_pct = onboarding_calculate_completion();
+    
+    /* Save to NVS */
+    int ret = nvs_save_onboarding_state(&current_state);
+    if (ret < 0) {
+        printk("Failed to save onboarding state: %d\n", ret);
+    }
+    
+    k_mutex_unlock(&onboarding_mutex);
+    
+    /* Send BLE notification for onboarding progress update */
+    bt_irrigation_onboarding_status_notify();
+    
+    printk("Channel %u flag %u %s\n", channel_id, flag, set ? "set" : "cleared");
+    return ret;
+}
+
+int onboarding_update_system_flag(uint32_t flag, bool set) {
+    if (!state_initialized) {
+        return -ENODEV;
+    }
+    
+    k_mutex_lock(&onboarding_mutex, K_FOREVER);
+    
+    if (set) {
+        current_state.system_config_flags |= flag;
+    } else {
+        current_state.system_config_flags &= ~flag;
+    }
+    
+    /* Update timestamp and recalculate completion */
+    current_state.last_update_time = get_current_timestamp();
+    current_state.onboarding_completion_pct = onboarding_calculate_completion();
+    
+    /* Save to NVS */
+    int ret = nvs_save_onboarding_state(&current_state);
+    if (ret < 0) {
+        printk("Failed to save onboarding state: %d\n", ret);
+    }
+    
+    k_mutex_unlock(&onboarding_mutex);
+    
+    /* Send BLE notification for onboarding progress update */
+    bt_irrigation_onboarding_status_notify();
+    
+    printk("System flag 0x%x %s\n", flag, set ? "set" : "cleared");
+    return ret;
+}
+
+int onboarding_calculate_completion(void) {
+    if (!state_initialized) {
+        return 0;
+    }
+    
+    /* Define weights for different configuration categories */
+    const int CHANNEL_WEIGHT = 60;  /* 60% for channel configuration */
+    const int SYSTEM_WEIGHT = 30;   /* 30% for system configuration */
+    const int SCHEDULE_WEIGHT = 10; /* 10% for schedule configuration */
+    
+    /* Calculate channel configuration completion */
+    int total_channel_flags = 8 * 8; /* 8 channels × 8 flags each */
+    int set_channel_flags = count_set_bits(current_state.channel_config_flags);
+    int channel_completion = (set_channel_flags * CHANNEL_WEIGHT) / total_channel_flags;
+    
+    /* Calculate system configuration completion */
+    int total_system_flags = 8; /* 8 system flags defined */
+    int set_system_flags = count_set_bits_32(current_state.system_config_flags);
+    int system_completion = (set_system_flags * SYSTEM_WEIGHT) / total_system_flags;
+    
+    /* Calculate schedule configuration completion */
+    int total_schedule_flags = 8; /* 8 channels can have schedules */
+    int set_schedule_flags = count_set_bits_8(current_state.schedule_config_flags);
+    int schedule_completion = (set_schedule_flags * SCHEDULE_WEIGHT) / total_schedule_flags;
+    
+    /* Total completion percentage */
+    int total_completion = channel_completion + system_completion + schedule_completion;
+    
+    /* Ensure we don't exceed 100% */
+    if (total_completion > 100) {
+        total_completion = 100;
+    }
+    
+    return total_completion;
+}
+
+bool onboarding_is_complete(void) {
+    if (!state_initialized) {
+        return false;
+    }
+    
+    /* Consider onboarding complete if we have at least:
+     * - Basic configuration for at least one channel
+     * - Essential system settings
+     */
+    
+    /* Check if at least one channel has basic configuration */
+    bool has_configured_channel = false;
+    for (int ch = 0; ch < 8; ch++) {
+        uint8_t channel_flags = onboarding_get_channel_flags(ch);
+        uint8_t required_flags = CHANNEL_FLAG_PLANT_TYPE_SET | 
+                                CHANNEL_FLAG_SOIL_TYPE_SET | 
+                                CHANNEL_FLAG_IRRIGATION_METHOD_SET |
+                                CHANNEL_FLAG_COVERAGE_SET;
+        
+        if ((channel_flags & required_flags) == required_flags) {
+            has_configured_channel = true;
+            break;
+        }
+    }
+    
+    /* Check essential system settings */
+    uint32_t required_system_flags = SYSTEM_FLAG_RTC_CONFIGURED;
+    bool has_system_config = (current_state.system_config_flags & required_system_flags) == required_system_flags;
+    
+    return has_configured_channel && has_system_config;
+}
+
+uint8_t onboarding_get_channel_flags(uint8_t channel_id) {
+    if (channel_id >= 8 || !state_initialized) {
+        return 0;
+    }
+    
+    /* Extract 8 bits for this channel from the 64-bit field */
+    uint8_t shift = channel_id * 8;
+    return (current_state.channel_config_flags >> shift) & 0xFF;
+}
+
+uint32_t onboarding_get_system_flags(void) {
+    if (!state_initialized) {
+        return 0;
+    }
+    
+    return current_state.system_config_flags;
+}
+
+uint8_t onboarding_get_schedule_flags(void) {
+    if (!state_initialized) {
+        return 0;
+    }
+    
+    return current_state.schedule_config_flags;
+}
+
+int onboarding_update_schedule_flag(uint8_t channel_id, bool has_schedule) {
+    if (channel_id >= 8) {
+        return -EINVAL;
+    }
+    
+    if (!state_initialized) {
+        return -ENODEV;
+    }
+    
+    k_mutex_lock(&onboarding_mutex, K_FOREVER);
+    
+    uint8_t flag_mask = 1 << channel_id;
+    
+    if (has_schedule) {
+        current_state.schedule_config_flags |= flag_mask;
+    } else {
+        current_state.schedule_config_flags &= ~flag_mask;
+    }
+    
+    /* Update timestamp and recalculate completion */
+    current_state.last_update_time = get_current_timestamp();
+    current_state.onboarding_completion_pct = onboarding_calculate_completion();
+    
+    /* Save to NVS */
+    int ret = nvs_save_onboarding_state(&current_state);
+    if (ret < 0) {
+        printk("Failed to save onboarding state: %d\n", ret);
+    }
+    
+    k_mutex_unlock(&onboarding_mutex);
+    
+    /* Send BLE notification for onboarding progress update */
+    bt_irrigation_onboarding_status_notify();
+    
+    printk("Channel %u schedule flag %s\n", channel_id, has_schedule ? "set" : "cleared");
+    return ret;
+}
+
+int onboarding_reset_state(void) {
+    if (!state_initialized) {
+        return -ENODEV;
+    }
+    
+    k_mutex_lock(&onboarding_mutex, K_FOREVER);
+    
+    /* Reset to default state */
+    onboarding_state_t default_state = DEFAULT_ONBOARDING_STATE;
+    current_state = default_state;
+    current_state.onboarding_start_time = get_current_timestamp();
+    current_state.last_update_time = current_state.onboarding_start_time;
+    
+    /* Save to NVS */
+    int ret = nvs_save_onboarding_state(&current_state);
+    if (ret < 0) {
+        printk("Failed to save reset onboarding state: %d\n", ret);
+    }
+    
+    k_mutex_unlock(&onboarding_mutex);
+    
+    printk("Onboarding state reset to defaults\n");
+    return ret;
+}

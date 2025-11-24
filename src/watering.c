@@ -10,6 +10,11 @@
 #include "watering_history.h"          /* Add history integration */
 #include "bt_irrigation_service.h"     /* + BLE status update */
 #include "plant_db.h"                  /* Add plant database */
+#include "fao56_calc.h"                /* Add FAO-56 calculations */
+#include "rain_sensor.h"               /* Rain sensor integration */
+#include "rain_integration.h"          /* Rain integration system */
+#include "rain_history.h"              /* Rain history management */
+#include "onboarding_state.h"          /* Onboarding state management */
 
 LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -36,6 +41,43 @@ K_MUTEX_DEFINE(system_state_mutex);
 /** Global tracking for completed tasks */
 static int completed_tasks_count = 0;
 static K_MUTEX_DEFINE(completed_tasks_mutex);
+
+typedef struct {
+    bool active;                     /**< Snapshot validity flag */
+    watering_event_t snapshot;       /**< Original event configuration */
+} watering_event_backup_t;
+
+static watering_event_backup_t watering_event_backups[WATERING_CHANNELS_COUNT];
+
+void watering_snapshot_event(uint8_t channel_id)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return;
+    }
+
+    watering_event_backup_t *backup = &watering_event_backups[channel_id];
+    if (backup->active) {
+        return; /* Existing snapshot covers current override */
+    }
+
+    backup->snapshot = watering_channels[channel_id].watering_event;
+    backup->active = true;
+}
+
+void watering_restore_event(uint8_t channel_id)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return;
+    }
+
+    watering_event_backup_t *backup = &watering_event_backups[channel_id];
+    if (!backup->active) {
+        return;
+    }
+
+    watering_channels[channel_id].watering_event = backup->snapshot;
+    backup->active = false;
+}
 
 /**
  * @brief Log error with file and line information
@@ -84,8 +126,34 @@ watering_error_t watering_init(void) {
     // Update system flags
     system_initialized = true;
     
+    /* Initialize onboarding state management */
+    int onboarding_err = onboarding_state_init();
+    if (onboarding_err != 0) {
+        printk("Onboarding state initialization failed: %d - continuing\n", onboarding_err);
+    }
+    
     /* always start flow-monitoring */
     flow_monitor_init();
+    
+    /* Initialize rain sensor system */
+    err = rain_sensor_init();
+    if (err != WATERING_SUCCESS) {
+        printk("Rain sensor initialization failed: %d - continuing without rain integration\n", err);
+    } else {
+        printk("Rain sensor initialized successfully\n");
+        
+        /* Initialize rain integration */
+        err = rain_integration_init();
+        if (err != WATERING_SUCCESS) {
+            printk("Rain integration initialization failed: %d\n", err);
+        }
+        
+        /* Initialize rain history */
+        err = rain_history_init();
+        if (err != WATERING_SUCCESS) {
+            printk("Rain history initialization failed: %d\n", err);
+        }
+    }
     
     // Ensure all valves are closed as a safety measure
     valve_close_all();
@@ -464,7 +532,10 @@ watering_error_t watering_set_plant_type(uint8_t channel_id, plant_type_t plant_
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    watering_channels[channel_id].plant_type = plant_type;
+    // Legacy plant_type assignment removed
+    
+    // Update onboarding flag
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_PLANT_TYPE_SET, true);
     
     // Save configuration changes
     watering_save_config();
@@ -481,7 +552,7 @@ watering_error_t watering_get_plant_type(uint8_t channel_id, plant_type_t *plant
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    *plant_type = watering_channels[channel_id].plant_type;
+    *plant_type = watering_channels[channel_id].plant_info.main_type;
     return WATERING_SUCCESS;
 }
 
@@ -498,6 +569,9 @@ watering_error_t watering_set_soil_type(uint8_t channel_id, soil_type_t soil_typ
     }
     
     watering_channels[channel_id].soil_type = soil_type;
+    
+    // Update onboarding flag
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_SOIL_TYPE_SET, true);
     
     // Save configuration changes
     watering_save_config();
@@ -532,6 +606,9 @@ watering_error_t watering_set_irrigation_method(uint8_t channel_id, irrigation_m
     
     watering_channels[channel_id].irrigation_method = irrigation_method;
     
+    // Update onboarding flag
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_IRRIGATION_METHOD_SET, true);
+    
     // Save configuration changes
     watering_save_config();
     
@@ -563,8 +640,11 @@ watering_error_t watering_set_coverage_area(uint8_t channel_id, float area_m2) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    watering_channels[channel_id].coverage.use_area = true;
-    watering_channels[channel_id].coverage.area.area_m2 = area_m2;
+    watering_channels[channel_id].use_area_based = true;
+    watering_channels[channel_id].coverage.area_m2 = area_m2;
+    
+    // Update onboarding flag
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_COVERAGE_SET, true);
     
     // Save configuration changes
     watering_save_config();
@@ -585,8 +665,8 @@ watering_error_t watering_set_plant_count(uint8_t channel_id, uint16_t count) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    watering_channels[channel_id].coverage.use_area = false;
-    watering_channels[channel_id].coverage.plants.count = count;
+    watering_channels[channel_id].use_area_based = false;
+    watering_channels[channel_id].coverage.plant_count = count;
     
     // Save configuration changes
     watering_save_config();
@@ -603,7 +683,14 @@ watering_error_t watering_get_coverage(uint8_t channel_id, channel_coverage_t *c
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    *coverage = watering_channels[channel_id].coverage;
+    // Get coverage information
+    coverage->use_area = watering_channels[channel_id].use_area_based;
+    if (coverage->use_area) {
+        coverage->area.area_m2 = watering_channels[channel_id].coverage.area_m2;
+    } else {
+        coverage->plants.count = watering_channels[channel_id].coverage.plant_count;
+    }
+    
     return WATERING_SUCCESS;
 }
 
@@ -620,6 +707,9 @@ watering_error_t watering_set_sun_percentage(uint8_t channel_id, uint8_t sun_per
     }
     
     watering_channels[channel_id].sun_percentage = sun_percentage;
+    
+    // Update onboarding flag
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_SUN_EXPOSURE_SET, true);
     
     // Save configuration changes
     watering_save_config();
@@ -714,7 +804,7 @@ float watering_get_plant_water_factor(plant_type_t plant_type, const custom_plan
     if (custom_config != NULL) {
         if (custom_config->custom_name[0] != '\0') {
             // Try to find the specific species in the database
-            const plant_data_t *plant_data = plant_db_find_species(custom_config->custom_name);
+            const plant_full_data_t *plant_data = plant_db_find_species(custom_config->custom_name);
             if (plant_data != NULL) {
                 // Use mid-season coefficient as the base water factor
                 return plant_db_get_crop_coefficient(plant_data, 1);
@@ -779,10 +869,18 @@ watering_error_t watering_get_channel_environment(uint8_t channel_id,
     
     watering_channel_t *channel = &watering_channels[channel_id];
     
-    if (plant_type) *plant_type = channel->plant_type;
+    if (plant_type) *plant_type = channel->plant_info.main_type;
     if (soil_type) *soil_type = channel->soil_type;
     if (irrigation_method) *irrigation_method = channel->irrigation_method;
-    if (coverage) *coverage = channel->coverage;
+    if (coverage) {
+        // Get coverage information
+        coverage->use_area = channel->use_area_based;
+        if (coverage->use_area) {
+            coverage->area.area_m2 = channel->coverage.area_m2;
+        } else {
+            coverage->plants.count = channel->coverage.plant_count;
+        }
+    }
     if (sun_percentage) *sun_percentage = channel->sun_percentage;
     if (custom_config) *custom_config = channel->custom_plant;
     
@@ -814,10 +912,16 @@ watering_error_t watering_set_channel_environment(uint8_t channel_id,
     watering_channel_t *channel = &watering_channels[channel_id];
     
     // Set all environment parameters
-    channel->plant_type = plant_type;
+    // Legacy plant_type assignment removed
     channel->soil_type = soil_type;
     channel->irrigation_method = irrigation_method;
-    channel->coverage = *coverage;
+    // Set coverage information
+    channel->use_area_based = coverage->use_area;
+    if (coverage->use_area) {
+        channel->coverage.area_m2 = coverage->area.area_m2;
+    } else {
+        channel->coverage.plant_count = coverage->plants.count;
+    }
     channel->sun_percentage = sun_percentage;
     
     // Set custom plant config if provided and plant type is OTHER
@@ -870,7 +974,7 @@ watering_error_t watering_set_vegetable_type(uint8_t channel_id, vegetable_type_
     // Set main type to vegetables and specific type
     watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_VEGETABLES;
     watering_channels[channel_id].plant_info.specific.vegetable = vegetable_type;
-    watering_channels[channel_id].plant_type = PLANT_TYPE_VEGETABLES; // For backward compatibility
+
     
     watering_save_config();
     printk("Channel %d vegetable type set to %d\n", channel_id, vegetable_type);
@@ -893,6 +997,145 @@ watering_error_t watering_get_vegetable_type(uint8_t channel_id, vegetable_type_
     return WATERING_SUCCESS;
 }
 
+/* ------------------------------------------------------------------ */
+/* Automatic irrigation processing functions                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Check if a channel is configured for automatic irrigation
+ */
+bool watering_is_automatic_mode(uint8_t channel_id) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return false;
+    }
+    
+    watering_mode_t mode = watering_channels[channel_id].watering_event.watering_mode;
+    return (mode == WATERING_AUTOMATIC_QUALITY || mode == WATERING_AUTOMATIC_ECO);
+}
+
+/**
+ * @brief Process automatic irrigation for a channel based on its mode
+ */
+watering_error_t watering_process_automatic_irrigation(
+    uint8_t channel_id,
+    const water_balance_t *balance,
+    const irrigation_method_data_t *method,
+    const plant_full_data_t *plant,
+    irrigation_calculation_t *result
+) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (!balance || !method || !result) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channel_t *channel = &watering_channels[channel_id];
+    watering_mode_t mode = channel->watering_event.watering_mode;
+    
+    // Determine mode name for logging
+    const char *mode_name = "Unknown";
+    watering_error_t err = WATERING_SUCCESS;
+    
+    // Get coverage information
+    float area_m2 = 0.0f;
+    uint16_t plant_count = 0;
+    
+    if (channel->use_area_based) {
+        area_m2 = channel->coverage.area_m2;
+    } else {
+        plant_count = channel->coverage.plant_count;
+    }
+    
+    // Process based on automatic mode
+    switch (mode) {
+        case WATERING_AUTOMATIC_QUALITY:
+            mode_name = "Quality";
+            err = apply_quality_irrigation_mode(balance, method, plant, 
+                                              area_m2, plant_count,
+                                              channel->max_volume_limit_l, result);
+            break;
+            
+        case WATERING_AUTOMATIC_ECO:
+            mode_name = "Eco";
+            err = apply_eco_irrigation_mode(balance, method, plant,
+                                          area_m2, plant_count,
+                                          channel->max_volume_limit_l, result);
+            break;
+            
+        default:
+            LOG_ERR("Channel %d is not in automatic irrigation mode", channel_id);
+            return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (err != WATERING_SUCCESS) {
+        LOG_ERR("Automatic irrigation calculation failed for channel %d: %d", channel_id, err);
+        return err;
+    }
+    
+    // Log the results
+    LOG_INF("Channel %d %s mode result: %.1f L (%.2f mm net, %.2f mm gross)",
+            channel_id, mode_name, (double)result->volume_liters,
+            (double)result->net_irrigation_mm, (double)result->gross_irrigation_mm);
+    
+    if (result->volume_limited) {
+        LOG_WRN("Channel %d volume was limited by max constraint (%.1f L)", 
+                channel_id, (double)channel->max_volume_limit_l);
+    }
+    
+    return WATERING_SUCCESS;
+}
+
+/* ------------------------------------------------------------------ */
+/* Maximum volume limit functions                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * @brief Set maximum volume limit for a channel
+ * 
+ * @param channel_id Channel ID
+ * @param max_volume_l Maximum volume limit in liters (0 = no limit)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_max_volume_limit(uint8_t channel_id, float max_volume_l)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    if (max_volume_l < 0.0f) {
+        LOG_ERR("Invalid maximum volume limit: %.1f", (double)max_volume_l);
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    watering_channel_t *channel = &watering_channels[channel_id];
+    channel->max_volume_limit_l = max_volume_l;
+
+    LOG_INF("Channel %d maximum volume limit set to %.1f L", channel_id, (double)max_volume_l);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get maximum volume limit for a channel
+ * 
+ * @param channel_id Channel ID
+ * @param max_volume_l Pointer to store maximum volume limit
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_max_volume_limit(uint8_t channel_id, float *max_volume_l)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT || max_volume_l == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    watering_channel_t *channel = &watering_channels[channel_id];
+    *max_volume_l = channel->max_volume_limit_l;
+
+    return WATERING_SUCCESS;
+    return WATERING_SUCCESS;
+}
+
 /**
  * @brief Set specific herb type for a channel
  */
@@ -907,7 +1150,7 @@ watering_error_t watering_set_herb_type(uint8_t channel_id, herb_type_t herb_typ
     
     watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_HERBS;
     watering_channels[channel_id].plant_info.specific.herb = herb_type;
-    watering_channels[channel_id].plant_type = PLANT_TYPE_HERBS;
+
     
     watering_save_config();
     printk("Channel %d herb type set to %d\n", channel_id, herb_type);
@@ -944,7 +1187,7 @@ watering_error_t watering_set_flower_type(uint8_t channel_id, flower_type_t flow
     
     watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_FLOWERS;
     watering_channels[channel_id].plant_info.specific.flower = flower_type;
-    watering_channels[channel_id].plant_type = PLANT_TYPE_FLOWERS;
+
     
     watering_save_config();
     printk("Channel %d flower type set to %d\n", channel_id, flower_type);
@@ -981,7 +1224,7 @@ watering_error_t watering_set_tree_type(uint8_t channel_id, tree_type_t tree_typ
     
     watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_TREES;
     watering_channels[channel_id].plant_info.specific.tree = tree_type;
-    watering_channels[channel_id].plant_type = PLANT_TYPE_TREES;
+
     
     watering_save_config();
     printk("Channel %d tree type set to %d\n", channel_id, tree_type);
@@ -1018,7 +1261,7 @@ watering_error_t watering_set_lawn_type(uint8_t channel_id, lawn_type_t lawn_typ
     
     watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_LAWN;
     watering_channels[channel_id].plant_info.specific.lawn = lawn_type;
-    watering_channels[channel_id].plant_type = PLANT_TYPE_LAWN;
+    // Legacy plant_type assignment removed
     
     watering_save_config();
     printk("Channel %d lawn type set to %d\n", channel_id, lawn_type);
@@ -1055,7 +1298,7 @@ watering_error_t watering_set_succulent_type(uint8_t channel_id, succulent_type_
     
     watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_SUCCULENTS;
     watering_channels[channel_id].plant_info.specific.succulent = succulent_type;
-    watering_channels[channel_id].plant_type = PLANT_TYPE_SUCCULENTS;
+    // Legacy plant_type assignment removed
     
     watering_save_config();
     printk("Channel %d succulent type set to %d\n", channel_id, succulent_type);
@@ -1092,7 +1335,7 @@ watering_error_t watering_set_shrub_type(uint8_t channel_id, shrub_type_t shrub_
     
     watering_channels[channel_id].plant_info.main_type = PLANT_TYPE_SHRUBS;
     watering_channels[channel_id].plant_info.specific.shrub = shrub_type;
-    watering_channels[channel_id].plant_type = PLANT_TYPE_SHRUBS;
+    // Legacy plant_type assignment removed
     
     watering_save_config();
     printk("Channel %d shrub type set to %d\n", channel_id, shrub_type);
@@ -1140,7 +1383,7 @@ watering_error_t watering_set_plant_info(uint8_t channel_id, const plant_info_t 
     }
     
     watering_channels[channel_id].plant_info = *plant_info;
-    watering_channels[channel_id].plant_type = plant_info->main_type; // For backward compatibility
+    // Legacy plant_type assignment removed
     
     watering_save_config();
     printk("Channel %d plant info updated (main type: %d)\n", channel_id, plant_info->main_type);
@@ -1285,4 +1528,617 @@ void watering_increment_completed_tasks_count(void) {
         k_mutex_unlock(&completed_tasks_mutex);
         LOG_DBG("Completed tasks count incremented to %d", completed_tasks_count);
     }
+}
+/* Duplicate function removed - keeping original implementation above */
+
+/* Duplicate functions removed - keeping original implementations above *//**
+
+ * @brief Set the planting date for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param planting_date_unix Unix timestamp of when plants were established
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_planting_date(uint8_t channel_id, uint32_t planting_date_unix)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    watering_channel_t *channel = &watering_channels[channel_id];
+    channel->planting_date_unix = planting_date_unix;
+    
+    // Immediately update days after planting
+    watering_update_days_after_planting(channel_id);
+    
+    // Save configuration
+    watering_save_config();
+    
+    LOG_INF("Channel %d planting date set to %u (Unix timestamp)", channel_id, planting_date_unix);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get the planting date for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param planting_date_unix Pointer to store the planting date Unix timestamp
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_planting_date(uint8_t channel_id, uint32_t *planting_date_unix)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT || planting_date_unix == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    *planting_date_unix = watering_channels[channel_id].planting_date_unix;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Update days after planting for a channel
+ * 
+ * This function calculates the current days after planting based on the 
+ * planting date and current time. Should be called periodically or when
+ * planting date is updated.
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_update_days_after_planting(uint8_t channel_id)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    watering_channel_t *channel = &watering_channels[channel_id];
+    
+    // If no planting date is set, days after planting is 0
+    if (channel->planting_date_unix == 0) {
+        channel->days_after_planting = 0;
+        return WATERING_SUCCESS;
+    }
+    
+    // Get current time
+    uint32_t current_time = k_uptime_get_32() / 1000; // Convert to seconds
+    
+    // Calculate days difference
+    if (current_time >= channel->planting_date_unix) {
+        uint32_t seconds_diff = current_time - channel->planting_date_unix;
+        channel->days_after_planting = (uint16_t)(seconds_diff / (24 * 60 * 60)); // Convert to days
+    } else {
+        // Planting date is in the future - set to 0
+        channel->days_after_planting = 0;
+    }
+    
+    LOG_DBG("Channel %d: %d days after planting", channel_id, channel->days_after_planting);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get days after planting for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param days_after_planting Pointer to store the days after planting
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_days_after_planting(uint8_t channel_id, uint16_t *days_after_planting)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT || days_after_planting == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    // Update the calculation first
+    watering_error_t err = watering_update_days_after_planting(channel_id);
+    if (err != WATERING_SUCCESS) {
+        return err;
+    }
+    
+    *days_after_planting = watering_channels[channel_id].days_after_planting;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Update days after planting for all channels
+ * 
+ * This function should be called periodically (e.g., daily) to keep the
+ * days after planting calculations current for all channels.
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_update_all_days_after_planting(void)
+{
+    watering_error_t result = WATERING_SUCCESS;
+    
+    for (uint8_t i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+        watering_error_t err = watering_update_days_after_planting(i);
+        if (err != WATERING_SUCCESS) {
+            LOG_WRN("Failed to update days after planting for channel %d: %d", i, err);
+            result = err; // Keep track of last error, but continue processing
+        }
+    }
+    
+    return result;
+}/*
+*
+ * @brief Set the latitude for a channel (for solar radiation calculations)
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param latitude_deg Latitude in degrees (-90 to +90)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_latitude(uint8_t channel_id, float latitude_deg)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Validate latitude range
+    if (latitude_deg < -90.0f || latitude_deg > 90.0f) {
+        LOG_ERR("Invalid latitude: %.2f (must be -90 to +90)", (double)latitude_deg);
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    watering_channel_t *channel = &watering_channels[channel_id];
+    channel->latitude_deg = latitude_deg;
+    
+    // Save configuration
+    watering_save_config();
+    
+    LOG_INF("Channel %d latitude set to %.2f degrees", channel_id, (double)latitude_deg);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get the latitude for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param latitude_deg Pointer to store the latitude in degrees
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_latitude(uint8_t channel_id, float *latitude_deg)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT || latitude_deg == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    *latitude_deg = watering_channels[channel_id].latitude_deg;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set the sun exposure percentage for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param sun_exposure_pct Site-specific sun exposure percentage (0-100%)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_sun_exposure(uint8_t channel_id, uint8_t sun_exposure_pct)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Validate sun exposure range
+    if (sun_exposure_pct > 100) {
+        LOG_ERR("Invalid sun exposure: %d%% (must be 0-100%%)", sun_exposure_pct);
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    watering_channel_t *channel = &watering_channels[channel_id];
+    channel->sun_exposure_pct = sun_exposure_pct;
+    
+    // Save configuration
+    watering_save_config();
+    
+    LOG_INF("Channel %d sun exposure set to %d%%", channel_id, sun_exposure_pct);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get the sun exposure percentage for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param sun_exposure_pct Pointer to store the sun exposure percentage
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_sun_exposure(uint8_t channel_id, uint8_t *sun_exposure_pct)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT || sun_exposure_pct == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    *sun_exposure_pct = watering_channels[channel_id].sun_exposure_pct;
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Set comprehensive environmental configuration for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param latitude_deg Latitude in degrees (-90 to +90)
+ * @param sun_exposure_pct Site-specific sun exposure percentage (0-100%)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_environmental_config(uint8_t channel_id, 
+                                                  float latitude_deg, 
+                                                  uint8_t sun_exposure_pct)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Validate parameters
+    if (latitude_deg < -90.0f || latitude_deg > 90.0f) {
+        LOG_ERR("Invalid latitude: %.2f (must be -90 to +90)", (double)latitude_deg);
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (sun_exposure_pct > 100) {
+        LOG_ERR("Invalid sun exposure: %d%% (must be 0-100%%)", sun_exposure_pct);
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    watering_channel_t *channel = &watering_channels[channel_id];
+    channel->latitude_deg = latitude_deg;
+    channel->sun_exposure_pct = sun_exposure_pct;
+    
+    // Save configuration
+    watering_save_config();
+    
+    LOG_INF("Channel %d environmental config: latitude=%.2f°, sun exposure=%d%%", 
+            channel_id, (double)latitude_deg, sun_exposure_pct);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get comprehensive environmental configuration for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param latitude_deg Pointer to store latitude in degrees (can be NULL)
+ * @param sun_exposure_pct Pointer to store sun exposure percentage (can be NULL)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_environmental_config(uint8_t channel_id, 
+                                                  float *latitude_deg, 
+                                                  uint8_t *sun_exposure_pct)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    watering_channel_t *channel = &watering_channels[channel_id];
+    
+    if (latitude_deg != NULL) {
+        *latitude_deg = channel->latitude_deg;
+    }
+    
+    if (sun_exposure_pct != NULL) {
+        *sun_exposure_pct = channel->sun_exposure_pct;
+    }
+    
+    return WATERING_SUCCESS;
+}/**
+ * @
+brief Run automatic irrigation calculations for all channels
+ * 
+ * This function processes all channels configured for automatic irrigation
+ * and schedules irrigation tasks based on FAO-56 calculations.
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_run_automatic_calculations(void)
+{
+    watering_error_t result = WATERING_SUCCESS;
+    uint8_t processed_channels = 0;
+    
+    LOG_DBG("Running automatic irrigation calculations");
+    
+    // Check if system is in a state that allows automatic calculations
+    if (system_status == WATERING_STATUS_FAULT || 
+        system_status == WATERING_STATUS_RTC_ERROR) {
+        LOG_WRN("Skipping automatic calculations due to system status: %d", system_status);
+        return WATERING_ERROR_BUSY;
+    }
+    
+    // Process each channel
+    for (uint8_t channel_id = 0; channel_id < WATERING_CHANNELS_COUNT; channel_id++) {
+        watering_channel_t *channel = &watering_channels[channel_id];
+        
+        // Skip channels not in automatic mode
+        if (channel->watering_event.watering_mode != WATERING_AUTOMATIC_QUALITY &&
+            channel->watering_event.watering_mode != WATERING_AUTOMATIC_ECO) {
+            continue;
+        }
+        
+        // Skip if channel has an active task
+        if (watering_task_state.current_active_task != NULL &&
+            watering_task_state.current_active_task->channel == channel) {
+            LOG_DBG("Channel %d has active task, skipping automatic calculation", channel_id);
+            continue;
+        }
+        
+        // Update days after planting
+        watering_error_t err = watering_update_days_after_planting(channel_id);
+        if (err != WATERING_SUCCESS) {
+            LOG_WRN("Failed to update days after planting for channel %d: %d", channel_id, err);
+            result = err;
+            continue;
+        }
+        
+        // Get environmental data
+        environmental_data_t env_data;
+        err = env_sensors_read(&env_data);
+        if (err != WATERING_SUCCESS) {
+            LOG_WRN("Failed to read environmental data for channel %d: %d", channel_id, err);
+            // Continue with fallback data
+            memset(&env_data, 0, sizeof(env_data));
+            env_data.air_temp_mean_c = 20.0f;  // Default temperature
+            env_data.rel_humidity_pct = 60.0f; // Default humidity
+            env_data.temp_valid = false;
+            env_data.humidity_valid = false;
+        }
+        
+        // Perform FAO-56 calculations
+        irrigation_calculation_t calc_result;
+        err = fao56_calculate_irrigation_requirement(channel_id, &env_data, &calc_result);
+        if (err != WATERING_SUCCESS) {
+            LOG_WRN("FAO-56 calculation failed for channel %d: %d", channel_id, err);
+            result = err;
+            continue;
+        }
+        
+        // Check if irrigation is needed
+        if (calc_result.volume_liters <= 0.1f) {
+            LOG_DBG("Channel %d: No irrigation needed (calculated volume: %.3f L)", 
+                    channel_id, (double)calc_result.volume_liters);
+            continue;
+        }
+        
+        // Create irrigation task
+        watering_task_t auto_task;
+        memset(&auto_task, 0, sizeof(auto_task));
+        
+        auto_task.channel = channel;
+        auto_task.trigger_type = WATERING_TRIGGER_SCHEDULED; // Automatic calculations are scheduled
+
+        /* Temporarily override scheduling parameters for this run */
+        watering_snapshot_event(channel_id);
+        channel->watering_event.watering_mode = WATERING_BY_VOLUME;
+        auto_task.by_volume.volume_liters = (uint16_t)(calc_result.volume_liters + 0.5f); // Round to nearest liter
+        
+        // Ensure minimum volume
+        if (auto_task.by_volume.volume_liters < 1) {
+            auto_task.by_volume.volume_liters = 1;
+        }
+
+        channel->watering_event.watering.by_volume.volume_liters = auto_task.by_volume.volume_liters;
+        
+        // Add task to queue
+        err = watering_add_task(&auto_task);
+        if (err != WATERING_SUCCESS) {
+            watering_restore_event(channel_id);
+            LOG_ERR("Failed to add automatic irrigation task for channel %d: %d", channel_id, err);
+            result = err;
+            continue;
+        }
+        
+        const char *auto_mode_str = "Automatic";
+        if (channel->auto_mode == WATERING_AUTOMATIC_QUALITY) {
+            auto_mode_str = "Quality";
+        } else if (channel->auto_mode == WATERING_AUTOMATIC_ECO) {
+            auto_mode_str = "Eco";
+        }
+
+        LOG_INF("Channel %d: Scheduled automatic irrigation (%.1f L, %s mode)",
+                channel_id,
+                (double)calc_result.volume_liters,
+                auto_mode_str);
+        
+        processed_channels++;
+    }
+    
+    if (processed_channels > 0) {
+        LOG_INF("Automatic calculations complete: %d channels processed", processed_channels);
+        
+        // Notify BLE clients of automatic calculation completion
+        bt_irrigation_auto_calc_status_notify();
+    } else {
+        LOG_DBG("No channels required automatic irrigation");
+    }
+    
+    return result;
+}
+
+/**
+ * @brief Set automatic calculation interval
+ * 
+ * @param interval_hours Interval between automatic calculations in hours (1-24)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_auto_calc_interval(uint8_t interval_hours)
+{
+    if (interval_hours < 1 || interval_hours > 24) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Update the interval in watering_tasks.c
+    extern uint32_t auto_calc_interval_ms;
+    auto_calc_interval_ms = interval_hours * 3600000; // Convert to milliseconds
+    
+    LOG_INF("Automatic calculation interval set to %d hours", interval_hours);
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Enable or disable automatic calculations
+ * 
+ * @param enabled True to enable, false to disable
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_auto_calc_enabled(bool enabled)
+{
+    // Update the flag in watering_tasks.c
+    extern bool auto_calc_enabled;
+    auto_calc_enabled = enabled;
+    
+    LOG_INF("Automatic calculations %s", enabled ? "enabled" : "disabled");
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get automatic calculation status
+ * 
+ * @param enabled Pointer to store enabled status
+ * @param interval_hours Pointer to store interval in hours
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_auto_calc_status(bool *enabled, uint8_t *interval_hours)
+{
+    if (enabled == NULL || interval_hours == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    extern bool auto_calc_enabled;
+    extern uint32_t auto_calc_interval_ms;
+    
+    *enabled = auto_calc_enabled;
+    *interval_hours = (uint8_t)(auto_calc_interval_ms / 3600000);
+    
+    return WATERING_SUCCESS;
+}/**
+
+ * @brief Get comprehensive system status including rain sensor information
+ * 
+ * @param status_buffer Buffer to store status information
+ * @param buffer_size Size of the status buffer
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_system_status_detailed(char *status_buffer, uint16_t buffer_size)
+{
+    if (!status_buffer || buffer_size < 200) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    int written = 0;
+    
+    /* Basic system status */
+    watering_status_t status;
+    watering_error_t ret = watering_get_status(&status);
+    if (ret == WATERING_SUCCESS) {
+        const char *status_str = "Unknown";
+        switch (status) {
+            case WATERING_STATUS_OK: status_str = "OK"; break;
+            case WATERING_STATUS_FAULT: status_str = "FAULT"; break;
+            case WATERING_STATUS_NO_FLOW: status_str = "NO_FLOW"; break;
+            case WATERING_STATUS_UNEXPECTED_FLOW: status_str = "UNEXPECTED_FLOW"; break;
+            case WATERING_STATUS_RTC_ERROR: status_str = "RTC_ERROR"; break;
+            case WATERING_STATUS_LOW_POWER: status_str = "LOW_POWER"; break;
+        }
+        written += snprintf(status_buffer + written, buffer_size - written,
+                           "System Status: %s\n", status_str);
+    }
+    
+    /* Current task status */
+    watering_task_t *current_task = watering_get_current_task();
+    if (current_task) {
+        uint8_t channel_id = current_task->channel - watering_channels;
+        written += snprintf(status_buffer + written, buffer_size - written,
+                           "Active Task: Channel %d (%s)\n", 
+                           channel_id + 1, current_task->channel->name);
+    } else {
+        written += snprintf(status_buffer + written, buffer_size - written,
+                           "Active Task: None\n");
+    }
+    
+    /* Queue status */
+    uint8_t pending_count;
+    bool queue_active;
+    ret = watering_get_queue_status(&pending_count, &queue_active);
+    if (ret == WATERING_SUCCESS) {
+        written += snprintf(status_buffer + written, buffer_size - written,
+                           "Task Queue: %d pending\n", pending_count);
+    }
+    
+    /* Rain sensor status */
+    if (rain_sensor_is_active()) {
+        float recent_rainfall = rain_history_get_last_24h();
+        bool integration_enabled = rain_integration_is_enabled();
+    written += snprintf(status_buffer + written, buffer_size - written,
+               "Rain Sensor: Active (%.2fmm/24h, integration %s)\n",
+               (double)recent_rainfall, integration_enabled ? "ON" : "OFF");
+    } else {
+        written += snprintf(status_buffer + written, buffer_size - written,
+                           "Rain Sensor: Inactive/Error\n");
+    }
+    
+    /* Flow sensor status */
+    uint32_t flow_pulses = get_pulse_count();
+    written += snprintf(status_buffer + written, buffer_size - written,
+                       "Flow Sensor: %u pulses\n", flow_pulses);
+    
+    /* Power mode */
+    const char *power_mode_str = "Unknown";
+    switch (current_power_mode) {
+        case POWER_MODE_NORMAL: power_mode_str = "Normal"; break;
+        case POWER_MODE_ENERGY_SAVING: power_mode_str = "Energy Saving"; break;
+        case POWER_MODE_ULTRA_LOW_POWER: power_mode_str = "Ultra Low Power"; break;
+    }
+    written += snprintf(status_buffer + written, buffer_size - written,
+                       "Power Mode: %s\n", power_mode_str);
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get rain sensor integration status for monitoring
+ * 
+ * @param integration_status Buffer to store integration status
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_rain_integration_status(rain_integration_status_t *integration_status)
+{
+    if (!integration_status) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    memset(integration_status, 0, sizeof(rain_integration_status_t));
+    
+    /* Rain sensor status */
+    integration_status->sensor_active = rain_sensor_is_active();
+    integration_status->integration_enabled = rain_integration_is_enabled();
+    
+    if (integration_status->sensor_active) {
+        integration_status->last_pulse_time = rain_sensor_get_last_pulse_time();
+        integration_status->calibration_mm_per_pulse = rain_sensor_get_calibration();
+    }
+    
+    /* Recent rainfall data */
+    integration_status->rainfall_last_hour = rain_history_get_current_hour();
+    integration_status->rainfall_last_24h = rain_history_get_last_24h();
+    integration_status->rainfall_last_48h = rain_history_get_recent_total(48);
+    
+    /* Integration configuration */
+    if (integration_status->integration_enabled) {
+        integration_status->sensitivity_pct = rain_integration_get_sensitivity();
+        integration_status->skip_threshold_mm = rain_integration_get_skip_threshold();
+        
+        /* Calculate impact for each channel */
+        for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+            rain_irrigation_impact_t impact = rain_integration_calculate_impact(i);
+            integration_status->channel_reduction_pct[i] = impact.irrigation_reduction_pct;
+            integration_status->channel_skip_irrigation[i] = impact.skip_irrigation;
+        }
+    }
+    
+    /* History statistics */
+    rain_history_stats_t stats;
+    watering_error_t ret = rain_history_get_stats(&stats);
+    if (ret == WATERING_SUCCESS) {
+        integration_status->hourly_entries = stats.hourly_entries;
+        integration_status->daily_entries = stats.daily_entries;
+        integration_status->storage_usage_bytes = stats.total_storage_bytes;
+    }
+    
+    return WATERING_SUCCESS;
 }

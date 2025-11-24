@@ -1,0 +1,175 @@
+/*
+ * AutoWatering – Arduino Nano 33 BLE enhanced storage & peripherals overlay
+ * Mirrors the ProMicro feature set with pin mappings aligned to the Nano 33 BLE header.
+ */
+
+/ {
+    /* Flow sensor interrupt input (D2 / P1.03) */
+    water_flow_sensor: flow_sensor {
+        compatible = "gpio-keys";
+        status = "okay";
+
+        flow_key {
+            gpios = <&gpio1 3 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+            label = "Water Flow Sensor";
+        };
+    };
+
+    /* Rain gauge interrupt input (D3 / P1.10) */
+    rain_sensor: rain_sensor {
+        compatible = "gpio-keys";
+        status = "okay";
+
+        rain_key {
+            gpios = <&gpio1 10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+            label = "Tipping Bucket Rain Sensor";
+        };
+    };
+
+    /* Debounce and calibration constants shared with the application */
+    sensor_config: sensor_config {
+        compatible       = "zephyr,sensor-config";
+        flow-calibration = <750>;
+        debounce-ms      = <2>;
+        rain-calibration = <200>;
+        rain-debounce-ms = <50>;
+    };
+
+    /* Valve drivers mapped to the Nano 33 BLE digital header */
+    valves {
+        compatible = "gpio-leds";
+        status = "okay";
+
+        /* keep a master_valve node for the code; mapped per request */
+    master_valve: master_valve { gpios = <&gpio0 6 GPIO_ACTIVE_LOW>; label = "Master Valve"; };
+
+        /* User-requested mapping for the 8 zone valves */
+        valve1: valve_1 { gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>; label = "Valve 1"; };
+        valve2: valve_2 { gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>; label = "Valve 2"; };
+        valve3: valve_3 { gpios = <&gpio0 30 GPIO_ACTIVE_HIGH>; label = "Valve 3"; };
+        valve4: valve_4 { gpios = <&gpio0 29 GPIO_ACTIVE_HIGH>; label = "Valve 4"; };
+        valve5: valve_5 { gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>; label = "Valve 5"; };
+        valve6: valve_6 { gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>; label = "Valve 6"; };
+        valve7: valve_7 { gpios = <&gpio0 28 GPIO_ACTIVE_HIGH>; label = "Valve 7"; };
+        valve8: valve_8 { gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>; label = "Valve 8"; };
+    };
+
+    aliases {
+        rtc0               = &rtc_ds3231;
+        bme280             = &bme280;
+        settings-partition = &settings_partition;
+        nvs-storage        = &nvs_storage;
+        rain-sensor        = &rain_sensor;
+
+        console            = &cdc_acm_uart0;
+        shell-uart         = &cdc_acm_uart0;
+    };
+
+    chosen {
+        zephyr,settings-partition    = &settings_partition;
+        zephyr,bt-settings-partition = &settings_partition;
+        zephyr,console               = &cdc_acm_uart0;
+        zephyr,shell-uart            = &cdc_acm_uart0;
+    };
+
+    /* Lightweight CPU power states to unlock Zephyr's PM policy */
+    power-states {
+        runtime_idle: runtime_idle {
+            compatible = "zephyr,power-state";
+            power-state-name = "runtime-idle";
+            exit-latency-us = <50>;
+            min-residency-us = <100>;
+        };
+
+        suspend_to_idle: suspend_to_idle {
+            compatible = "zephyr,power-state";
+            power-state-name = "suspend-to-idle";
+            exit-latency-us = <300>;
+            min-residency-us = <1000>;
+        };
+    };
+};
+
+&i2c0 {
+    status = "okay";
+    clock-frequency = <I2C_BITRATE_STANDARD>;
+    pinctrl-0 = <&i2c0_nano_default>;
+    pinctrl-1 = <&i2c0_nano_sleep>;
+    pinctrl-names = "default", "sleep";
+
+    rtc_ds3231: ds3231@68 {
+        compatible = "maxim,ds3231-mfd";
+        reg = <0x68>;
+        status = "okay";
+
+        rtc: ds3231_rtc {
+            compatible = "maxim,ds3231-rtc";
+            status = "okay";
+            label = "DS3231";
+            isw-gpios = <&gpio0 13 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+        };
+    };
+
+    bme280: bme280@77 {
+        compatible = "bosch,bme280";
+        reg = <0x77>;
+        status = "okay";
+        label = "BME280";
+    };
+};
+
+&pinctrl {
+    i2c0_nano_default: i2c0_nano_default {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SCL, 1, 12)>,
+                    <NRF_PSEL(TWIM_SDA, 1, 11)>;
+            bias-pull-up;
+        };
+    };
+
+    i2c0_nano_sleep: i2c0_nano_sleep {
+        group1 {
+            psels = <NRF_PSEL(TWIM_SCL, 1, 12)>,
+                    <NRF_PSEL(TWIM_SDA, 1, 11)>;
+            bias-pull-up;
+            low-power-enable;
+        };
+    };
+};
+
+&code_partition {
+    reg = <0x00010000 0x000c8000>;
+};
+
+&storage_partition {
+    status = "disabled";
+};
+
+&flash0 {
+    partitions {
+        compatible     = "fixed-partitions";
+        #address-cells = <1>;
+        #size-cells    = <1>;
+
+        nvs_storage: partition@d8000 {
+            label = "nvs_storage";
+            reg   = <0x000d8000 0x00026000>;
+        };
+
+        settings_partition: partition@fe000 {
+            label = "settings";
+            reg   = <0x000fe000 0x00002000>;
+        };
+    };
+};
+
+&zephyr_udc0 {
+    cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+        label = "CDC_ACM_0";
+    };
+};
+
+&{/cpus/cpu@0} {
+    cpu-power-states = <&runtime_idle &suspend_to_idle>;
+};

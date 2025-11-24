@@ -9,6 +9,9 @@
 #include "timezone.h"               /* Add timezone support for local time scheduling */
 #include "bt_irrigation_service.h"   /* NEW */
 #include "watering_history.h"        /* Add history integration */
+#include "rain_integration.h"       /* Rain sensor integration */
+#include "rain_sensor.h"            /* Rain sensor status */
+#include "rain_history.h"           /* Rain history data */
 
 LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -44,20 +47,20 @@ uint32_t initial_pulse_count = 0;        /* was static, now global */
  * @brief Task execution state enumeration
  */
 typedef enum {
-    TASK_STATE_IDLE,      /**< No active task */
-    TASK_STATE_RUNNING,   /**< Task is currently running */
-    TASK_STATE_COMPLETED  /**< Task has completed but not cleaned up */
+    W_TASK_STATE_IDLE,      /**< No active task */
+    W_TASK_STATE_RUNNING,   /**< Task is currently running */
+    W_TASK_STATE_COMPLETED  /**< Task has completed but not cleaned up */
 } task_state_t;
 
 /** Current state of task execution system */
-static task_state_t current_task_state = TASK_STATE_IDLE;
+static task_state_t current_task_state = W_TASK_STATE_IDLE;
 
 /** Flow sensor calibration - pulses per liter */
 static uint32_t pulses_per_liter = DEFAULT_PULSES_PER_LITER;
 
 /** Stack sizes for watering threads */
 #define WATERING_STACK_SIZE 2048
-#define SCHEDULER_STACK_SIZE 1024
+#define SCHEDULER_STACK_SIZE 2048
 
 /** Thread stacks */
 K_THREAD_STACK_DEFINE(watering_task_stack, WATERING_STACK_SIZE);
@@ -84,6 +87,11 @@ uint16_t days_since_start = 0;  // Changed from static to global
 
 /** Last read time to detect day changes */
 static uint8_t last_day = 0;
+
+/** Automatic calculation scheduling */
+static uint32_t last_auto_calc_time = 0;
+uint32_t auto_calc_interval_ms = 3600000; // Default: 1 hour (non-static for external access)
+bool auto_calc_enabled = true; // Non-static for external access
 
 /** RTC error count for tracking reliability */
 static uint8_t rtc_error_count = 0;
@@ -122,7 +130,7 @@ watering_error_t tasks_init(void) {
     last_completed_task.completion_time = 0;
     last_completed_task.valid = false;
     
-    current_task_state = TASK_STATE_IDLE;
+    current_task_state = W_TASK_STATE_IDLE;
     watering_tasks_running = false;
     exit_tasks = false;
     rtc_error_count = 0;
@@ -141,6 +149,11 @@ watering_error_t watering_add_task(watering_task_t *task) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
+    uint8_t channel_id = task->channel - watering_channels;
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
     // Validate watering mode parameters
     if (task->channel->watering_event.watering_mode == WATERING_BY_VOLUME) {
         if (task->by_volume.volume_liters == 0) {
@@ -148,9 +161,24 @@ watering_error_t watering_add_task(watering_task_t *task) {
         }
     }
     
+    /* Rain integration check - skip irrigation if recent rainfall is significant */
+    if (rain_integration_is_enabled() && rain_integration_should_skip_irrigation(channel_id)) {
+    float recent_rainfall = rain_history_get_last_24h();
+    printk("Skipping irrigation for channel %s due to recent rainfall (%.2f mm)\n", 
+           task->channel->name, (double)recent_rainfall);
+        
+        /* Log the skipped task for history tracking */
+        #ifdef CONFIG_BT
+        watering_history_record_task_skip(channel_id, WATERING_SKIP_REASON_RAIN, recent_rainfall);
+        #endif
+        watering_restore_event(channel_id);
+        return WATERING_ERROR_BUSY; /* Use busy to indicate task was skipped */
+    }
+    
     if (k_msgq_put(&watering_tasks_queue, task, K_NO_WAIT) != 0) {
         LOG_ERROR("Watering queue is full", WATERING_ERROR_QUEUE_FULL);
         watering_increment_error_tasks();  /* Track queue overflow errors */
+        watering_restore_event(channel_id);
         return WATERING_ERROR_QUEUE_FULL;
     }
     
@@ -219,15 +247,69 @@ watering_error_t watering_start_task(watering_task_t *task)
         return WATERING_ERROR_INVALID_PARAM;
     }
     
+    /* Apply rain-based adjustments to the task before starting */
+    if (rain_integration_is_enabled()) {
+        rain_irrigation_impact_t impact = rain_integration_calculate_impact(channel_id);
+        
+        /* Log rain impact information */
+    printk("Rain impact for channel %d: %.2f mm recent, %.1f%% reduction, skip=%s\n",
+           channel_id, (double)impact.recent_rainfall_mm, (double)impact.irrigation_reduction_pct,
+               impact.skip_irrigation ? "yes" : "no");
+        
+        /* Skip irrigation if threshold exceeded (double-check) */
+        if (impact.skip_irrigation) {
+            printk("Skipping irrigation for channel %d due to rain threshold\n", channel_id);
+            watering_restore_event(channel_id);
+            return WATERING_ERROR_BUSY;
+        }
+        
+        /* Apply reduction to task parameters */
+        if (impact.irrigation_reduction_pct > 0.0f) {
+            float reduction_factor = 1.0f - (impact.irrigation_reduction_pct / 100.0f);
+            watering_snapshot_event(channel_id);
+            
+            if (task->channel->watering_event.watering_mode == WATERING_BY_DURATION) {
+                uint32_t original_duration = task->channel->watering_event.watering.by_duration.duration_minutes;
+                uint32_t adjusted_duration = (uint32_t)(original_duration * reduction_factor);
+                
+                /* Ensure minimum duration of 1 minute */
+                if (adjusted_duration < 1) {
+                    adjusted_duration = 1;
+                }
+                
+                task->channel->watering_event.watering.by_duration.duration_minutes = adjusted_duration;
+                
+          printk("Rain-adjusted duration for channel %d: %u -> %u minutes (%.1f%% reduction)\n",
+              channel_id, original_duration, adjusted_duration, (double)impact.irrigation_reduction_pct);
+                       
+            } else if (task->channel->watering_event.watering_mode == WATERING_BY_VOLUME) {
+                uint32_t original_volume = task->by_volume.volume_liters;
+                uint32_t adjusted_volume = (uint32_t)(original_volume * reduction_factor);
+                
+                /* Ensure minimum volume of 100ml */
+                if (adjusted_volume < 1) {
+                    adjusted_volume = 1;
+                }
+                
+                task->by_volume.volume_liters = adjusted_volume;
+                
+          printk("Rain-adjusted volume for channel %d: %u -> %u liters (%.1f%% reduction)\n",
+              channel_id, original_volume, adjusted_volume, (double)impact.irrigation_reduction_pct);
+            }
+        }
+    }
+    
     watering_error_t ret = watering_channel_on(channel_id);
     if (ret != WATERING_SUCCESS) {
         LOG_ERROR("Error activating channel for task", ret);
+        watering_restore_event(channel_id);
         return ret;
     }
     
     // Use timeout instead of K_FOREVER to prevent system freeze
     if (k_mutex_lock(&watering_state_mutex, K_MSEC(100)) != 0) {
         printk("Failed to get mutex for task start - system busy\n");
+        watering_restore_event(channel_id);
         return WATERING_ERROR_BUSY;
     }
 
@@ -254,7 +336,7 @@ watering_error_t watering_start_task(watering_task_t *task)
     }
     
     watering_task_state.current_active_task = task;
-    current_task_state = TASK_STATE_RUNNING;
+    current_task_state = W_TASK_STATE_RUNNING;
     
     k_mutex_unlock(&watering_state_mutex);
     
@@ -346,7 +428,7 @@ bool watering_stop_current_task(void) {
     watering_task_state.task_paused = false;
     watering_task_state.pause_start_time = 0;
     watering_task_state.total_paused_time = 0;
-    current_task_state = TASK_STATE_IDLE;
+    current_task_state = W_TASK_STATE_IDLE;
     
     k_mutex_unlock(&watering_state_mutex);
     
@@ -367,6 +449,8 @@ bool watering_stop_current_task(void) {
     bt_irrigation_current_task_update(0xFF, 0, 0, 0, 0, 0); // No active task
     #endif
     
+    watering_restore_event(channel_id);
+
     return true;
 }
 
@@ -376,6 +460,8 @@ bool watering_stop_current_task(void) {
  * @return 1 if tasks are active, 0 if idle, negative error code on failure
  */
 int watering_check_tasks(void) {
+    bool should_fetch_next = false;
+
     // Use timeout instead of K_NO_WAIT for better responsiveness while avoiding hangs
     if (k_mutex_lock(&watering_state_mutex, K_MSEC(50)) != 0) {
         return 0;   /* skip this cycle if busy but don't wait too long */
@@ -442,7 +528,7 @@ int watering_check_tasks(void) {
             
             watering_task_state.current_active_task = NULL;
             watering_task_state.task_in_progress = false;
-            current_task_state = TASK_STATE_COMPLETED;
+            current_task_state = W_TASK_STATE_COMPLETED;
             
             k_mutex_unlock(&watering_state_mutex);
             
@@ -453,21 +539,26 @@ int watering_check_tasks(void) {
             #ifdef CONFIG_BT
             bt_irrigation_current_task_update(0xFF, 0, 0, 0, 0, 0); // No active task
             #endif
+            watering_restore_event(channel_id);
             
             return 1;
         }
+    } else if (current_task_state != W_TASK_STATE_RUNNING) {
+        should_fetch_next = true;
     }
-    
-    if (current_task_state != TASK_STATE_RUNNING) {
+
+    k_mutex_unlock(&watering_state_mutex);
+
+    if (should_fetch_next) {
         int result = watering_process_next_task();
-        
         if (result < 0) {
-            k_mutex_unlock(&watering_state_mutex);
             return result;
         }
+        if (result > 0) {
+            return 1;
+        }
     }
-    
-    k_mutex_unlock(&watering_state_mutex);
+
     return (watering_task_state.current_active_task != NULL) ? 1 : 0;
 }
 
@@ -482,10 +573,10 @@ watering_error_t watering_cleanup_tasks(void) {
         return WATERING_SUCCESS; // Skip cleanup if busy, try again later
     }
     
-    if (current_task_state == TASK_STATE_COMPLETED && watering_task_state.current_active_task != NULL) {
+    if (current_task_state == W_TASK_STATE_COMPLETED && watering_task_state.current_active_task != NULL) {
         watering_task_state.current_active_task = NULL;
         watering_task_state.task_in_progress = false;
-        current_task_state = TASK_STATE_IDLE;
+        current_task_state = W_TASK_STATE_IDLE;
         
         /* Notify BLE clients about task completion */
         #ifdef CONFIG_BT
@@ -532,8 +623,8 @@ watering_error_t watering_get_flow_calibration(uint32_t *pulses_per_liter_out) {
     
     // Use timeout instead of K_FOREVER to prevent system freeze
     if (k_mutex_lock(&watering_state_mutex, K_MSEC(100)) != 0) {
-        // If we can't get mutex, return default value
-        *pulses_per_liter_out = DEFAULT_PULSES_PER_LITER;
+        // If mutex is busy, return the last known calibration value
+        *pulses_per_liter_out = pulses_per_liter;
         return WATERING_SUCCESS;
     }
     *pulses_per_liter_out = pulses_per_liter;
@@ -736,8 +827,22 @@ static void scheduler_task_fn(void *p1, void *p2, void *p3) {
         
         if (rtc_read_success) {
             watering_scheduler_run();
+            
+            // Run automatic irrigation calculations periodically
+            uint32_t current_time = k_uptime_get_32();
+            if (auto_calc_enabled && 
+                (current_time - last_auto_calc_time) >= auto_calc_interval_ms) {
+                
+                watering_error_t calc_result = watering_run_automatic_calculations();
+                if (calc_result == WATERING_SUCCESS) {
+                    last_auto_calc_time = current_time;
+                } else if (calc_result != WATERING_ERROR_BUSY) {
+                    // Log error but don't stop scheduler
+                    printk("Automatic calculation failed: %d\n", calc_result);
+                }
+            }
         }
-        
+
         uint32_t sleep_time = 60;
         switch (current_power_mode) {
             case POWER_MODE_NORMAL:
@@ -908,6 +1013,10 @@ watering_error_t watering_stop_tasks(void) {
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
         watering_channel_off(i);
     }
+
+    for (uint8_t channel = 0; channel < WATERING_CHANNELS_COUNT; channel++) {
+        watering_restore_event(channel);
+    }
     
     watering_tasks_running = false;
     printk("Watering tasks stopped\n");
@@ -1056,6 +1165,13 @@ int watering_clear_task_queue(void) {
     printk("%d tasks removed from queue\n", count);
     
     k_mutex_unlock(&watering_state_mutex);
+
+    if (count > 0) {
+        for (uint8_t channel = 0; channel < WATERING_CHANNELS_COUNT; channel++) {
+            watering_restore_event(channel);
+        }
+    }
+
     return count;
 }
 

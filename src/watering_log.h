@@ -30,4 +30,17 @@ void watering_log(int level, const char *msg, int err_code);
 #define WLOG_INFO(msg) watering_log(WATERING_LOG_LEVEL_INFO, msg, 0)
 #define WLOG_DEBUG(msg) watering_log(WATERING_LOG_LEVEL_DEBUG, msg, 0)
 
+/**
+ * @brief Log a volume constraint event for historical tracking
+ * 
+ * @param channel_id Channel ID that was constrained
+ * @param calculated_volume_l Originally calculated volume (liters)
+ * @param max_volume_limit_l Maximum allowed volume (liters)
+ * @param mode_name Mode name (e.g., "Quality", "Eco")
+ */
+void watering_log_constraint(uint8_t channel_id, 
+                           float calculated_volume_l, 
+                           float max_volume_limit_l, 
+                           const char *mode_name);
+
 #endif // WATERING_LOG_H

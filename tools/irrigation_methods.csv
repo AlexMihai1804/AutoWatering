@@ -1,0 +1,16 @@
+method_id,method_name,code_enum,efficiency_pct,infiltration_style,wetting_fraction,depth_typical_mm,application_rate_mm_h,distribution_uniformity_pct,compatible_soil_textures,recommended_for,notes
+0,Surface Flood (Level Basin),IRRIG_SURFACE_FLOOD,50,Surface flooding,1.00,40-80,15-25,60,Silt loam to clay,Rice, forages; needs land leveling; risk of runoff and percolation losses
+1,Border Strip,IRRIG_SURFACE_BORDER,55,Directed surface flow,1.00,40-70,10-20,65,Loam to clay,Cereals, alfalfa; requires gentle slope and good leveling
+2,Furrow,IRRIG_SURFACE_FURROW,60,Alternating furrows,0.50,30-60,5-15,70,Sandy loam to clay loam,Corn, row vegetables; improved distribution vs full flood
+3,Conventional Sprinkler (Hand/Set),IRRIG_SPRINKLER_SET,70,Overhead dispersed,1.00,15-35,5-10,75,Sandy loam to clay loam,Vegetables, turf; wind and evaporation losses
+4,Center Pivot Mid-Pressure,IRRIG_SPRINKLER_PIVOT,80,Overhead dispersed,1.00,15-30,6-12,85,Loamy sand to silt loam,Cereals, oilseeds; automated, moderate losses
+5,Low Energy Precision (LEPA/Drop),IRRIG_SPRINKLER_LEPA,90,Near-ground dispersed,0.85,10-25,5-8,90,Loamy sand to clay loam,Row crops; minimizes evaporation and drift
+6,Micro-sprayer/Microjet,IRRIG_MICRO_SPRAY,85,Localized dispersed,0.60,10-25,2-6,85,Loamy sand to loam,Orchards, ornamentals; larger wetted area than drip
+7,Drip Surface (Line+Emitters),IRRIG_DRIP_SURFACE,90,Point slow,0.30,8-20,1-3,90,Sand to clay (adjust flow),High-value vegetables, young orchards; filtration required
+8,Drip Subsurface (SDI),IRRIG_DRIP_SUBSURFACE,92,Subsurface point,0.25,8-20,1-2,92,Loamy sand to clay loam,Field row crops, orchards; eliminates surface evaporation
+9,Drip Inline Tape (Row Crops),IRRIG_DRIP_TAPE,88,Point band,0.35,10-25,1-3,88,Sandy loam to loam,Vegetables, strawberry under mulch; clogging risk
+10,Bubbler (Tree Basin),IRRIG_BUBBLER,80,Localized high-flow,0.10,20-40,20-40,80,Loam to clay,Young trees; rapid controlled basin filling
+11,Sub-Irrigation (Controlled Water Table),IRRIG_SUBIRRIGATION,90,Capillary rise,1.00,30-60,Continuous,85,Peat/loam over restrictive layer,Greenhouse benches, large containers; needs water table control
+12,Wicking Bed (Capillary),IRRIG_WICK_BED,85,Capillary bed,1.00,15-30,0.5-1 (recharge),85,Potting mixes,Container vegetables; bottom reservoir maintenance
+13,Hydroponic Recirculating (NFT/Drip Fertigation),IRRIG_HYDROPONIC_RECIRC,95,Continuous root supply,≈0,1-5 (film),Continuous,95,Inert media / no soil,Greenhouse leafy greens, herbs; monitor EC and pH closely
+14,Mist / Aeroponic,IRRIG_AEROPONIC,90,Root misting,≈0,1-3 (film),Pulse cycles,90,No soil (suspended roots),Propagation, high-tech systems; highly sensitive to outages

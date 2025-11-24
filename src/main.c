@@ -5,17 +5,44 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/pm/pm.h>
+#include <errno.h>
+
+// Core system includes
 #include "flow_sensor.h"
+#include "rain_sensor.h"
+#include "rain_history.h"
+#include "rain_integration.h"
 #include "watering.h"
 #include "watering_internal.h"
 #include "rtc.h"
-#include "timezone.h"  // Add timezone support
+#include "timezone.h"
+
+// Enhanced features includes
+#include "environmental_data.h"
+#include "environmental_history.h"
+#include "bme280_driver.h"
+#include "sensor_manager.h"
+#include "custom_soil_db.h"
+#include "fao56_custom_soil.h"
+#include "rain_compensation.h"
+#include "temperature_compensation.h"
+#include "temperature_compensation_integration.h"
+#include "interval_timing.h"
+#include "interval_mode_controller.h"
+#include "interval_task_integration.h"
+#include "configuration_status.h"
+#include "enhanced_system_status.h"
+#include "enhanced_error_handling.h"
+#include "nvs_storage_monitor.h"
+#include "onboarding_state.h"
+#include "reset_controller.h"
+
 #ifdef CONFIG_BT
 #include "bt_irrigation_service.h"
 #endif
 #include "usb_descriptors.h"
 #include "nvs_config.h"
-#include "watering_history.h"  // Add history system include
+#include "watering_history.h"
 bool critical_section_active = false;
 #define INIT_TIMEOUT_MS 5000
 #define STATUS_CHECK_INTERVAL_S 30
@@ -60,7 +87,17 @@ static int setup_usb_cdc_acm(void) {
     if (!ENABLE_USB) {
         return -ENODEV;
     }
-    cdc_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(cdc_acm_uart0));
+
+    int ret = usb_enable(NULL);
+    if (ret != 0 && ret != -EALREADY) {
+        printk("Failed to enable USB: %d\n", ret);
+        return ret;
+    }
+
+    cdc_dev = DEVICE_DT_GET_OR_NULL(DT_CHOSEN(zephyr_console));
+    if (!cdc_dev) {
+        cdc_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(cdc_acm_uart0));
+    }
     if (!cdc_dev || !device_is_ready(cdc_dev)) {
         cdc_dev = device_get_binding("CDC_ACM_0");
     }
@@ -68,7 +105,26 @@ static int setup_usb_cdc_acm(void) {
         printk("CDC ACM device not ready\n");
         return -ENODEV;
     }
-    printk("CDC ACM ready (USB was started at boot)\n");
+
+    uint32_t dtr = 0;
+    int32_t wait_left = USB_GLOBAL_TIMEOUT_MS;
+    while (wait_left > 0) {
+        uart_line_ctrl_get(cdc_dev, UART_LINE_CTRL_DTR, &dtr);
+        if (dtr != 0U) {
+            break;
+        }
+        k_sleep(K_MSEC(USB_RETRY_DELAY_MS));
+        wait_left -= USB_RETRY_DELAY_MS;
+    }
+
+    if (dtr == 0U) {
+        printk("USB host did not assert DTR within timeout\n");
+    } else {
+        uart_line_ctrl_set(cdc_dev, UART_LINE_CTRL_DCD, 1);
+        uart_line_ctrl_set(cdc_dev, UART_LINE_CTRL_DSR, 1);
+    }
+
+    printk("CDC ACM ready\n");
     usb_functional = true;
     return 0;
 }
@@ -284,6 +340,16 @@ int main(void) {
     } else {
         printk("Flow sensor initialization successful\n");
     }
+    
+    // Initialize rain sensor
+    printk("Starting rain sensor init...\n");
+    ret = rain_sensor_init();
+    if (ret != 0) {
+        printk("Rain sensor initialization failed: %d – continuing without rain data\n", ret);
+    } else {
+        printk("Rain sensor initialization successful\n");
+    }
+    
     ret = initialize_component("RTC", rtc_init);
     if (ret != 0) {
         printk("WARNING: RTC init failed (%d) – using uptime fallback\n", ret);
@@ -291,12 +357,12 @@ int main(void) {
         set_default_rtc_time();
     }
     
-    // Initialize timezone after RTC and NVS are ready
+    // Initialize timezone helpers (UTC baseline only)
     ret = timezone_init();
     if (ret != 0) {
-        printk("WARNING: Timezone init failed (%d) – using default UTC+2\n", ret);
+        printk("WARNING: Timezone init failed (%d)\n", ret);
     } else {
-        printk("Timezone initialization successful\n");
+        printk("Timezone helpers ready (UTC baseline)\n");
     }
     printk("Starting watering subsystem init...\n");
     ret = watering_init_wrapper();
@@ -323,13 +389,172 @@ int main(void) {
     print_memory_stats();
     print_stack_info();
 
-    // Initialize history system
+    // Initialize enhanced storage system
+    printk("Initializing NVS storage monitor...\n");
+    ret = nvs_storage_monitor_init();
+    if (ret != 0) {
+        printk("Warning: NVS storage monitor initialization failed: %d\n", ret);
+    } else {
+        printk("NVS storage monitor initialized successfully\n");
+    }
+
+    // Initialize configuration management system
+    printk("Initializing configuration status system...\n");
+    watering_error_t config_err = configuration_status_init();
+    if (config_err != WATERING_SUCCESS) {
+        printk("Warning: Configuration status system initialization failed: %d\n", config_err);
+    }
+    
+    // Initialize onboarding state management
+    printk("Initializing onboarding state system...\n");
+    ret = onboarding_state_init();
+    if (ret != 0) {
+        printk("Warning: Onboarding state system initialization failed: %d\n", ret);
+    }
+    
+    // Initialize reset controller
+    printk("Initializing reset controller...\n");
+    ret = reset_controller_init();
+    if (ret != 0) {
+        printk("Warning: Reset controller initialization failed: %d\n", ret);
+    } else {
+        printk("Configuration status system initialized successfully\n");
+    }
+
+    // Initialize enhanced system status
+    printk("Initializing enhanced system status...\n");
+    ret = enhanced_system_status_init();
+    if (ret != 0) {
+        printk("Warning: Enhanced system status initialization failed: %d\n", ret);
+    } else {
+        printk("Enhanced system status initialized successfully\n");
+    }
+
+    // Initialize enhanced error handling
+    printk("Initializing enhanced error handling...\n");
+    ret = enhanced_error_handling_init();
+    if (ret != 0) {
+        printk("Warning: Enhanced error handling initialization failed: %d\n", ret);
+    } else {
+        printk("Enhanced error handling initialized successfully\n");
+    }
+
+    // Initialize environmental sensor system
+    printk("Initializing sensor manager...\n");
+    sensor_manager_config_t sensor_config = {
+        .auto_recovery_enabled = true,
+        .recovery_timeout_ms = 5000,
+        .max_recovery_attempts = 3,
+        .health_check_interval_ms = 30000,
+        .reading_timeout_ms = 2000
+    };
+    ret = sensor_manager_init(&sensor_config);
+    if (ret != 0) {
+        printk("Warning: Sensor manager initialization failed: %d\n", ret);
+    } else {
+        printk("Sensor manager initialized successfully\n");
+        
+        // Try to initialize BME280 sensor
+        const struct device *i2c_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(i2c0));
+        if (i2c_dev && device_is_ready(i2c_dev)) {
+            printk("Initializing BME280 environmental sensor...\n");
+            ret = sensor_manager_init_bme280(i2c_dev, 0x77);
+            if (ret != 0) {
+                printk("Warning: BME280 initialization failed: %d\n", ret);
+            } else {
+                printk("BME280 sensor initialized successfully\n");
+            }
+        } else {
+            printk("Warning: I2C device not ready, skipping BME280 initialization\n");
+        }
+    }
+
+    // Initialize environmental data system
+    printk("Initializing environmental data system...\n");
+    ret = environmental_data_init();
+    if (ret != 0) {
+        printk("Warning: Environmental data system initialization failed: %d\n", ret);
+    } else {
+        printk("Environmental data system initialized successfully\n");
+    }
+
+    // Initialize environmental history
+    printk("Initializing environmental history system...\n");
+    ret = environmental_history_init();
+    if (ret != 0) {
+        printk("Warning: Environmental history system initialization failed: %d\n", ret);
+    } else {
+        printk("Environmental history system initialized successfully\n");
+    }
+
+    // Initialize custom soil database
+    printk("Initializing custom soil database...\n");
+    watering_error_t soil_err = custom_soil_db_init();
+    if (soil_err != WATERING_SUCCESS) {
+        printk("Warning: Custom soil database initialization failed: %d\n", soil_err);
+    } else {
+        printk("Custom soil database initialized successfully\n");
+    }
+
+    // Initialize compensation systems
+    printk("Initializing rain compensation system...\n");
+    watering_error_t rain_comp_err = rain_compensation_init();
+    if (rain_comp_err != WATERING_SUCCESS) {
+        printk("Warning: Rain compensation system initialization failed: %d\n", rain_comp_err);
+    } else {
+        printk("Rain compensation system initialized successfully\n");
+    }
+
+    printk("Initializing temperature compensation system...\n");
+    watering_error_t temp_comp_err = temperature_compensation_init();
+    if (temp_comp_err != WATERING_SUCCESS) {
+        printk("Warning: Temperature compensation system initialization failed: %d\n", temp_comp_err);
+    } else {
+        printk("Temperature compensation system initialized successfully\n");
+    }
+
+    printk("Initializing temperature compensation integration...\n");
+    ret = temperature_compensation_integration_init();
+    if (ret != 0) {
+        printk("Warning: Temperature compensation integration initialization failed: %d\n", ret);
+    } else {
+        printk("Temperature compensation integration initialized successfully\n");
+    }
+
+    // Initialize interval mode system
+    printk("Initializing interval task integration...\n");
+    ret = interval_task_integration_init();
+    if (ret != 0) {
+        printk("Warning: Interval task integration initialization failed: %d\n", ret);
+    } else {
+        printk("Interval task integration initialized successfully\n");
+    }
+
+    // Initialize history systems
     printk("Initializing watering history system...\n");
     watering_error_t hist_err = watering_history_init();
     if (hist_err != WATERING_SUCCESS) {
         printk("Warning: History system initialization failed: %d\n", hist_err);
     } else {
         printk("History system initialized successfully\n");
+    }
+    
+    // Initialize rain history system
+    printk("Initializing rain history system...\n");
+    watering_error_t rain_hist_err = rain_history_init();
+    if (rain_hist_err != WATERING_SUCCESS) {
+        printk("Warning: Rain history system initialization failed: %d\n", rain_hist_err);
+    } else {
+        printk("Rain history system initialized successfully\n");
+    }
+    
+    // Initialize rain integration system
+    printk("Initializing rain integration system...\n");
+    watering_error_t rain_int_err = rain_integration_init();
+    if (rain_int_err != WATERING_SUCCESS) {
+        printk("Warning: Rain integration system initialization failed: %d\n", rain_int_err);
+    } else {
+        printk("Rain integration system initialized successfully\n");
     }
 
 #ifdef CONFIG_BT

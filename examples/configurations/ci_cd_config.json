@@ -1,0 +1,85 @@
+{
+  "wsl": {
+    "distribution": "Ubuntu-22.04",
+    "project_path": "/tmp/autowatering_tests",
+    "timeout_minutes": 60
+  },
+  "synchronization": {
+    "exclude_patterns": [
+      "build*", ".git", "*.bin", "*.hex", "*.elf",
+      "twister-out*", "*.log", "*.tmp", "node_modules",
+      ".vscode", ".kiro", "__pycache__", "*.pyc",
+      ".pytest_cache", "coverage", ".coverage"
+    ],
+    "preserve_permissions": true,
+    "incremental_sync": false
+  },
+  "test_execution": {
+    "platforms": ["native_posix_64", "qemu_x86", "nrf52840dk_nrf52840"],
+    "parallel_execution": true,
+    "retry_count": 3,
+    "default_timeout_seconds": 900
+  },
+  "platform_filters": {
+    "native": ["native", "posix", "qemu"],
+    "hardware": ["nrf", "dk", "board"]
+  },
+  "test_suites": {
+    "unit": {
+      "filters": ["--test-pattern=test_*"],
+      "extra_args": ["--verbose", "--junit-xml=unit_results.xml"],
+      "timeout": 600
+    },
+    "integration": {
+      "filters": ["--test-pattern=integration_*"],
+      "extra_args": ["--detailed-output", "--junit-xml=integration_results.xml"],
+      "timeout": 1200
+    },
+    "hardware": {
+      "filters": ["--test-pattern=hardware_*"],
+      "extra_args": ["--device-testing", "--junit-xml=hardware_results.xml"],
+      "timeout": 1800
+    },
+    "regression": {
+      "filters": ["--test-pattern=regression_*"],
+      "extra_args": ["--comprehensive", "--junit-xml=regression_results.xml"],
+      "timeout": 2400
+    }
+  },
+  "enable_debug_mode": false,
+  "resource_limits": {
+    "max_memory_mb": 4096,
+    "max_disk_gb": 20,
+    "max_execution_time_minutes": 120
+  },
+  "logging": {
+    "level": "INFO",
+    "file_rotation": true,
+    "max_log_files": 20
+  },
+  "results": {
+    "output_formats": ["json", "xml", "html", "csv"],
+    "preserve_logs": true,
+    "compress_results": true
+  },
+  "environment": {
+    "auto_install": true,
+    "sdk_version": "0.17.0",
+    "python_packages": [
+      "west", "pyelftools", "pyyaml", "pykwalify",
+      "colorama", "packaging", "junit-xml", "coverage"
+    ]
+  },
+  "cleanup": {
+    "auto_cleanup": true,
+    "cleanup_on_exit": true,
+    "preserve_results": true,
+    "cleanup_temp_files": true
+  },
+  "notifications": {
+    "on_success": false,
+    "on_failure": true,
+    "email_recipients": [],
+    "slack_webhook": ""
+  }
+}

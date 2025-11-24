@@ -1,6 +1,7 @@
 #ifndef WATERING_INTERNAL_H
 #define WATERING_INTERNAL_H
 
+#include <stddef.h>
 #include "watering.h"  // Include this FIRST to avoid redefinitions
 
 /**
@@ -229,9 +230,14 @@ int watering_get_pending_tasks_info(void *tasks_info, int max_tasks);
 // Function prototype for logging initialization
 void watering_log_init(int level);
 
+/* Temporary schedule override helpers */
+void watering_snapshot_event(uint8_t channel_id);
+void watering_restore_event(uint8_t channel_id);
+
 /* --- new error-reset helpers ----------------------------------------- */
 watering_error_t watering_clear_errors(void);
 void             flow_monitor_clear_errors(void);
+size_t           flow_monitor_get_unused_stack(void);
 
 /**
  * @brief Information about a watering task for status reporting
@@ -244,5 +250,12 @@ typedef struct {
     bool is_active;               /**< True if task is currently running */
     bool is_paused;               /**< True if task is paused */
 } watering_task_info_t;
+
+/**
+ * @brief Check rain sensor health status
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t check_rain_sensor_health(void);
 
 #endif // WATERING_INTERNAL_H

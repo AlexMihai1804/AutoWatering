@@ -1,955 +1,1569 @@
-# Troubleshooting Guide
+# AutoWatering Troubleshooting (October 2025)# Troubleshooting (Implementation Scope)
 
-This guide provides solutions for common issues that may occur when setting up or using the AutoWatering system.
 
-## Recent Fixes (January 2025)
 
-### Memory Optimization and System Stability - FIXED ✅
+This guide covers the issues that occur in the current firmware and how to diagnose them. It intentionally omits historical claims (automatic scoring, cloud sync, WSL tooling, etc.) that are not present in the code base.This file was reduced to issues relevant to the current firmware. Removed: configuration scoring, automatic compensation logic, custom soil hydraulic validation, multi-year analytics, task queue background scheduler threads, advanced notification buffer tuning, extended WSL build env recipes (refer to project README for environment setup).
 
-**Previous Issue**: System experiencing lockup, freezing, or reset issues due to high RAM usage (96.47% of available memory).
 
-**Resolution Applied**:
-- **Memory Optimization**: Reduced RAM usage from 96.47% to 84.37% (31KB saved)
-- **BLE Buffer Optimization**: Reduced TX/RX buffer counts from 10 to 6 each
-- **Thread Stack Optimization**: Reduced main thread stack from 2048 to 1536 bytes
-- **Runtime Memory Monitoring**: Added periodic memory usage reporting every 60 seconds
-- **Stack Overflow Detection**: Added runtime stack usage monitoring for system stability
 
-**Result**: System now operates stably with 84.37% RAM usage, preventing lockup issues and improving overall reliability.
+## Quick Reference## Quick Reference
 
-### BLE Notification State Tracking - FIXED ✅
+| Symptom | Likely Cause | Action |
 
-**Previous Issue**: BLE notifications sent even when client not subscribed, causing "Unable to allocate buffer" errors (-22).
+| Symptom | Probable Cause | What to Check ||---------|--------------|--------|
 
-**Resolution Applied**:
-- **Subscription State Tracking**: Implemented proper CCC state tracking for all characteristics
-- **Notification Gating**: Notifications only sent when client is properly subscribed
-- **Error Prevention**: Eliminates unnecessary buffer allocation attempts
-- **Enhanced Debugging**: Added logging for notification state changes
+|---------|----------------|----------------|| Alarm code 1 (No Flow) | Valve open but no pulses | Check flow sensor wiring; verify calibration >0; ensure water supply on |
 
-**Result**: BLE notifications now work reliably without buffer allocation errors.
+| System Status = `NO_FLOW` | Valve opened but no pulses detected | Flow wiring, `flow_calibration_pulses_per_liter`, water supply || Alarm code 2 (Unexpected Flow) | Pulses with all valves closed | Inspect for leak; stuck valve; reset after fix |
 
-### Advertising Restart After Disconnect - FIXED ✅
+| System Status = `UNEXPECTED_FLOW` | Pulses while all valves closed | Stuck valve, leak, master valve overlap too long || Interval mode never pauses | Interval not configured / wrong mode | Write interval config with configured=1 and select interval mode |
 
-**Previous Issue**: Advertising did not restart reliably after BLE disconnect, making device undiscoverable.
+| Rain data always zero | No rain pulses captured | Wiring, debounce (`rain_sensor_configure`), simulate pulse || BLE write rejected | Invalid length or out-of-range field | Recheck struct size & field ranges (see characteristic docs) |
 
-**Resolution Applied**:
-- **Robust Restart Logic**: Automatic advertising restart after BLE disconnect
-- **Retry Mechanism**: Up to 3 retry attempts with 5-second intervals
-- **Linear Backoff**: Intelligent retry timing to prevent resource exhaustion
-- **Delayable Work**: Uses Zephyr's delayable work system for reliable scheduling
+| Interval mode never pauses | Interval config missing/invalid | `interval_timing_is_configured`, ensure durations > 0 || Rain totals always zero | No pulses detected | Confirm wiring & debounce value; manually short pulses to test |
 
-**Result**: Device now reliably restarts advertising after disconnect, remaining discoverable.
+| BLE write rejected (0x0D) | Payload size mismatch | Send full struct length (see `docs/ble-api/` characteristic sizes) || Environmental snapshot invalid flags | BME280 absent or init failed | Verify I2C wiring (SCL P0.31 / SDA P0.29) |> restart |
 
-### BLE Buffer Allocation Errors - FIXED ✅
+| Automatic task skipped instantly | Rain integration flagged skip | Check Rain Integration Status characteristic and rainfall totals || Time drift or RTC error | RTC not responding | Check DS3231 power & I2C; reapply RTC config characteristic |
 
-**Previous Issue**: System experiencing "Unable to allocate buffer within timeout" and "No buffer available to send notification" errors.
+| RTC timestamp incorrect | DS3231 offline | Re-run RTC Config characteristic; confirm module powered |
 
-**Resolution Applied**:
-- **Notification Throttling**: Implemented 100ms minimum delay between BLE notifications
-- **Buffer Pool Increases**: Increased ACL, ATT, and L2CAP buffer pool sizes in firmware
-- **Queue System**: Added automatic queuing and retry for failed notifications
-- **Background Processing**: Dedicated worker thread handles notification overflow
+## Core Areas
 
-**Result**: System now handles high-frequency BLE communication reliably without buffer overflow.
+## Flow & Alarm Handling
 
-## System Stability Issues
+### 1. Flow / Alarms
 
-### Memory Exhaustion and System Lockup
+- Alarms 1 and 2 map to `WATERING_STATUS_NO_FLOW` and `WATERING_STATUS_UNEXPECTED_FLOW`.Only two runtime alarm codes are emitted now:
 
-**Symptoms**: Device freezes, resets unexpectedly, or becomes unresponsive during operation.
+- Clear alarms via the Alarm Status characteristic after the root cause is fixed.- 1 NO_FLOW: Valve opened; pulses did not appear inside internal window.
 
-**Solutions**:
+- Verify pulses with the Flow Sensor characteristic; it returns raw counts and last pulse timestamp.- 2 UNEXPECTED_FLOW: Pulses detected while all valves closed.
 
-1. **Memory Usage Monitoring** (Built-in as of v1.2.0):
-   - System now reports memory usage every 60 seconds via debug log
-   - Current RAM usage: 84.37% (216,920 bytes of 256KB)
-   - Stack usage monitoring detects potential overflow conditions
+- Calibration must be non-zero; the default is 750 pulses/litre (`flow_sensor_get_calibration`).
 
-2. **If Memory Issues Persist**:
-   - Check for memory leaks in custom code
-   - Review thread stack size requirements
-   - Consider reducing BLE buffer counts further if needed
+Clear procedure: Write the clear opcode to Alarm Status characteristic after resolving cause (does not suppress future alarms).
 
-3. **System Reset Recovery**:
-   - Device automatically recovers from watchdog resets
-   - BLE advertising restarts automatically after system recovery
-   - Configuration preserved in NVS storage
+## Rain Sensor & Integration
 
-### High RAM Usage (Legacy Issue - Now Resolved)
+Checklist:
 
-**Previous State**: System used 96.47% of available RAM (248,192 bytes).
+- The rain gauge uses interrupt pulses; debounce defaults to 50 ms. Bounces shorter than the debounce window are ignored.1. Inspect flow sensor wires (VCC, GND, signal on expected GPIO).
 
-**Current State**: Optimized to 84.37% RAM usage (216,920 bytes).
+- Use Rain Sensor Data characteristic to confirm `today_total_mm` increments when pulses are injected.2. Trigger manual watering; confirm pulse counter increases.
 
-**Optimizations Applied**:
-- Reduced BLE TX/RX buffers from 10 to 6 each
-- Optimized thread stack sizes across all threads
-- Reduced log buffer from 2048 to 1024 bytes
-- Tuned Zephyr kernel memory settings
+- Rain integration applies reductions/skips inside `watering_start_task()`; the Rain Integration Status characteristic exposes the per-channel reduction percentage.3. If pulses extremely low, verify calibration constant (avoid zero) and water supply pressure.
 
-**Monitoring**: Runtime memory reporting provides ongoing visibility into system health.
+- Skip behaviour currently returns `WATERING_ERROR_BUSY`; enqueueing a replacement task is the caller's responsibility.
 
-## Bluetooth/BLE Issues
+### 2. Interval Mode
 
-### BLE Connection Problems
+## Environmental DataSymptoms: Continuous watering or immediate stop.
 
-**Symptoms**: Cannot connect to device via Bluetooth, frequent disconnections, or missing characteristics.
+Causes:
 
-**Solutions**:
+- Environmental snapshots come from the BME280 (`env_sensors.c`). If `valid_flags` are zero, the sensor failed to initialise.- Missing `configured` flag.
 
-1. **Check Device Discovery**:
-   - Ensure the device is advertising (LED should be blinking during advertising)
-   - Verify device name appears as "AutoWatering" in BLE scanner apps
-   - Try restarting the device if not visible
+- Ensure I^2C bus (default label `i2c0`) is ready and the sensor address (0x77 default) is correct. Initialisation is performed by `sensor_manager_init_bme280`.- Zero durations.
 
-2. **Connection Issues**:
-   - **Buffer Overflow (FIXED)**: Previous "Unable to allocate buffer" errors resolved with throttling system
-   - Clear Bluetooth cache on mobile device and retry connection
-   - Ensure only one client is connected at a time (CONFIG_BT_MAX_CONN=1)
+- Temperature compensation requires valid environmental data; otherwise, automatic watering falls back to the unadjusted FAO-56 result.Actions:
 
-3. **Missing Characteristics**:
-   - **Service Restoration (FIXED)**: Complete GATT service with all 15 characteristics restored
-   - Verify client app is reading the correct service UUID: `12345678-1234-5678-1234-56789abcdef0`
-   - Some clients cache service discoveries - clear app data or restart
+1. Set watering and pause < 60 min each, seconds < 60.
 
-4. **Notification Issues**:
-   - **Reliability Improved**: Notification throttling prevents message loss during high-frequency updates
-   - Enable notifications on required characteristics before expecting updates
-   - Check that client is properly handling GATT_CCC_NOTIFY events
+## Scheduling & Interval Mode2. Ensure chosen mode enum corresponds to interval mode before starting task.
 
-### BLE Performance Optimization
-
-**For High-Frequency Monitoring**:
-- The system automatically throttles notifications to prevent buffer overflow
-- Real-time updates (flow, current task) are prioritized over less critical notifications
-- Background thread ensures no notifications are lost, only delayed if necessary
+3. Observe Current Task Status: phase changes W=watering / P=pausing.
 
-**Connection Parameters**:
-- Supervision timeout: 4 seconds
-- Connection interval: Optimized for balance between power consumption and responsiveness
-- Automatic parameter negotiation on connection
+- Interval support only runs when `interval_config.configured = 1` and durations are non-zero.
 
-### Legacy BLE Issues (Now Resolved)
+- Observe the Current Task Status characteristic: `phase` toggles between watering and pausing when interval mode is active.### 3. Rain Sensor (Optional)
 
-1. ~~**"Unable to allocate buffer within timeout"**~~ - **FIXED**: Notification throttling system prevents this error
-2. ~~**Missing GATT service definition**~~ - **FIXED**: Complete service restored with all characteristics
-3. ~~**Notification flooding**~~ - **FIXED**: Intelligent queuing prevents notification bursts from overwhelming buffers
+- Daily/periodic schedules depend on RTC uptime; if `RTC_ERROR` appears, they will not auto-trigger until time is restored.Minimum supported behavior: pulse counting + basic history commands.
 
-## Hardware Issues
+If no data:
 
-### Valves Not Activating
+## Master Valve- Check debounce not too short (<10ms) causing bounce rejection.
 
-**Symptoms**: Valves don't open when tasks are running, or the system reports valve activation but no water flows.
+- Manually create pulses; verify Rain Sensor Data characteristic increments today_total.
 
-**Possible Solutions**:
+- Master valve logic lives in `valve_control.c`. Configurable fields (pre-delay, post-delay, overlap grace, auto/manual) are in the System Configuration characteristic.- Confirm mm_per_pulse within valid range (rejects out-of-range writes).
 
-1. **Check Power Supply**:
-   - Verify that your power supply provides sufficient current (at least 500mA per valve)
-   - Measure the voltage at the relay inputs (should be 12V)
+- When diagnosing overlap: check the log for `master_valve` messages and ensure the overlap grace is long enough for back-to-back tasks.
 
-2. **Check Connections**:
-   - Verify GPIO connections between the NRF52840 and relay module
-   - Ensure the relay common terminal is connected to your power supply
-   - Check for loose wires or bad connections
+### 4. Environmental Data
 
-3. **Test Relay Operation**:
-   ```bash
-   # Use the test command mode to directly test a valve
-   AutoWatering> test_valve 2 on
-   # Wait a few seconds
-   AutoWatering> test_valve 2 off
-   ```
+## BLE InteractionIf all fields invalid:
 
-4. **Check Devicetree Configuration**:
-   - Verify that the pin assignments in `boards/promicro_52840.overlay` match your wiring
+- BME280 not present or init failed; wiring, address (0x76/0x77) or supply.
 
-### Flow Sensor Not Detecting Flow
+- Only one central can connect at a time (`CONFIG_BT_MAX_CONN=1`). Disconnect unused clients before pairing a new device.Environmental packets expose temperature, humidity, and pressure only; gas metrics are not provided by the BME280.
 
-**Symptoms**: Water is flowing but the system reports no flow or incorrect measurements.
+- Fragmented characteristics use a 3-byte header (`fragment_id`, `flags`, `payload_length`). Follow the fragment guide in `docs/ble-api/fragmentation-guide.md`.
 
-**Possible Solutions**:
+- Notification cadence is enforced by `SMART_NOTIFY`/`CRITICAL_NOTIFY`. Task status pushes every ~2 s while a task is active; other notifications respect >=500 ms spacing.### 5. Time / RTC
 
-1. **Check Sensor Installation**:
-   - Ensure the flow sensor is installed in the correct orientation (arrow pointing in flow direction)
-   - Check that water is actually flowing through the sensor
-   - Make sure the sensor is appropriate for your water pressure range
+- CCC values are stored via Zephyr settings; clearing bonding data requires clearing the Zephyr settings partition or issuing a BLE `Clear Bonds` procedure.If scheduling or timestamps off (where used):
 
-2. **Check Wiring**:
-   - Verify sensor connections (red to 5V, black to GND, yellow to GPIO)
-   - Check that the pull-up resistor is properly connected
-   - Try a different GPIO pin and update the devicetree overlay
+1. Reconfigure RTC characteristic with correct UTC time.
 
-3. **Test Sensor Signal**:
-   ```bash
-   # Monitor flow pulses directly
-   AutoWatering> flow_test
-   # Should show pulse counts increasing when water flows
-   ```
+## Persistence & History2. Verify timezone config if local conversions needed elsewhere.
 
-4. **Recalibrate the Sensor**:
-   - Run the calibration procedure with a precisely measured water volume
-   - Use a lower flow rate during calibration for more accurate results
-   - See [Flow Calibration Instructions](#flow-sensor-calibration)
+3. Hardware: DS3231 crystal & battery present.
 
-### RTC Issues
+- Configuration writes use `nvs_config.c`; data loss typically indicates NVS init failure (logged at boot). If NVS fails to mount, the system halts.
 
-**Symptoms**: Scheduling doesn't work, time doesn't persist after power cycle, or wrong time.
+- Watering history keeps the last 30 events per channel (`DETAILED_EVENTS_PER_CHANNEL`). Use the History Control characteristic to page through entries.### 6. BLE Interaction
 
-**Possible Solutions**:
+- Insights data exist (`history_insights_update`) but are not generated automatically; expect zeroed structures unless written externally.Common write failures = ATT error due to wrong payload size. Always send full struct for configuration characteristics (partial writes unsupported). Avoid fragmented custom attempts unless following documented fragmentation header.
 
-1. **Check I2C Connections**:
-   - Verify SDA, SCL connections between DS3231 and NRF52840
-   - Check for the correct I2C address (typically 0x68)
 
-2. **Check RTC Battery**:
-   - Measure the voltage of the RTC backup battery (should be above 2.5V)
-   - Replace the CR2032 battery if depleted
 
-3. **Reset and Synchronize RTC**:
-   ```bash
-   # Set the RTC time manually
-   AutoWatering> rtc_set 2023 12 31 23 59 45
-   # Or use the Bluetooth interface to set the time
-   ```
+## RTC & TimeIf notifications seem slow: Normal characteristics throttle to >=500ms; task status only while running (2s cadence). This is expected.
 
-4. **Verify RTC in I2C Bus**:
-   ```bash
-   # Scan I2C bus for devices
-   AutoWatering> i2c_scan
-   # Should show at least 0x68 for DS3231
-   ```
 
-## Software Issues
 
-### Build Errors
+- `rtc.c` falls back to uptime if the DS3231 is missing. Current fallback date is 2023-12-10.### 7. Build / Environment (Abbreviated)
 
-**Symptoms**: Build fails with compilation errors.
+- Reapply the RTC Config characteristic after replacing hardware; reads should show UTC.For full environment setup consult INSTALLATION.md. Quick checks:
 
-**Possible Solutions**:
+- Timezone support is limited to an UTC baseline-client applications must convert to local time.- west available (`west --version`).
 
-1. **Update Dependencies**:
-   ```bash
-   west update
-   pip install -r requirements.txt
-   ```
+- Zephyr SDK or toolchain in PATH.
 
-2. **Clean Build Directory**:
-   ```bash
-   west build -t clean
-   ```
+## Build & Flash Diagnostics- Pristine build if unexplained compile errors: `west build -p always ...`.
 
-3. **Check Zephyr Version**:
-   - Ensure you're using a compatible version of Zephyr (3.0 or newer)
-   - Check that the west manifest points to the correct Zephyr version
 
-4. **Check for Missing Configs**:
-   - Verify that all required Kconfig options are enabled in `prj.conf`
-   - Common missing configs: `CONFIG_BT`, `CONFIG_SETTINGS`, `CONFIG_GPIO`
 
-### Flash Failures
+- Use the steps in `docs/INSTALLATION.md`. Quick reminders:### 8. Recovery
 
-**Symptoms**: Unable to flash the firmware to the board.
+  - Create/update workspace: `west init -m https://github.com/AlexMihai1804/AutoWatering.git` followed by `west update`.Soft reset: Use reset control characteristic (two-step confirm) if present, or power-cycle device.
 
-**Possible Solutions**:
+  - Install Python requirements: `pip3 install --user -r zephyr/scripts/requirements.txt`.Clear stuck valve: Disable watering, depower relay module briefly.
 
-1. **Check USB Connection**:
-   - Try a different USB cable
-   - Use a powered USB hub if power issues are suspected
+  - Build for nRF52840 Pro Micro: `west build -b nrf52840_promicro --pristine`.
 
-2. **Reset the Board**:
-   - Press the reset button twice quickly to enter bootloader mode
-   - Check if the board appears as a USB storage device
+  - Native simulation: `west build -b native_sim --pristine -- -DEXTRA_DTC_OVERLAY_FILE=boards/native_sim.overlay`.### 9. When to Ignore Earlier Docs
 
-3. **Specify the Correct Runner**:
-   ```bash
-   west flash --runner nrfjprog
-   # or
-   west flash --runner jlink
-   ```
+  - Flash: `west flash` (optionally `--runner jlink`).If any guide references: configuration scores, automatic Eco/ETo based scaling, compensation adjustments, advanced history analytics-these are deferred. Operate manually.
 
-4. **Update Programmer Drivers**:
-   - For J-Link: Download and install the latest J-Link software
-   - For nRF: Update nRF Command Line Tools
+- If a build fails unexpectedly, run a pristine rebuild (`west build -p always ...`).
 
-### Runtime Issues
+## Minimal Diagnostic Steps
 
-**Symptoms**: System crashes, freezes, or behaves unpredictably.
+## Minimal Diagnostic Routine1. Read System Status & Alarm Status.
 
-**Possible Solutions**:
+2. Read Current Task Status while watering.
 
-1. **Monitor Debug Output**:
-   ```bash
-   west attach
-   ```
+1. Read System Status, Alarm Status, and Current Task Status characteristics.3. Read Flow Sensor & Rain Data snapshots.
 
-2. **Check for Hardware Conflicts**:
-   - Verify no pin conflicts in the devicetree overlay
-   - Check for overlapping timer or interrupt usage
+2. For active tasks, watch Flow Sensor pulses and ensure `current_value` trends toward the target.4. If hardware suspected: Inspect wiring, then rebuild, then reflash.
 
-3. **Increase Stack Size**:
-   - If stack overflow is indicated, increase sizes in `watering_tasks.c`:
-   ```c
-   #define WATERING_STACK_SIZE 3072  // Increase from 2048
-   #define SCHEDULER_STACK_SIZE 2048  // Increase from 1024
-   ```
+3. Verify rain totals and integration status before automatic tasks to understand reductions/skips.
 
-4. **Enable More Detailed Logs**:
-   - Update `prj.conf` to enable more verbose logging:
-   ```
-   CONFIG_LOG_DEFAULT_LEVEL=4
-   CONFIG_LOG_BUFFER_SIZE=4096
-   ```
+4. If persistence issues occur, inspect boot logs for NVS mount failures and invoke `nvs_storage_monitor_get_stats` (via BLE) to assess wear.End of simplified troubleshooting guide.
 
-### Bluetooth Connection Issues
+5. When adding new clients, rediscover services to pick up characteristic changes.
 
-**Symptoms**: Unable to connect to the device via Bluetooth, or connections drop frequently.
+## Common Issues
 
-**Possible Solutions**:
+## When Further Help Is Needed
 
-1. **Check Bluetooth Status**:
-   - Verify Bluetooth is enabled in firmware (`CONFIG_BT=y` in prj.conf)
-   - Check if the device is advertising (use a BLE scanner app like nRF Connect)
-   - Device should appear as "AutoWatering"
+### Issue: System Status Shows Error Conditions
 
-2. **Reset Bluetooth Stack**:
-   ```bash
-   # From the console (if available via USB)
-   bt reset
-   # Or use Task Queue command 4 via Bluetooth to clear errors
-   ```
+- Cross-reference module behaviour in `docs/system-architecture.md`.```
 
-3. **Check for Interference**:
-   - Move away from WiFi routers and other sources of 2.4GHz interference
-   - Try in a different location
-   - Ensure no other devices are connected (supports only 1 connection)
+- Record Zephyr logs (USB CDC or RTT) while reproducing the issue.Error: System status indicates fault conditions
 
-4. **MTU Issues**:
-   - For web browsers: Use fragmented writes for large structures
-   - For mobile apps: Negotiate larger MTU after connection
-   - See [BLE Documentation](ble/README.md) for MTU handling
+- Capture BLE interaction traces (nRF Connect, Ellisys, etc.) when debugging characteristic writes or notifications.```
 
-5. **Connection Parameters**:
-   - Use recommended connection parameters (30-50ms interval)
-   - Enable notifications before expecting real-time updates
+- If the question involves new functionality (weather ingestion, OTA, analytics), those remain deferred-see the Deferred list in `docs/FEATURES_FULL.md`.
 
-## System Operation Issues
+**Symptoms:**
+- System status shows FAULT, RTC_ERROR, or LOW_POWER
+- Automatic watering is disabled
+- BLE notifications indicate errors
 
-### No-Flow Detection
-
-**Symptoms**: System reports "No flow detected" errors when a valve is activated (status code 1).
-
-**Possible Solutions**:
-
-1. **Check Water Supply**:
-   - Verify that the water main is turned on
-   - Check for closed valves upstream of the irrigation system
-   - Ensure adequate water pressure (typically 15-45 PSI)
-
-2. **Check for Blockages**:
-   - Inspect filters for debris
-   - Check for kinked hoses or blocked irrigation lines
-   - Verify flow sensor is not obstructed
-
-3. **Flow Sensor Calibration**:
-   - Recalibrate the flow sensor using the Bluetooth interface
-   - Use the calibration characteristic (UUID …efb)
-   - Follow the procedure in [Flow Calibration](#flow-sensor-calibration)
-
-4. **Clear Error State**:
-   ```bash
-   # Use Task Queue command 4 to clear error states
-   # This can be done via Bluetooth or console
-   ```
-
-### Unexpected Flow Errors
-
-**Symptoms**: System reports unexpected flow when no valves should be active (status code 2).
-
-**Possible Solutions**:
-
-1. **Check for Leaks**:
-   - Inspect the irrigation system for leaks or damaged pipes
-   - Verify that all valves fully close when deactivated
-   - Check valve seals and replace if worn
-
-2. **Check for Valve Failure**:
-   - Test each valve individually to ensure it closes properly
-   - Look for signs of debris preventing full valve closure
-   - Verify relay operation (should show 0V when off)
-
-3. **Adjust Detection Sensitivity**:
-   - The system uses a threshold to detect unexpected flow
-   - Small leaks might trigger false alarms
-   - Consider adjusting system sensitivity if needed
-
-4. **Clear Error State**:
-   - Use Bluetooth Task Queue command 4 to reset error conditions
-   - Monitor system status via the Status characteristic (UUID …ef3)
-
-### Cannot Add Tasks After Error Clearing
-
-**Symptoms**: After clearing an alarm/error, new tasks cannot be added to the system.
-
-**Root Cause**: The system remained in fault state even after alarm clearing (before firmware fix).
-
-**Solutions**:
-
-1. **Clear Alarms via BLE (Recommended)**:
-   ```python
-   # Clear all alarms - this automatically resets system status
-   clear_command = struct.pack("<B", 0)  # 0 = clear all
-   await client.write_gatt_char(ALARM_UUID, clear_command)
-   ```
-
-2. **Use Task Queue Error Clear Command**:
-   ```python
-   # Alternative method using task queue command 4
-   command_data = struct.pack("<B", 4) + b'\x00' * 14
-   await client.write_gatt_char(TASK_QUEUE_UUID, command_data)
-   ```
-
-3. **Verify System Status Reset**:
-   ```python
-   # Check that system status changed from FAULT (3) to OK (0)
-   status_data = await client.read_gatt_char(STATUS_UUID)
-   status_code = status_data[0]
-   print(f"System status: {status_code}")  # Should be 0 (OK)
-   ```
-
-**Note**: The firmware automatically calls `watering_clear_errors()` when alarms are cleared, which:
-- Resets system status from FAULT to OK
-- Clears all error counters
-- Enables normal task addition and operation
-
-### Task Scheduling Issues
-
-**Symptoms**: Scheduled tasks don't execute at the expected time.
-
-**Possible Solutions**:
-
-1. **Verify RTC Time**:
-   - Check current time via Bluetooth RTC characteristic (UUID …ef9)
-   - Synchronize time using a mobile app or Python script
-   - Ensure RTC battery is functional (DS3231 backup battery)
-
-2. **Check Schedule Configuration**:
-   - Verify schedule using the Schedule Config characteristic (UUID …ef5)
-   - Ensure `auto_enabled` flag is set to 1
-   - Check day mask for daily schedules (bit 0=Sunday, 1=Monday, etc.)
-
-3. **Schedule Format Verification**:
-   - For daily schedules: Use bitmap format (0x3E = Monday-Friday)
-   - For periodic schedules: Use interval in days (e.g., 3 = every 3 days)
-   - Time format: 24-hour format (hour 0-23, minute 0-59)
-
-4. **Check System Status**:
-   - Ensure system is not in fault state (status code 3)
-   - Clear any error conditions using Task Queue command 4
-   - Monitor system status via Bluetooth notifications
-
-**Example Schedule Configuration (Python)**:
-```python
-# Monday-Friday at 07:00 for 10 minutes
-schedule_data = struct.pack("<6BHB", 
-    channel_id,  # 0-7
-    0,           # schedule_type (0=Daily)
-    0x3E,        # days_mask (Monday-Friday)
-    7,           # hour
-    0,           # minute
-    0,           # watering_mode (0=duration)
-    10,          # value (10 minutes)
-    1            # auto_enabled
-)
-```
-
-<a id="flow-sensor-calibration"></a>
-## Flow Sensor Calibration
-
-For accurate volume measurement, calibrate the flow sensor using the Bluetooth interface:
-
-### Method 1: Using Bluetooth (Recommended)
-
-1. **Start Calibration**:
-   ```python
-   # Using Python with Bleak
-   import struct
-   # Start calibration: action=1, other fields=0
-   data = struct.pack("<B3I", 1, 0, 0, 0)
-   await client.write_gatt_char(CALIBRATION_UUID, data, response=True)
-   ```
-
-2. **Measure Precise Volume**:
-   - Use a measuring container with known volume (1 liter recommended)
-   - Activate a valve and collect exactly the measured amount
-   - Stop valve when container is full
-
-3. **Complete Calibration**:
-   ```python
-   # Stop calibration and provide volume in ml
-   data = struct.pack("<B3I", 0, 0, 1000, 0)  # 1000ml = 1 liter
-   await client.write_gatt_char(CALIBRATION_UUID, data, response=True)
-   ```
-
-4. **Read Result**:
-   ```python
-   # Read calibration result
-   data = await client.read_gatt_char(CALIBRATION_UUID)
-   action, pulses, volume, result = struct.unpack("<B3I", data)
-   print(f"New calibration: {result} pulses/liter")
-   ```
-
-### Method 2: Manual Calculation
-
-If Bluetooth is not available:
-
-1. **Reset Pulse Counter**:
-   - Use flow monitoring to track pulse count from zero
-
-2. **Measure Water**:
-   - Collect exactly 1 liter of water through the flow sensor
-   - Note the total pulse count
-
-3. **Calculate Calibration**:
-   - pulses_per_liter = total_pulses_counted
-   - Update system configuration with this value
-
-**Note**: The system automatically saves the new calibration to non-volatile storage.
-
-## Growing Environment Configuration Issues
-
-### Plant Configuration Not Saving
-
-**Symptoms**: Growing environment settings reset after reboot or don't persist.
-
-**Possible Solutions**:
-
-1. **Check NVS Storage**:
-   ```c
-   // Test NVS functionality
-   watering_error_t result = watering_set_plant_type(0, PLANT_TYPE_TOMATO);
-   if (result != WATERING_SUCCESS) {
-       printk("NVS write failed: %d\n", result);
-   }
-   
-   // Verify by reading back
-   watering_plant_type_t plant_type;
-   result = watering_get_plant_type(0, &plant_type);
-   assert(plant_type == PLANT_TYPE_TOMATO);
-   ```
-
-2. **Check Storage Space**:
-   - Ensure NVS partition has sufficient space
-   - Use diagnostics to check storage status
-
-3. **Validate Parameters**:
-   ```c
-   // All parameters must be within valid ranges
-   assert(plant_type < PLANT_TYPE_COUNT);
-   assert(soil_type < SOIL_TYPE_COUNT);
-   assert(irrigation_method < IRRIGATION_METHOD_COUNT);
-   assert(sun_percentage <= 100);
-   ```
-
-### BLE Growing Environment Communication Failures
-
-**Symptoms**: Cannot read/write growing environment via Bluetooth, or data corruption.
-
-**Possible Solutions**:
-
-1. **Check MTU Size**:
-   ```python
-   # Growing environment requires 50 bytes minimum
-   mtu = await client.get_mtu()
-   if mtu < 53:  # 50 bytes + 3 ATT overhead
-       print("MTU too small, request larger MTU")
-       await client.request_mtu(250)
-   ```
-
-2. **Validate Data Structure**:
-   ```python
-   # Ensure correct packing format
-   data = struct.pack("<5B f H B 32s f 2B",
-       channel_id,           # uint8_t (1 byte)
-       plant_type,           # uint8_t (1 byte)  
-       soil_type,            # uint8_t (1 byte)
-       irrigation_method,    # uint8_t (1 byte)
-       use_area_based,       # uint8_t (1 byte)
-       area_m2,              # float (4 bytes)
-       plant_count,          # uint16_t (2 bytes) - overlays area
-       sun_percentage,       # uint8_t (1 byte)
-       custom_name.encode('utf-8').ljust(32, b'\0'),  # 32 bytes
-       water_need_factor,    # float (4 bytes)
-       irrigation_freq_days, # uint8_t (1 byte)
-       prefer_area_based     # uint8_t (1 byte)
-   )
-   assert len(data) == 47
-   ```
-
-3. **Test Individual Components**:
-   ```python
-   # Test channel selection first
-   await client.write_gatt_char(GROWING_ENV_UUID, bytes([channel_id]))
-   
-   # Then test reading
-   data = await client.read_gatt_char(GROWING_ENV_UUID)
-   if len(data) != 47:
-       print(f"Invalid data length: {len(data)}, expected 47")
-   ```
-
-### Custom Plant Configuration Issues
-
-**Symptoms**: Custom plant names not displaying, water factors not applied correctly.
-
-**Possible Solutions**:
-
-1. **Check String Encoding**:
-   ```python
-   # Ensure UTF-8 encoding and proper null termination
-   custom_name = "Hibiscus rosa-sinensis"
-   name_bytes = custom_name.encode('utf-8')
-   if len(name_bytes) > 31:
-       name_bytes = name_bytes[:31]  # Truncate if too long
-   name_padded = name_bytes + b'\0' * (32 - len(name_bytes))
-   ```
-
-2. **Validate Water Factors**:
-   ```c
-   // Water need factor must be in valid range
-   if (custom_config->water_need_factor < 0.5f || 
-       custom_config->water_need_factor > 3.0f) {
-       return WATERING_ERROR_INVALID_PARAM;
-   }
-   ```
-
-3. **Check Plant Type Selection**:
-   ```c
-   // Custom plants must use PLANT_TYPE_CUSTOM
-   if (plant_type == PLANT_TYPE_CUSTOM) {
-       // Custom configuration fields are used
-   } else {
-       // Built-in plant configuration applies
-   }
-   ```
-
-### Irrigation Method Validation Warnings
-
-**Symptoms**: System warns about irrigation method and coverage combination.
-
-**Solutions**:
-
-1. **Understand Recommendations**:
-   - **Drip/Micro Spray**: Better with plant count measurement
-   - **Sprinkler/Soaker/Flood**: Better with area measurement
-   - **Subsurface**: Usually area-based
-
-2. **Override When Appropriate**:
-   ```c
-   // You can override recommendations if your setup is different
-   bool valid = watering_validate_coverage_method(
-       IRRIGATION_METHOD_DRIP, true  // drip + area
-   );
-   // valid = false (warning), but still allowed
-   ```
-
-3. **Test Water Distribution**:
-   - Run short test cycles to verify coverage
-   - Adjust based on actual plant response
-
-### Environment Data Integration Issues
-
-**Symptoms**: Water factors not affecting irrigation amounts, scheduling not considering environment.
-
-**Solutions**:
-
-1. **Check Integration Status**:
-   ```c
-   // Verify environment data is being used
-   float factor = watering_get_water_factor(plant_type, custom_config);
-   printk("Water factor for channel %d: %.2f\n", channel_id, factor);
-   ```
-
-2. **Monitor Applied Calculations**:
-   - Use diagnostics to see calculated watering amounts
-   - Check if sun percentage affects frequency
-   - Verify soil type impacts duration
-
-3. **Validate API Integration**:
-   ```c
-   // Test complete environment configuration
-   watering_error_t result = watering_set_channel_environment(
-       channel_id, plant_type, soil_type, irrigation_method,
-       use_area_based, area_m2, plant_count, sun_percentage,
-       custom_config
-   );
-   
-   if (result != WATERING_SUCCESS) {
-       printk("Environment setup failed: %d\n", result);
-   }
-   ```
-
-## Factory Reset
-
-If you need to reset the system to factory defaults:
-
-1. **Reset Configuration**:
-   ```bash
-   # Warning: This will erase all schedules and settings
-   AutoWatering> factory_reset
-   ```
-
-2. **Manual Flash Erasure**:
-   - If the system is unresponsive, you can erase the settings partition:
-   ```bash
-   west flash --erase
-   ```
-
-3. **Rebuild and Flash**:
-   ```bash
-   west build -t clean
-   west build -b nrf52840_promicro
-   west flash
-   ```
-
-## Getting Support
-
-If you continue to experience issues:
-
-1. **Check Documentation**:
-   - Review the [BLE Documentation](ble/README.md) for interface issues
-   - Check the [Hardware Guide](HARDWARE.md) for wiring problems
-   - Consult the [Software Guide](SOFTWARE.md) for configuration questions
-
-2. **Generate System Information**:
-   - Use Bluetooth Diagnostics characteristic (UUID …efd) to get system info
-   - Check system status and error counts
-   - Monitor real-time status via notifications
-
-3. **GitHub Issues**:
-   - Search for similar issues on the [GitHub repository](https://github.com/AlexMihai1804/AutoWatering/issues)
-   - Create a new issue with detailed information if needed
-   - Include system diagnostics and reproduction steps
-
-4. **Community Support**:
-   - Check project discussions for common solutions
-   - Share your experience and solutions with others
-
-## Documentation Version
-
-This troubleshooting guide is current as of June 2025 and covers firmware version 1.6 with updated error codes and Bluetooth diagnostics.
-
-[Back to main README](../README.md)
-
-## Bluetooth and History Issues
-
-### Manual Tasks Not Appearing in History
-
-**Symptoms**: Manual watering tasks created via Bluetooth are not visible in web applications or are shown as "remote" tasks instead of "manual" tasks.
-
-**Root Cause**: This was a firmware issue where all Bluetooth-initiated tasks were incorrectly categorized as remote tasks instead of manual tasks.
-
-**Solution (Fixed in Firmware v1.6+)**:
-
-The issue has been resolved through multiple improvements:
-
-1. **Trigger Type Tracking**: Tasks now properly track how they were initiated (manual, scheduled, or remote)
-2. **Correct BLE Structure**: Fixed Bluetooth history structure to include all necessary fields
-3. **Proper Categorization**: Manual tasks via Bluetooth are correctly recorded as `WATERING_TRIGGER_MANUAL`
-
-**For Updated Firmware**:
-- Manual tasks via Bluetooth are shown with green highlighting in web applications
-- Scheduled tasks appear in blue
-- Remote tasks (if any) appear in purple
-- Use the provided `history_viewer_web.html` for visual verification
-
-**For Older Firmware**:
-If you cannot update firmware immediately:
-- Manual tasks will still function correctly, they're just mis-categorized
-- Look for tasks with `trigger_type = 2` in the history data
-- These are actually your manual tasks, despite being labeled as "remote"
-
-**Verification Steps**:
-1. Flash firmware v1.6 or later
-2. Open `history_viewer_web.html` in Chrome/Edge browser
-3. Connect to your AutoWatering device
-4. Create a manual task (e.g., 2-minute duration on any channel)
-5. Check history - task should appear with "Manual" badge and green highlighting
-
-**Related Files**:
-- `history_viewer_web.html` - Web application for viewing categorized history
-- Corrected history characteristic UUID: `12345678-1234-5678-1234-56789abcdefc`
-
-### Bluetooth History Structure Mismatch
-
-**Symptoms**: Web applications cannot parse history data correctly, showing empty or garbled history events.
-
-**Root Cause**: The Bluetooth service history structure was missing fields that are present in the actual history system.
-
-**Solution**: 
-The detailed event structure now includes all necessary fields:
+**Solutions:**
 ```c
-struct {
-    uint32_t timestamp;
-    uint8_t channel_id;      // Channel that performed the watering
-    uint8_t event_type;      // START/COMPLETE/ABORT/ERROR
-    uint8_t mode;            // DURATION/VOLUME
-    uint16_t target_value;
-    uint16_t actual_value;
-    uint16_t total_volume_ml;
-    uint8_t trigger_type;    // 0=manual, 1=scheduled, 2=remote
-    uint8_t success_status;  // 0=failed, 1=success, 2=partial
-    uint8_t error_code;
-    uint16_t flow_rate_avg;
-    uint8_t reserved[2];     // For alignment
-} detailed;
+// Check system status via BLE
+uint8_t status = read_system_status_characteristic();
+switch(status) {
+    case ENHANCED_STATUS_FAULT:
+        // Check error logs and sensor connections
+        break;
+    case ENHANCED_STATUS_RTC_ERROR:
+        // Verify RTC connection and time synchronization
+        break;
+    case ENHANCED_STATUS_LOW_POWER:
+        // Check power supply and connections
+        break;
+}
 ```
 
-**For Web Developers**:
-- Updated structure size is 24 bytes (previously 22 bytes)
-- Parse `channel_id` and `event_type` fields for complete event information
-- Use correct history UUID: `…efc` not `…ef8`
-
-## BLE Protocol Issues
-
-### Large Data Fragmentation (Channel Configuration & Growing Environment)
-
-**Symptoms**: Writes to Channel Configuration or Growing Environment characteristics fail, appear to succeed but don't update the device, or only partially write data.
-
-**Root Cause**: These characteristics use large data structures (76 bytes for Channel Config, 50 bytes for Growing Environment) that exceed the 20-byte BLE MTU limit and require fragmentation protocols.
-
-**Solutions**:
-
-1. **Use Proper Fragmentation for Channel Configuration**:
-   ```python
-   # Channel Configuration uses little-endian fragmentation
-   # Structure: 76 bytes total
-   def write_channel_config_fragmented(client, channel_id, config_data):
-       # Step 1: Select channel (1 byte)
-       await client.write_gatt_char(CHANNEL_CONFIG_UUID, bytes([channel_id]))
-       
-       # Step 2: Send fragmented data
-       data_size = len(config_data)  # Should be 76 bytes
-       size_bytes = struct.pack("<H", data_size)  # Little-endian
-       
-       # First fragment: [frag_type=2][size_low][size_high][data...]
-       first_fragment = bytes([2]) + size_bytes + config_data[:17]
-       await client.write_gatt_char(CHANNEL_CONFIG_UUID, first_fragment)
-       
-       # Subsequent fragments: [frag_type=2][data...]
-       offset = 17
-       while offset < len(config_data):
-           fragment_data = config_data[offset:offset+19]
-           fragment = bytes([2]) + fragment_data
-           await client.write_gatt_char(CHANNEL_CONFIG_UUID, fragment)
-           offset += 19
-   ```
-
-2. **Use Proper Fragmentation for Growing Environment**:
-   ```python
-   # Growing Environment uses big-endian fragmentation and different protocol
-   # Structure: 50 bytes total
-   def write_growing_env_fragmented(client, channel_id, env_data):
-       # No channel selection - uses last written channel_id
-       data_size = len(env_data)  # Should be 50 bytes
-       size_high = (data_size >> 8) & 0xFF
-       size_low = data_size & 0xFF
-       
-       # First fragment: [channel_id][frag_type=2][size_high][size_low][data...]
-       first_fragment = bytes([channel_id, 2, size_high, size_low]) + env_data[:16]
-       await client.write_gatt_char(GROWING_ENV_UUID, first_fragment)
-       
-       # Subsequent fragments: [channel_id][frag_type=2][data...]
-       offset = 16
-       while offset < len(env_data):
-           fragment_data = env_data[offset:offset+18]
-           fragment = bytes([channel_id, 2]) + fragment_data
-           await client.write_gatt_char(GROWING_ENV_UUID, fragment)
-           offset += 18
-   ```
-
-**Common Mistakes**:
-- Using the same fragmentation protocol for both characteristics (they're different!)
-- Mixing up endianness (Channel Config: little-endian, Growing Env: big-endian)
-- Not sending channel selection for Channel Configuration
-- Trying to send channel selection for Growing Environment (not supported)
-- Exceeding 20-byte MTU without fragmentation
-
-### Channel Selection Issues
-
-**Symptoms**: Reading Channel Configuration returns data for wrong channel, or Growing Environment reads return unexpected data.
-
-**Solutions**:
-
-1. **Channel Configuration - Explicit Selection Required**:
-   ```python
-   # Always select channel before reading
-   await client.write_gatt_char(CHANNEL_CONFIG_UUID, bytes([channel_id]))
-   # Now read returns data for the selected channel
-   data = await client.read_gatt_char(CHANNEL_CONFIG_UUID)
-   ```
-
-2. **Growing Environment - Implicit Selection**:
-   ```python
-   # No explicit selection protocol - uses last written channel
-   # To read channel 3, you must have previously written to channel 3
-   # Or write an empty/minimal update to set the channel:
-   minimal_data = bytes(50)  # 50-byte structure with zeros
-   await write_growing_env_fragmented(client, 3, minimal_data)
-   # Now reads will return data for channel 3
-   data = await client.read_gatt_char(GROWING_ENV_UUID)
-   ```
-
-**Warning**: Growing Environment does NOT have a 1-byte channel selection protocol like Channel Configuration. Attempting to write a single byte will be interpreted as the start of fragmented data.
-
-### MTU Negotiation Issues
-
-**Symptoms**: Fragmentation fails even when implemented correctly.
-
-**Solutions**:
-
-1. **Check MTU Size**:
-   ```python
-   # In most BLE implementations, check current MTU
-   current_mtu = await client.get_mtu()
-   print(f"Current MTU: {current_mtu}")
-   # Should be 23 (20 bytes data + 3 bytes overhead) for standard BLE
-   ```
-
-2. **Account for ATT Overhead**:
-   - Total MTU includes 3 bytes of ATT protocol overhead
-   - For writing: 20 bytes maximum data per operation
-   - Fragmentation protocols account for this automatically
-
-### Data Structure Size Mismatches
-
-**Symptoms**: Partial data writes, unexpected behavior after configuration updates.
-
-**Verification**:
-```python
-# Verify expected structure sizes
-CHANNEL_CONFIG_SIZE = 76  # bytes
-GROWING_ENV_SIZE = 50     # bytes
-
-def verify_structure_size(data, expected_size, name):
-    if len(data) != expected_size:
-        raise ValueError(f"{name} data must be exactly {expected_size} bytes, got {len(data)}")
+### Issue: Configuration Incomplete Warnings
+```
+Warning: Channel configuration incomplete
 ```
 
-**Solution**: Always ensure your data structures match the exact sizes expected by the firmware:
-- Channel Configuration: 76 bytes (verified by manual structure layout)
-- Growing Environment: 50 bytes (verified by manual structure layout)
+**Symptoms:**
+- Automatic watering disabled
+- Configuration score below 100%
+- Missing configuration groups
 
-### BLE Service Discovery Issues
+**Solutions:**
+1. Check configuration status:
+```c
+configuration_status_t status;
+configuration_status_get_channel_status(channel_id, &status);
 
-**Symptoms**: Cannot find characteristics, service appears incomplete.
+if (!status.basic_configured) {
+    // Configure basic settings: plant type, soil type, coverage
+}
+if (!status.growing_env_configured) {
+    // Configure growing environment: sun exposure, water factor
+}
+if (!status.compensation_configured) {
+    // Configure rain/temperature compensation settings
+}
+```
 
-**Solutions**:
+2. Use configuration reset if needed:
+```c
+// Reset specific configuration groups
+configuration_reset_group(channel_id, CONFIG_GROUP_COMPENSATION);
+```
 
-1. **Complete Service UUID**: `12345678-1234-5678-1234-56789abcdef0`
+### Issue: PowerShell Execution Policy Error
+```
+Error: Execution of scripts is disabled on this system
+```
 
-2. **Verify All Characteristics Present**:
-   - 15 total characteristics should be discovered
-   - Check that both Channel Configuration and Growing Environment UUIDs are found
-   - Some BLE clients cache service information - clear cache if missing characteristics
+**Symptoms:**
+- Cannot run PowerShell scripts
+- "ExecutionPolicy" error messages
 
-**Related Documentation**: See `BLE_DOCUMENTATION_COMPLETE.md` for complete protocol specifications and examples.
+**Solutions:**
+```powershell
+# Temporary solution (current session only)
+Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process
+
+# Permanent solution (requires admin)
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+# Alternative: Run with bypass
+powershell -ExecutionPolicy Bypass -File run_tests_wsl.ps1
+```
+
+### Issue: Insufficient Permissions
+```
+Error: Access denied / Permission denied
+```
+
+**Symptoms:**
+- File access errors
+- Cannot create directories
+- WSL permission issues
+
+**Solutions:**
+```powershell
+# Run PowerShell as Administrator
+Start-Process powershell -Verb RunAs
+
+# Fix WSL file permissions
+wsl -- sudo chown -R $USER:$USER ~/zephyrproject
+wsl -- sudo chown -R $USER:$USER ~/zephyr-sdk-*
+
+# Fix Windows file permissions
+icacls . /grant:r "$env:USERNAME:(OI)(CI)F" /T
+```
+
+## Advanced Irrigation Modes Issues
+
+### Issue: Interval Mode Not Working
+```
+Error: Interval mode fails to start or operate correctly
+```
+
+**Symptoms:**
+- Interval mode tasks don't start
+- Phase transitions don't occur
+- Timing is incorrect
+
+**Diagnosis:**
+```c
+// Check interval configuration
+interval_config_t config;
+if (interval_timing_is_configured(&config, &is_configured) == 0) {
+    if (!is_configured) {
+        // Interval mode not configured
+    }
+}
+
+// Check timing validation
+if (interval_timing_validate_config(&config) != 0) {
+    // Invalid timing configuration
+}
+```
+
+**Solutions:**
+1. Configure interval timing:
+```c
+interval_config_t config;
+interval_timing_init_config(&config);
+interval_timing_set_watering_duration(&config, 2, 30); // 2 min 30 sec
+interval_timing_set_pause_duration(&config, 5, 0);     // 5 min pause
+```
+
+2. Verify timing ranges:
+- Watering duration: 1 second to 60 minutes
+- Pause duration: 1 second to 60 minutes
+- Total cycle should be reasonable for target duration
+
+### Issue: Enhanced Task Status Not Updating
+```
+Error: Task status doesn't reflect interval mode phases
+```
+
+**Solutions:**
+```c
+// Enable enhanced task monitoring
+enhanced_watering_task_state_t task_state;
+if (interval_task_get_enhanced_state(&task_state) == 0) {
+    // Check current phase
+    if (task_state.is_interval_mode) {
+        switch (task_state.current_phase) {
+            case TASK_STATE_WATERING:
+                // Currently watering
+                break;
+            case TASK_STATE_PAUSING:
+                // Currently in pause phase
+                break;
+        }
+    }
+}
+```
+
+## BME280 Environmental Sensor Issues
+
+### Issue: BME280 Sensor Not Detected
+```
+Error: BME280 initialization failed
+```
+
+**Symptoms:**
+- Sensor initialization fails
+- Environmental data unavailable
+- Temperature compensation disabled
+
+**Diagnosis:**
+```c
+// Check I2C connection
+const struct device *i2c_dev = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+if (!device_is_ready(i2c_dev)) {
+    // I2C device not ready
+}
+
+// Check BME280 address
+uint8_t addr = 0x77; // or 0x76
+int ret = sensor_manager_init_bme280(i2c_dev, addr);
+if (ret < 0) {
+    // BME280 not responding at this address
+}
+```
+
+**Solutions:**
+1. Verify hardware connections:
+   - VCC to 3.3V
+   - GND to ground
+   - SDA to I2C SDA pin
+   - SCL to I2C SCL pin
+
+2. Check I2C address:
+```c
+// Try both possible addresses
+uint8_t addresses[] = {0x76, 0x77};
+for (int i = 0; i < 2; i++) {
+    if (sensor_manager_init_bme280(i2c_dev, addresses[i]) == 0) {
+        // Found sensor at this address
+        break;
+    }
+}
+```
+
+### Issue: Environmental Data Quality Issues
+```
+Warning: Environmental data validation failed
+```
+
+**Symptoms:**
+- Inconsistent sensor readings
+- Data validation errors
+- Environmental history gaps
+
+**Solutions:**
+```c
+// Configure sensor for better accuracy
+bme280_config_t config = {
+    .initialized = true,
+    .enabled = true,
+    .measurement_interval = 30, // seconds
+};
+sensor_manager_configure_bme280(&config);
+
+// Enable data validation
+environmental_data_config_t data_config = {
+    .enable_outlier_detection = true,
+    .temperature_range_min = -20.0f,
+    .temperature_range_max = 60.0f,
+    .humidity_range_min = 0.0f,
+    .humidity_range_max = 100.0f
+};
+```
+
+## Custom Soil Configuration Issues
+
+### Issue: Custom Soil Parameters Invalid
+```
+Error: Custom soil validation failed
+```
+
+**Symptoms:**
+- Custom soil configuration rejected
+- FAO-56 calculations fail
+- Fallback to standard soil types
+
+**Diagnosis:**
+```c
+custom_soil_entry_t custom_soil;
+if (custom_soil_db_read(channel_id, &custom_soil) == WATERING_SUCCESS) {
+    // Validate parameters
+    if (fao56_validate_custom_soil_for_calculations(&custom_soil) != WATERING_SUCCESS) {
+        // Invalid parameters for FAO-56
+    }
+}
+```
+
+**Solutions:**
+1. Ensure valid parameter ranges:
+```c
+custom_soil_entry_t soil = {
+    .field_capacity = 25.0f,        // 10-50% typical range
+    .wilting_point = 12.0f,         // 5-25% typical range
+    .infiltration_rate = 15.0f,     // 1-100 mm/h typical range
+    .bulk_density = 1.3f,           // 1.0-1.8 g/cm^3 typical range
+    .organic_matter = 3.0f,         // 0-10% typical range
+    .ph_level = 6.5f,               // 4.0-9.0 typical range
+    .salinity_ec = 0.5f             // 0-4 dS/m typical range
+};
+```
+
+2. Verify field capacity > wilting point:
+```c
+if (soil.field_capacity <= soil.wilting_point) {
+    // Invalid: field capacity must be greater than wilting point
+    soil.field_capacity = soil.wilting_point + 5.0f;
+}
+```
+
+### Issue: Custom Soil Database Corruption
+```
+Error: Custom soil database read/write failed
+```
+
+**Solutions:**
+```c
+// Check database integrity
+if (!custom_soil_db_exists(channel_id)) {
+    // Create new entry
+    custom_soil_entry_t default_soil;
+    custom_soil_db_init_default(&default_soil);
+    custom_soil_db_write(channel_id, &default_soil);
+}
+
+// Repair corrupted entries
+for (uint8_t ch = 0; ch < WATERING_CHANNELS_COUNT; ch++) {
+    custom_soil_entry_t soil;
+    if (custom_soil_db_read(ch, &soil) != WATERING_SUCCESS) {
+        // Repair with default values
+        custom_soil_db_init_default(&soil);
+        custom_soil_db_write(ch, &soil);
+    }
+}
+```
+
+## Compensation System Issues
+
+### Issue: Rain Compensation Not Working
+```
+Error: Rain compensation calculations incorrect
+```
+
+**Symptoms:**
+- Watering not reduced after rain
+- Rain sensor data not integrated
+- Compensation confidence low
+
+**Diagnosis:**
+```c
+// Check rain sensor status
+rain_sensor_status_t status;
+rain_sensor_get_status(&status);
+if (!status.sensor_active) {
+    // Rain sensor not working
+}
+
+// Check rain compensation configuration
+rain_compensation_config_t config;
+rain_compensation_get_config(channel_id, &config);
+if (!config.enabled) {
+    // Rain compensation disabled
+}
+```
+
+**Solutions:**
+1. Configure rain compensation:
+```c
+rain_compensation_config_t config = {
+    .enabled = true,
+    .sensitivity_percent = 75,      // 0-100%
+    .skip_threshold_mm = 5.0f,      // Skip watering if > 5mm rain
+    .lookback_hours = 48,           // Consider last 48 hours
+    .confidence_threshold = 60      // Minimum confidence level
+};
+rain_compensation_set_config(channel_id, &config);
+```
+
+2. Calibrate rain sensor:
+```c
+// Set rain sensor calibration
+rain_sensor_config_t sensor_config = {
+    .mm_per_pulse = 0.2f,           // 0.2mm per tip
+    .debounce_time_ms = 50,         // 50ms debounce
+    .enabled = true
+};
+rain_sensor_configure(&sensor_config);
+```
+
+### Issue: Temperature Compensation Errors
+```
+Error: Temperature compensation calculations fail
+```
+
+**Solutions:**
+```c
+// Configure temperature compensation
+temperature_compensation_config_t config = {
+    .enabled = true,
+    .base_temperature_c = 20.0f,    // Base temperature
+    .sensitivity_percent = 50,       // 50% sensitivity
+    .min_adjustment = 0.8f,         // Minimum 80% of normal
+    .max_adjustment = 1.3f,         // Maximum 130% of normal
+    .use_heat_index = true          // Consider humidity
+};
+temperature_compensation_set_config(channel_id, &config);
+
+// Verify BME280 is working
+environmental_data_t env_data;
+if (environmental_data_get_current(&env_data) == 0) {
+    if (env_data.temperature_valid) {
+        // Temperature data available
+    }
+}
+```
+
+## Interval Mode Issues
+
+### Issue: Interval Timing Inaccurate
+```
+Error: Interval phases don't match configured timing
+```
+
+**Diagnosis:**
+```c
+// Check timing configuration
+interval_config_t config;
+uint32_t watering_sec = interval_get_watering_duration_sec(&config);
+uint32_t pause_sec = interval_get_pause_duration_sec(&config);
+
+// Verify timing is within valid ranges
+if (watering_sec < 1 || watering_sec > 3600) {
+    // Invalid watering duration
+}
+if (pause_sec < 1 || pause_sec > 3600) {
+    // Invalid pause duration
+}
+```
+
+**Solutions:**
+```c
+// Set precise timing
+interval_timing_set_watering_duration(&config, 2, 30);  // 2 min 30 sec
+interval_timing_set_pause_duration(&config, 5, 0);      // 5 min exactly
+
+// Verify configuration
+if (interval_timing_validate_config(&config) != 0) {
+    // Fix invalid configuration
+    interval_timing_init_config(&config);
+}
+```
+
+### Issue: Interval Mode State Machine Errors
+```
+Error: Interval controller state transitions fail
+```
+
+**Solutions:**
+```c
+// Reset interval controller state
+interval_controller_t controller;
+interval_controller_reset(&controller);
+
+// Check controller status
+interval_controller_status_t status;
+if (interval_controller_get_status(&controller, &status) == 0) {
+    if (status.error_occurred) {
+        // Handle controller error
+        interval_controller_handle_error(&controller, 
+                                       status.last_error, 
+                                       "State machine error");
+    }
+}
+```
+
+## Configuration Management Issues
+
+### Issue: Configuration Reset Not Working
+```
+Error: Configuration reset operations fail
+```
+
+**Symptoms:**
+- Reset commands don't clear settings
+- Configuration status not updated
+- Selective reset not working
+
+**Solutions:**
+```c
+// Reset specific configuration groups
+configuration_reset_group_t groups = CONFIG_GROUP_BASIC | 
+                                   CONFIG_GROUP_COMPENSATION;
+if (configuration_reset_selective(channel_id, groups) != WATERING_SUCCESS) {
+    // Reset failed, try individual groups
+    configuration_reset_group(channel_id, CONFIG_GROUP_BASIC);
+    configuration_reset_group(channel_id, CONFIG_GROUP_COMPENSATION);
+}
+
+// Verify reset completed
+configuration_status_t status;
+configuration_status_get_channel_status(channel_id, &status);
+if (status.basic_configured) {
+    // Reset didn't work, force clear
+    configuration_force_clear_group(channel_id, CONFIG_GROUP_BASIC);
+}
+```
+
+### Issue: Configuration Score Calculation Errors
+```
+Error: Configuration completeness score incorrect
+```
+
+**Solutions:**
+```c
+// Recalculate configuration score
+uint8_t score = calculate_configuration_score(&channel);
+if (score != expected_score) {
+    // Force recalculation
+    configuration_status_recalculate(channel_id);
+    
+    // Check individual group status
+    configuration_status_t status;
+    configuration_status_get_channel_status(channel_id, &status);
+    
+    // Debug score calculation
+    LOG_DBG("Basic: %d, Growing: %d, Compensation: %d, Custom Soil: %d, Interval: %d",
+            status.basic_configured,
+            status.growing_env_configured,
+            status.compensation_configured,
+            status.custom_soil_configured,
+            status.interval_configured);
+}
+```
+
+## BLE Interface Issues
+
+### Issue: Enhanced BLE Characteristics Not Working
+```
+Error: New BLE characteristics not accessible
+```
+
+**Symptoms:**
+- Environmental data characteristic not found
+- Custom soil configuration fails
+- Interval mode settings not accessible
+
+**Solutions:**
+1. Verify service discovery:
+```javascript
+// Check for all characteristics
+const service = await device.gatt.getPrimaryService('12345678-1234-5678-1234-56789abcdef0');
+const characteristics = await service.getCharacteristics();
+
+// Look for new characteristics
+const envData = characteristics.find(c => c.uuid.includes('env_data'));
+const customSoil = characteristics.find(c => c.uuid.includes('custom_soil'));
+const intervalConfig = characteristics.find(c => c.uuid.includes('interval_config'));
+```
+
+2. Handle fragmentation properly:
+```javascript
+// Read fragmented environmental data
+const envChar = await service.getCharacteristic('env_data_uuid');
+const fragmentedData = await readFragmentedData(envChar);
+```
+
+### Issue: BLE Notification Throttling Issues
+```
+Error: BLE notifications delayed or missing
+```
+
+**Solutions:**
+```c
+// Adjust notification priorities
+bt_irrigation_set_notification_priority(BT_CHAR_ENVIRONMENTAL_DATA, 
+                                       BLE_NOTIFICATION_PRIORITY_HIGH);
+
+// Check notification buffer status
+if (bt_irrigation_notification_buffer_full()) {
+    // Clear buffer or increase buffer size
+    bt_irrigation_clear_notification_buffer();
+}
+
+// Enable adaptive throttling
+bt_irrigation_enable_adaptive_throttling(true);
+```
+
+### Issue: Antivirus Interference
+```
+Error: Files being deleted or quarantined
+```
+
+**Symptoms:**
+- Random file deletions
+- Slow file operations
+- Build failures
+
+**Solutions:**
+1. Add exclusions to antivirus:
+   - WSL directories: `%LOCALAPPDATA%\Packages\CanonicalGroupLimited.Ubuntu*`
+   - Project directory: `C:\path\to\AutoWatering`
+   - Temp directories: `C:\Users\%USERNAME%\AppData\Local\Temp`
+
+2. Temporarily disable real-time protection during setup
+
+## WSL-Related Issues
+
+### Issue: WSL Not Installed
+```
+Error: 'wsl' is not recognized as an internal or external command
+```
+
+**Diagnosis:**
+```powershell
+# Check if WSL is available
+Get-Command wsl -ErrorAction SilentlyContinue
+```
+
+**Solutions:**
+```powershell
+# Install WSL2
+wsl --install
+
+# Or enable WSL feature manually
+dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
+dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
+Restart-Computer
+```
+
+### Issue: WSL Distribution Not Found
+```
+Error: The specified distribution is not available
+```
+
+**Diagnosis:**
+```powershell
+# List available distributions
+wsl --list --online
+wsl --list --verbose
+```
+
+**Solutions:**
+```powershell
+# Install Ubuntu 22.04
+wsl --install -d Ubuntu-22.04
+
+# Or install from Microsoft Store
+start ms-windows-store://pdp/?productid=9PN20MSR04DW
+
+# Import existing distribution
+wsl --import Ubuntu-22.04 C:\WSL\Ubuntu-22.04 ubuntu.tar
+```
+
+### Issue: WSL2 Kernel Update Required
+```
+Error: WSL 2 requires an update to its kernel component
+```
+
+**Solutions:**
+1. Download WSL2 kernel update from Microsoft
+2. Install the update package
+3. Restart WSL:
+```powershell
+wsl --shutdown
+wsl --set-default-version 2
+```
+
+### Issue: WSL Distribution Won't Start
+```
+Error: The system cannot find the file specified
+```
+
+**Diagnosis:**
+```powershell
+# Check WSL status
+wsl --status
+wsl --list --verbose
+
+# Check Windows features
+Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux
+```
+
+**Solutions:**
+```powershell
+# Restart WSL service
+wsl --shutdown
+net stop LxssManager
+net start LxssManager
+
+# Reset distribution
+wsl --terminate Ubuntu-22.04
+wsl --unregister Ubuntu-22.04
+wsl --install -d Ubuntu-22.04
+```
+
+### Issue: WSL Memory/Performance Issues
+```
+Error: Out of memory / Slow performance
+```
+
+**Diagnosis:**
+```powershell
+# Check WSL resource usage
+wsl -- free -h
+wsl -- df -h
+```
+
+**Solutions:**
+Create `.wslconfig` file in `%USERPROFILE%`:
+```ini
+[wsl2]
+memory=8GB
+processors=4
+swap=2GB
+localhostForwarding=true
+```
+
+Then restart WSL:
+```powershell
+wsl --shutdown
+```
+
+## Zephyr Environment Issues
+
+### Issue: West Command Not Found
+```
+Error: west: command not found
+```
+
+**Diagnosis:**
+```bash
+# Check if west is installed
+which west
+echo $PATH
+python3 -m pip list --user | grep west
+```
+
+**Solutions:**
+```bash
+# Install west
+python3 -m pip install --user --upgrade west
+
+# Fix PATH
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify installation
+west --version
+```
+
+### Issue: Zephyr SDK Not Found
+```
+Error: Zephyr SDK not found
+```
+
+**Diagnosis:**
+```bash
+# Check SDK installation
+ls -la ~/zephyr-sdk-*
+echo $ZEPHYR_SDK_INSTALL_DIR
+```
+
+**Solutions:**
+```bash
+# Download and install SDK
+cd ~
+wget https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.0/zephyr-sdk-0.17.0_linux-x86_64.tar.xz
+tar xf zephyr-sdk-0.17.0_linux-x86_64.tar.xz
+cd zephyr-sdk-0.17.0
+./setup.sh -t all -h -c
+
+# Set environment variable
+echo 'export ZEPHYR_SDK_INSTALL_DIR="$HOME/zephyr-sdk-0.17.0"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### Issue: CMake/Ninja Not Found
+```
+Error: cmake: command not found
+Error: ninja: command not found
+```
+
+**Solutions:**
+```bash
+# Install build tools
+sudo apt update
+sudo apt install -y cmake ninja-build
+
+# Verify installation
+cmake --version
+ninja --version
+```
+
+### Issue: Python Package Issues
+```
+Error: ModuleNotFoundError: No module named 'west'
+```
+
+**Diagnosis:**
+```bash
+# Check Python environment
+python3 --version
+python3 -m pip --version
+python3 -m pip list --user
+```
+
+**Solutions:**
+```bash
+# Update pip
+python3 -m pip install --user --upgrade pip
+
+# Install required packages
+python3 -m pip install --user west pyelftools pyyaml pykwalify colorama packaging
+
+# Check installation
+python3 -c "import west; print('West imported successfully')"
+```
+
+### Issue: Zephyr Project Initialization Failed
+```
+Error: Failed to initialize Zephyr project
+```
+
+**Solutions:**
+```bash
+# Clean and reinitialize
+rm -rf ~/zephyrproject
+west init ~/zephyrproject
+cd ~/zephyrproject
+west update
+
+# Alternative: Initialize in current directory
+mkdir -p ~/zephyrproject
+cd ~/zephyrproject
+west init .
+west update
+```
+
+## Synchronization Issues
+
+### Issue: Project Sync Fails
+```
+Error: Project synchronization failed
+```
+
+**Diagnosis:**
+```powershell
+# Check source directory
+Get-ChildItem -Path . -Recurse | Measure-Object
+Test-Path CMakeLists.txt
+Test-Path prj.conf
+
+# Check WSL target
+wsl -- ls -la /tmp/autowatering_tests/
+wsl -- df -h /tmp
+```
+
+**Solutions:**
+```powershell
+# Clean target directory
+wsl -- rm -rf /tmp/autowatering_tests
+wsl -- mkdir -p /tmp/autowatering_tests
+
+# Force sync
+.\run_tests_wsl.ps1 -TestSuite unit -VerboseOutput
+
+# Check file permissions
+wsl -- sudo chown -R $USER:$USER /tmp/autowatering_tests
+```
+
+### Issue: Rsync Not Available
+```
+Error: rsync command not found
+```
+
+**Solutions:**
+```bash
+# Install rsync
+sudo apt update
+sudo apt install -y rsync
+
+# Verify installation
+rsync --version
+```
+
+### Issue: File Permission Errors During Sync
+```
+Error: Permission denied during file copy
+```
+
+**Solutions:**
+```bash
+# Fix permissions on WSL side
+sudo chown -R $USER:$USER /tmp/autowatering_tests
+chmod -R 755 /tmp/autowatering_tests
+
+# Fix permissions on Windows side
+icacls . /reset /T
+```
+
+### Issue: Sync Timeout
+```
+Error: Synchronization timed out
+```
+
+**Solutions:**
+1. Increase timeout in configuration:
+```json
+{
+  "synchronization": {
+    "timeout_seconds": 600
+  }
+}
+```
+
+2. Optimize exclude patterns:
+```json
+{
+  "synchronization": {
+    "exclude_patterns": [
+      "build*", ".git", "*.bin", "*.hex", "twister-out*",
+      "node_modules", ".vscode", "__pycache__"
+    ]
+  }
+}
+```
+
+## Test Execution Issues
+
+### Issue: Build Failures
+```
+Error: Build failed for platform
+```
+
+**Diagnosis:**
+```bash
+# Check build environment
+cd /tmp/autowatering_tests/tests
+west build -b native_posix_64 --pristine -v
+
+# Check dependencies
+which cmake ninja gcc
+```
+
+**Solutions:**
+```bash
+# Clean build
+rm -rf build*
+west build -b native_posix_64 --pristine
+
+# Install missing dependencies
+sudo apt install -y gcc-multilib g++-multilib
+
+# Check Zephyr environment
+source ~/.bashrc
+echo $ZEPHYR_BASE
+```
+
+### Issue: Test Execution Timeout
+```
+Error: Test execution timed out
+```
+
+**Solutions:**
+1. Increase timeout in configuration:
+```json
+{
+  "test_execution": {
+    "default_timeout_seconds": 1200
+  }
+}
+```
+
+2. Run tests individually:
+```powershell
+.\run_tests_wsl.ps1 -TestSuite "specific_test" -Platform native
+```
+
+### Issue: Hardware Tests Fail
+```
+Error: Hardware tests failed
+```
+
+**Diagnosis:**
+```bash
+# Check hardware connectivity
+lsusb | grep -i nordic
+ls -la /dev/ttyACM*
+
+# Check J-Link
+which JLinkExe
+```
+
+**Solutions:**
+```bash
+# Install J-Link tools
+# Download from SEGGER website and install
+
+# Fix USB permissions
+sudo usermod -a -G dialout $USER
+sudo udevadm control --reload-rules
+
+# Restart WSL
+exit
+```
+
+```powershell
+wsl --terminate Ubuntu-22.04
+```
+
+### Issue: Native Tests Fail
+```
+Error: Native platform tests failed
+```
+
+**Solutions:**
+```bash
+# Check native platform support
+west build -b native_posix_64 samples/hello_world
+
+# Install additional dependencies
+sudo apt install -y libsdl2-dev
+
+# Check for missing libraries
+ldd build/zephyr/zephyr.exe
+```
+
+## Performance Issues
+
+### Issue: Slow Test Execution
+```
+Issue: Tests take too long to complete
+```
+
+**Diagnosis:**
+```powershell
+# Check performance report
+Get-Content performance_report.json | ConvertFrom-Json
+
+# Monitor resource usage
+wsl -- top
+wsl -- free -h
+```
+
+**Solutions:**
+1. Enable parallel execution:
+```json
+{
+  "test_execution": {
+    "parallel_execution": true,
+    "max_parallel_jobs": 4
+  }
+}
+```
+
+2. Optimize platform selection:
+```powershell
+# Use only native platforms for development
+.\run_tests_wsl.ps1 -Platform native
+```
+
+3. Improve sync performance:
+```json
+{
+  "synchronization": {
+    "incremental_sync": true,
+    "exclude_patterns": ["build*", ".git", "*.bin"]
+  }
+}
+```
+
+### Issue: High Memory Usage
+```
+Issue: System runs out of memory
+```
+
+**Solutions:**
+1. Configure WSL memory limits in `.wslconfig`:
+```ini
+[wsl2]
+memory=4GB
+swap=2GB
+```
+
+2. Enable cleanup:
+```json
+{
+  "cleanup": {
+    "auto_cleanup": true,
+    "cleanup_temp_files": true
+  }
+}
+```
+
+### Issue: Disk Space Issues
+```
+Error: No space left on device
+```
+
+**Solutions:**
+```bash
+# Clean up build artifacts
+find . -name "build*" -type d -exec rm -rf {} +
+find . -name "twister-out*" -type d -exec rm -rf {} +
+
+# Clean package cache
+sudo apt autoremove -y
+sudo apt autoclean
+
+# Clean pip cache
+python3 -m pip cache purge
+```
+
+## Hardware Testing Issues
+
+### Issue: nRF52840 DK Not Detected
+```
+Error: No hardware detected
+```
+
+**Diagnosis:**
+```bash
+# Check USB devices
+lsusb
+lsusb | grep -i nordic
+
+# Check serial devices
+ls -la /dev/ttyACM*
+ls -la /dev/ttyUSB*
+```
+
+**Solutions:**
+```bash
+# Install USB rules
+sudo apt install -y udev
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+
+# Add user to dialout group
+sudo usermod -a -G dialout $USER
+
+# Restart WSL
+exit
+```
+
+### Issue: J-Link Connection Problems
+```
+Error: J-Link not found
+```
+
+**Solutions:**
+1. Install J-Link software from SEGGER
+2. Configure J-Link in WSL:
+```bash
+# Add J-Link to PATH
+echo 'export PATH="/opt/SEGGER/JLink:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# Test J-Link connection
+JLinkExe -device nRF52840_xxAA -if SWD -speed 4000 -autoconnect 1
+```
+
+### Issue: Flashing Failures
+```
+Error: Failed to flash firmware
+```
+
+**Solutions:**
+```bash
+# Check board connection
+west flash --runner jlink
+
+# Try different runner
+west flash --runner pyocd
+
+# Manual flash
+nrfjprog --program build/zephyr/zephyr.hex --sectorerase --verify --reset
+```
+
+## Diagnostic Tools
+
+### System Information Collection
+
+```powershell
+# Create diagnostic script
+@"
+# AutoWatering WSL Test Runner Diagnostics
+Write-Host "=== System Information ===" -ForegroundColor Green
+systeminfo | findstr /B /C:"OS Name" /C:"OS Version" /C:"System Type"
+Get-ComputerInfo | Select-Object WindowsVersion, TotalPhysicalMemory
+
+Write-Host "`n=== WSL Information ===" -ForegroundColor Green
+wsl --status
+wsl --list --verbose
+
+Write-Host "`n=== PowerShell Information ===" -ForegroundColor Green
+$PSVersionTable
+
+Write-Host "`n=== Disk Space ===" -ForegroundColor Green
+Get-WmiObject -Class Win32_LogicalDisk | Select-Object DeviceID, @{Name="Size(GB)";Expression={[math]::Round($_.Size/1GB,2)}}, @{Name="FreeSpace(GB)";Expression={[math]::Round($_.FreeSpace/1GB,2)}}
+
+Write-Host "`n=== WSL Environment ===" -ForegroundColor Green
+wsl -- uname -a
+wsl -- free -h
+wsl -- df -h
+wsl -- which west cmake ninja python3
+
+Write-Host "`n=== Zephyr Environment ===" -ForegroundColor Green
+wsl -- west --version 2>/dev/null || echo "West not found"
+wsl -- ls -la ~/zephyrproject/ 2>/dev/null || echo "Zephyr project not found"
+wsl -- ls -la ~/zephyr-sdk-* 2>/dev/null || echo "Zephyr SDK not found"
+"@ | Out-File -FilePath "diagnostics.ps1" -Encoding UTF8
+
+# Run diagnostics
+.\diagnostics.ps1 | Tee-Object -FilePath "diagnostic_report.txt"
+```
+
+### Log Analysis Tools
+
+```powershell
+# Analyze error patterns
+Get-Content wsl_test_execution.log | Select-String "ERROR" | Group-Object | Sort-Object Count -Descending
+
+# Check recent errors
+Get-Content wsl_test_execution.log | Select-String "ERROR" | Select-Object -Last 10
+
+# Generate log summary
+Get-Content wsl_test_execution.log | ForEach-Object {
+    if ($_ -match '\[(.*?)\].*\[(.*?)\].*\[(.*?)\]') {
+        [PSCustomObject]@{
+            Timestamp = $matches[1]
+            Level = $matches[2]
+            Component = $matches[3]
+            Message = $_.Substring($_.IndexOf($matches[3]) + $matches[3].Length + 2)
+        }
+    }
+} | Group-Object Level | Select-Object Name, Count
+```
+
+### Performance Analysis
+
+```powershell
+# Analyze performance report
+if (Test-Path "performance_report.json") {
+    $perf = Get-Content "performance_report.json" | ConvertFrom-Json
+    
+    Write-Host "=== Performance Summary ===" -ForegroundColor Green
+    Write-Host "Total Duration: $($perf.ExecutionSummary.TotalDurationSeconds) seconds"
+    Write-Host "Success Rate: $($perf.TestSummary.SuccessRate)%"
+    
+    Write-Host "`n=== Phase Durations ===" -ForegroundColor Green
+    $perf.ExecutionPhases.PSObject.Properties | ForEach-Object {
+        Write-Host "$($_.Name): $($_.Value.Duration) seconds ($($_.Value.Percentage)%)"
+    }
+    
+    if ($perf.Recommendations.Count -gt 0) {
+        Write-Host "`n=== Recommendations ===" -ForegroundColor Yellow
+        $perf.Recommendations | ForEach-Object { Write-Host "- $_" }
+    }
+}
+```
+
+## Recovery Procedures
+
+### Complete Environment Reset
+
+```powershell
+# 1. Stop all WSL processes
+wsl --shutdown
+
+# 2. Backup important data (optional)
+wsl --export Ubuntu-22.04 ubuntu-backup.tar
+
+# 3. Unregister distribution
+wsl --unregister Ubuntu-22.04
+
+# 4. Reinstall distribution
+wsl --install -d Ubuntu-22.04
+
+# 5. Run setup
+.\run_tests_wsl.ps1 -SetupOnly
+```
+
+### Partial Recovery - Zephyr Environment Only
+
+```bash
+# Remove Zephyr installation
+rm -rf ~/zephyrproject
+rm -rf ~/zephyr-sdk-*
+
+# Clean Python packages
+python3 -m pip uninstall -y west pyelftools pyyaml pykwalify colorama packaging
+
+# Reinstall
+python3 -m pip install --user west pyelftools pyyaml pykwalify colorama packaging
+west init ~/zephyrproject
+cd ~/zephyrproject
+west update
+```
+
+### Configuration Reset
+
+```powershell
+# Backup current configuration
+Copy-Item wsl_test_config.json wsl_test_config.json.backup
+
+# Generate new default configuration
+.\run_tests_wsl.ps1 -GenerateConfigTemplate -TemplateName default
+
+# Test with new configuration
+.\run_tests_wsl.ps1 -TestSuite unit -Platform native
+```
+
+## Advanced Troubleshooting
+
+### Enable Debug Logging
+
+```powershell
+# Enable verbose logging
+.\run_tests_wsl.ps1 -VerboseOutput -TestSuite unit
+
+# Enable debug mode in configuration
+{
+  "logging": {
+    "level": "DEBUG"
+  },
+  "enable_debug_mode": true
+}
+```
+
+### Network Troubleshooting
+
+```bash
+# Test network connectivity
+ping -c 4 8.8.8.8
+curl -I https://github.com
+
+# Check DNS resolution
+nslookup github.com
+
+# Test package manager connectivity
+sudo apt update -v
+```
+
+### WSL Networking Issues
+
+```powershell
+# Reset WSL networking
+wsl --shutdown
+netsh winsock reset
+netsh int ip reset
+ipconfig /flushdns
+```
+
+### File System Issues
+
+```bash
+# Check file system integrity
+sudo fsck -f /dev/sdc
+
+# Fix permissions
+sudo chown -R $USER:$USER $HOME
+find $HOME -type d -exec chmod 755 {} \;
+find $HOME -type f -exec chmod 644 {} \;
+```
+
+### Registry Issues (Windows)
+
+```powershell
+# Reset WSL registry entries (requires admin)
+Remove-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss" -Recurse -Force
+```
+
+## Getting Additional Help
+
+### Collecting Support Information
+
+```powershell
+# Generate comprehensive support package
+$supportDir = "support_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+New-Item -ItemType Directory -Path $supportDir
+
+# Copy logs
+Copy-Item "*.log" $supportDir -ErrorAction SilentlyContinue
+Copy-Item "performance_report.*" $supportDir -ErrorAction SilentlyContinue
+Copy-Item "wsl_test_config.json" $supportDir -ErrorAction SilentlyContinue
+
+# Generate system info
+.\diagnostics.ps1 > "$supportDir\system_info.txt"
+
+# Create archive
+Compress-Archive -Path $supportDir -DestinationPath "$supportDir.zip"
+
+Write-Host "Support package created: $supportDir.zip"
+```
+
+### Community Resources
+
+- **Project Repository**: Report issues and feature requests
+- **Documentation**: Check latest documentation updates
+- **Community Forum**: Ask questions and share solutions
+- **Stack Overflow**: Tag questions with `autowatering-wsl`
+
+### Professional Support
+
+For enterprise environments or complex issues:
+1. Collect support package using script above
+2. Document reproduction steps
+3. Include environment details
+4. Contact professional support channels
+
+Remember to check the [User Guide](WSL_TEST_RUNNER_USER_GUIDE.md) and [Installation Guide](INSTALLATION.md) for additional information.

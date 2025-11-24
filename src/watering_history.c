@@ -6,9 +6,11 @@
 #include "timezone.h"               /* Add timezone support for local time */
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
 #include <time.h>
+#include <stdio.h>
 
 /**
  * @file watering_history.c
@@ -29,12 +31,15 @@ LOG_MODULE_REGISTER(watering_history, CONFIG_LOG_DEFAULT_LEVEL);
 #define NVS_KEY_ROTATION_INFO           6000
 #define NVS_KEY_HISTORY_SETTINGS        6001
 #define NVS_KEY_INSIGHTS_CACHE          6002
+#define NVS_KEY_DETAILED_TS_BASE        7000
 
 // Ring-buffer pentru fiecare tip de date
 static history_event_t detailed_events[MAX_CHANNELS][DETAILED_EVENTS_PER_CHANNEL];
 static daily_stats_t daily_stats[DAILY_STATS_DAYS];
 static monthly_stats_raw_t monthly_stats[MONTHLY_STATS_MONTHS];
 static annual_stats_t annual_stats[ANNUAL_STATS_YEARS];
+static uint32_t detailed_event_timestamps[MAX_CHANNELS][DETAILED_EVENTS_PER_CHANNEL];
+static uint32_t last_event_timestamp[MAX_CHANNELS];
 
 // Management structures
 static history_rotation_t rotation_info = {0};
@@ -67,6 +72,13 @@ static uint16_t get_current_year(void);
 static uint8_t get_current_month(void);
 static uint32_t calculate_storage_usage(void);
 
+typedef struct timed_event timed_event_t;
+static size_t collect_channel_events(uint8_t channel_id, timed_event_t *out, size_t max_entries, uint32_t fallback_now);
+
+struct timed_event {
+    history_event_t event;
+    uint32_t timestamp;
+};
 /**
  * @brief Initialize History subsystem
  */
@@ -82,6 +94,8 @@ watering_error_t watering_history_init(void) {
     memset(daily_stats, 0, sizeof(daily_stats));
     memset(monthly_stats, 0, sizeof(monthly_stats));
     memset(annual_stats, 0, sizeof(annual_stats));
+    memset(detailed_event_timestamps, 0, sizeof(detailed_event_timestamps));
+    memset(last_event_timestamp, 0, sizeof(last_event_timestamp));
     
     // Load settings
     if (nvs_config_read(NVS_KEY_HISTORY_SETTINGS, &current_settings, sizeof(current_settings)) < 0) {
@@ -101,6 +115,16 @@ watering_error_t watering_history_init(void) {
             uint16_t key = NVS_KEY_DETAILED_BASE + (ch * 100) + i;
             if (nvs_config_read(key, &detailed_events[ch][i], sizeof(history_event_t)) < 0) {
                 // Not an error - might be empty
+            }
+
+            uint16_t ts_key = NVS_KEY_DETAILED_TS_BASE + (ch * 100) + i;
+            uint32_t stored_ts = 0;
+            int ts_ret = nvs_config_read(ts_key, &stored_ts, sizeof(stored_ts));
+            if (ts_ret == sizeof(stored_ts)) {
+                detailed_event_timestamps[ch][i] = stored_ts;
+                if (stored_ts > last_event_timestamp[ch]) {
+                    last_event_timestamp[ch] = stored_ts;
+                }
             }
         }
     }
@@ -188,6 +212,17 @@ watering_error_t watering_history_add_event(const history_event_t *event) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
+    history_event_t staged_event = *event;
+    uint32_t now = get_current_timestamp();
+    uint32_t prev_timestamp = last_event_timestamp[channel];
+
+    if (prev_timestamp > 0 && now > prev_timestamp) {
+        uint32_t delta = now - prev_timestamp;
+        staged_event.dt_delta = (delta > UINT8_MAX) ? UINT8_MAX : (uint8_t)delta;
+    } else if (prev_timestamp == 0) {
+        staged_event.dt_delta = 0;
+    }
+
     // Find next available slot in ring buffer
     uint8_t next_slot = 0;
     for (uint8_t i = 0; i < current_settings.detailed_cnt; i++) {
@@ -201,21 +236,36 @@ watering_error_t watering_history_add_event(const history_event_t *event) {
             // Shift all events down
             for (uint8_t j = 0; j < current_settings.detailed_cnt - 1; j++) {
                 detailed_events[channel][j] = detailed_events[channel][j + 1];
+                detailed_event_timestamps[channel][j] = detailed_event_timestamps[channel][j + 1];
+                uint16_t shift_key = NVS_KEY_DETAILED_BASE + (channel * 100) + j;
+                if (nvs_config_write(shift_key, &detailed_events[channel][j], sizeof(history_event_t)) < 0) {
+                    LOG_WRN("Failed to persist shifted history entry for channel %u slot %u", channel, j);
+                }
+                uint16_t shift_ts_key = NVS_KEY_DETAILED_TS_BASE + (channel * 100) + j;
+                (void)nvs_config_write(shift_ts_key, &detailed_event_timestamps[channel][j], sizeof(uint32_t));
             }
             next_slot = current_settings.detailed_cnt - 1;
         }
     }
     
     // Add new event
-    detailed_events[channel][next_slot] = *event;
+    detailed_events[channel][next_slot] = staged_event;
     
     // Save to NVS
     uint16_t key = NVS_KEY_DETAILED_BASE + (channel * 100) + next_slot;
-    if (nvs_config_write(key, event, sizeof(history_event_t)) < 0) {
+    if (nvs_config_write(key, &staged_event, sizeof(history_event_t)) < 0) {
         LOG_ERR("Failed to save event to NVS");
         k_mutex_unlock(&history_mutex);
         return WATERING_ERROR_STORAGE;
     }
+
+    detailed_event_timestamps[channel][next_slot] = now;
+    uint16_t ts_key = NVS_KEY_DETAILED_TS_BASE + (channel * 100) + next_slot;
+    if (nvs_config_write(ts_key, &now, sizeof(now)) < 0) {
+        LOG_WRN("Failed to persist event timestamp for channel %u slot %u", channel, next_slot);
+    }
+
+    last_event_timestamp[channel] = now;
     
     // Check if GC is needed
     gc_check_trigger();
@@ -283,6 +333,31 @@ watering_error_t watering_history_record_task_error(uint8_t channel_id,
     event.flags.success = 2; // failed
     event.flags.err = error_code;
     event.reserved[0] = channel_id;
+    
+    return watering_history_add_event(&event);
+}
+
+/**
+ * @brief Record task skip
+ */
+watering_error_t watering_history_record_task_skip(uint8_t channel_id,
+                                                   watering_skip_reason_t reason,
+                                                   float rain_amount_mm) {
+    if (channel_id >= MAX_CHANNELS) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    history_event_t event = {0};
+    event.dt_delta = 1;
+    event.flags.success = 3; // skipped
+    event.flags.err = reason;
+    event.reserved[0] = channel_id;
+    // Store rain amount in reserved bytes if needed
+    if (reason == WATERING_SKIP_REASON_RAIN) {
+        uint16_t rain_mm_x100 = (uint16_t)(rain_amount_mm * 100);
+        event.reserved[1] = rain_mm_x100 & 0xFF;
+        event.reserved[2] = (rain_mm_x100 >> 8) & 0xFF;
+    }
     
     return watering_history_add_event(&event);
 }
@@ -520,10 +595,9 @@ watering_error_t history_data_send_frame(uint16_t seq, const uint8_t *payload, u
     }
     
     // Create frame header
-    history_frame_t frame = {
-        .seq = seq,
-        .len = len
-    };
+    history_frame_t frame = { .seq = seq, .len = len };
+    /* Use frame in debug build to avoid unused warning while keeping structure for future expansion */
+    LOG_DBG("Frame header prepared: seq=%u len=%u", frame.seq, frame.len);
     
     // In actual implementation, this would be sent via BLE notification
     LOG_INF("Sending history frame: seq=%d, len=%d", seq, len);
@@ -655,6 +729,44 @@ static uint32_t calculate_storage_usage(void) {
     return usage;
 }
 
+static size_t collect_channel_events(uint8_t channel_id, timed_event_t *out, size_t max_entries, uint32_t fallback_now)
+{
+    if (!out || max_entries == 0 || channel_id >= MAX_CHANNELS) {
+        return 0;
+    }
+
+    size_t count = 0;
+
+    for (uint16_t i = 0; i < current_settings.detailed_cnt && count < max_entries; i++) {
+        history_event_t *event = &detailed_events[channel_id][i];
+        uint32_t ts = detailed_event_timestamps[channel_id][i];
+
+        if (ts == 0) {
+            if (event->dt_delta != 0 && fallback_now > event->dt_delta) {
+                ts = fallback_now - event->dt_delta;
+            } else {
+                continue;
+            }
+        }
+
+        out[count].event = *event;
+        out[count].timestamp = ts;
+        count++;
+    }
+
+    for (size_t i = 1; i < count; i++) {
+        timed_event_t current = out[i];
+        size_t j = i;
+        while (j > 0 && out[j - 1].timestamp > current.timestamp) {
+            out[j] = out[j - 1];
+            j--;
+        }
+        out[j] = current;
+    }
+
+    return count;
+}
+
 /**
  * @brief Trigger garbage collection
  */
@@ -671,9 +783,14 @@ watering_error_t watering_history_gc_trigger(void) {
 /**
  * @brief Helper functions for time
  */
-static uint32_t get_current_timestamp(void) {
-    // In actual implementation, this would get real timestamp
-    return k_uptime_get_32() / 1000;
+static uint32_t get_current_timestamp(void)
+{
+    rtc_datetime_t datetime;
+    if (rtc_datetime_get(&datetime) == 0) {
+        return timezone_rtc_to_unix_utc(&datetime);
+    }
+
+    return k_uptime_get_32() / 1000U;
 }
 
 static uint16_t get_current_year(void) {
@@ -685,7 +802,6 @@ static uint16_t get_current_year(void) {
         if (timezone_unix_to_rtc_local(utc_timestamp, &local_datetime) == 0) {
             return local_datetime.year;
         }
-        /* Fallback to UTC if timezone conversion fails */
         return datetime.year;
     }
     return 2025; // Fallback if RTC unavailable
@@ -700,7 +816,6 @@ static uint8_t get_current_month(void) {
         if (timezone_unix_to_rtc_local(utc_timestamp, &local_datetime) == 0) {
             return local_datetime.month;
         }
-        /* Fallback to UTC if timezone conversion fails */
         return datetime.month;
     }
     return 7; // Fallback if RTC unavailable
@@ -749,109 +864,89 @@ static watering_error_t load_rotation_info(void) {
            WATERING_ERROR_STORAGE : WATERING_SUCCESS;
 }
 
-// =============================================================================
-// LEGACY COMPATIBILITY FUNCTIONS
-// =============================================================================
-
-void watering_history_on_task_start(uint8_t channel_id, watering_mode_t mode, 
-                                   uint16_t target_value, bool is_scheduled) {
-    watering_trigger_type_t trigger = is_scheduled ? WATERING_TRIGGER_SCHEDULED : WATERING_TRIGGER_MANUAL;
-    watering_history_record_task_start(channel_id, mode, target_value, trigger);
-}
-
-void watering_history_on_task_complete(uint8_t channel_id, uint16_t actual_value,
-                                      uint16_t total_volume_ml, bool success) {
-    watering_success_status_t status = success ? WATERING_SUCCESS_COMPLETE : WATERING_SUCCESS_FAILED;
-    watering_history_record_task_complete(channel_id, actual_value, total_volume_ml, status);
-}
-
-void watering_history_on_task_error(uint8_t channel_id, uint8_t error_code) {
-    watering_history_record_task_error(channel_id, error_code);
-}
+// Legacy compatibility functions removed
 
 // Placeholder implementations for other functions
-watering_error_t watering_history_query_range(uint8_t channel_id, uint32_t start_epoch, uint32_t end_epoch, 
-                                             history_event_t *results, uint16_t *count) {
-    if (!results || !count || channel_id >= MAX_CHANNELS) {
+watering_error_t watering_history_query_range(uint8_t channel_id, uint32_t start_epoch, uint32_t end_epoch,
+                                             history_event_t *results, uint16_t *count)
+{
+    if (!results || !count || channel_id >= MAX_CHANNELS || start_epoch >= end_epoch) {
         return WATERING_ERROR_INVALID_PARAM;
     }
-    
-    // Use timeout instead of K_FOREVER to prevent system freeze
-    if (k_mutex_lock(&history_mutex, K_MSEC(100)) != 0) {
-        *count = 0;
+
+    uint16_t capacity = *count;
+    if (capacity == 0 || capacity > current_settings.detailed_cnt) {
+        capacity = current_settings.detailed_cnt;
+    }
+    if (capacity == 0) {
         return WATERING_SUCCESS;
     }
-    
     *count = 0;
-    uint16_t max_results = 10; /* Limit results to avoid overflow */
-    
-    /* Search through detailed events for the channel within time range */
-    for (uint8_t i = 0; i < current_settings.detailed_cnt && *count < max_results; i++) {
-        history_event_t *event = &detailed_events[channel_id][i];
-        
-        /* Check if event exists and is within time range */
-        if (event->dt_delta != 0) {
-            /* For this implementation, we don't have proper timestamp conversion,
-               so we'll return any existing events */
-            results[*count] = *event;
-            (*count)++;
-        }
+
+    if (k_mutex_lock(&history_mutex, K_MSEC(100)) != 0) {
+        return WATERING_ERROR_TIMEOUT;
     }
-    
+
+    timed_event_t events[DETAILED_EVENTS_PER_CHANNEL];
+    uint32_t now = get_current_timestamp();
+    size_t total = collect_channel_events(channel_id, events, ARRAY_SIZE(events), now);
+
+    for (size_t i = 0; i < total && *count < capacity; i++) {
+        if (events[i].timestamp < start_epoch || events[i].timestamp >= end_epoch) {
+            continue;
+        }
+        results[*count] = events[i].event;
+        (*count)++;
+    }
+
     k_mutex_unlock(&history_mutex);
-    
-    LOG_INF("History range query: ch=%u, range=%u-%u, found=%u events", 
-            channel_id, start_epoch, end_epoch, *count);
+
+    LOG_INF("History range query: ch=%u, range=%u-%u, found=%u events", channel_id, (unsigned int)start_epoch, (unsigned int)end_epoch, (unsigned int)(*count));
     return WATERING_SUCCESS;
 }
 
-watering_error_t watering_history_query_page(uint8_t channel_id, uint16_t page_index, 
-                                            history_event_t *results, uint16_t *count) {
+watering_error_t watering_history_query_page(uint8_t channel_id, uint16_t page_index,
+                                            history_event_t *results, uint16_t *count,
+                                            uint32_t *timestamps)
+{
     if (!results || !count || channel_id >= MAX_CHANNELS) {
         return WATERING_ERROR_INVALID_PARAM;
     }
-    
-    // Use timeout instead of K_FOREVER to prevent system freeze
-    if (k_mutex_lock(&history_mutex, K_MSEC(100)) != 0) {
-        // If we can't get the mutex quickly, return empty result instead of hanging
-        *count = 0;
+
+    uint16_t capacity = *count;
+    if (capacity == 0 || capacity > current_settings.detailed_cnt) {
+        capacity = current_settings.detailed_cnt;
+    }
+    if (capacity == 0) {
         return WATERING_SUCCESS;
     }
-    
     *count = 0;
-    const uint16_t events_per_page = 10;
-    uint16_t start_index = page_index * events_per_page;
-    uint16_t events_found = 0;
-    
-    // Count valid events first to determine pagination
-    for (uint16_t i = 0; i < current_settings.detailed_cnt; i++) {
-        if (detailed_events[channel_id][i].dt_delta != 0) {
-            events_found++;
-        }
+
+    if (k_mutex_lock(&history_mutex, K_MSEC(100)) != 0) {
+        return WATERING_ERROR_TIMEOUT;
     }
-    
-    // Check if page is valid
-    if (start_index >= events_found) {
+
+    timed_event_t events[DETAILED_EVENTS_PER_CHANNEL];
+    uint32_t now = get_current_timestamp();
+    size_t total = collect_channel_events(channel_id, events, ARRAY_SIZE(events), now);
+
+    size_t start_index = (size_t)page_index * capacity;
+    if (start_index >= total) {
         k_mutex_unlock(&history_mutex);
-        return WATERING_SUCCESS; // No events on this page
+        return WATERING_SUCCESS;
     }
-    
-    // Collect events for the requested page
-    uint16_t current_event = 0;
-    for (uint16_t i = 0; i < current_settings.detailed_cnt && *count < events_per_page; i++) {
-        if (detailed_events[channel_id][i].dt_delta != 0) {
-            if (current_event >= start_index) {
-                results[*count] = detailed_events[channel_id][i];
-                (*count)++;
-            }
-            current_event++;
+
+    for (size_t i = start_index; i < total && *count < capacity; i++) {
+        results[*count] = events[i].event;
+        if (timestamps) {
+            timestamps[*count] = events[i].timestamp;
         }
+        (*count)++;
     }
-    
+
     k_mutex_unlock(&history_mutex);
-    
-    LOG_DBG("Page query: ch=%u, page=%u, returned=%u events (total=%u)", 
-            channel_id, page_index, *count, events_found);
+
+    LOG_DBG("Page query: ch=%u, page=%u, returned=%u events (total=%zu)", channel_id, page_index, (unsigned int)(*count), total);
     return WATERING_SUCCESS;
 }
 
@@ -997,6 +1092,35 @@ watering_error_t watering_history_get_monthly_stats(uint8_t channel_id, uint8_t 
     return WATERING_SUCCESS;
 }
 
+watering_error_t watering_history_count_events(uint8_t channel_id,
+                                               uint32_t start_epoch,
+                                               uint32_t end_epoch,
+                                               uint16_t *count)
+{
+    if (!count || channel_id >= MAX_CHANNELS || end_epoch <= start_epoch) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    *count = 0;
+
+    if (k_mutex_lock(&history_mutex, K_MSEC(100)) != 0) {
+        return WATERING_ERROR_BUSY;
+    }
+
+    timed_event_t events[DETAILED_EVENTS_PER_CHANNEL];
+    uint32_t now = get_current_timestamp();
+    size_t total = collect_channel_events(channel_id, events, ARRAY_SIZE(events), now);
+
+    for (size_t i = 0; i < total; i++) {
+        if (events[i].timestamp >= start_epoch && events[i].timestamp < end_epoch) {
+            (*count)++;
+        }
+    }
+
+    k_mutex_unlock(&history_mutex);
+    return WATERING_SUCCESS;
+}
+
 watering_error_t watering_history_get_annual_stats(uint8_t channel_id, uint16_t start_year, uint16_t end_year, 
                                                   annual_stats_t *results, uint16_t *count) {
     if (!results || !count || channel_id >= MAX_CHANNELS) {
@@ -1048,8 +1172,10 @@ watering_error_t watering_history_rotate_old_data(void) {
             }
             
             // Clear the freed entries
-            memset(&detailed_events[ch][DETAILED_EVENTS_PER_CHANNEL - remove_count], 0, 
+            memset(&detailed_events[ch][DETAILED_EVENTS_PER_CHANNEL - remove_count], 0,
                    remove_count * sizeof(history_event_t));
+            memset(&detailed_event_timestamps[ch][DETAILED_EVENTS_PER_CHANNEL - remove_count], 0,
+                   remove_count * sizeof(uint32_t));
             
             current_settings.detailed_cnt -= remove_count;
         }
@@ -1071,12 +1197,14 @@ watering_error_t watering_history_cleanup_expired(void) {
     // Clean up old detailed events
     for (uint8_t ch = 0; ch < MAX_CHANNELS; ch++) {
         for (uint16_t i = 0; i < DETAILED_EVENTS_PER_CHANNEL; i++) {
-            if (detailed_events[ch][i].dt_delta != 0) {
-                // Check if event is older than expiry time
-                // For simplicity, we'll just mark very old entries for removal
-                if (detailed_events[ch][i].dt_delta > 7776000) { // ~3 months in seconds
-                    memset(&detailed_events[ch][i], 0, sizeof(history_event_t));
-                }
+            uint32_t ts = detailed_event_timestamps[ch][i];
+            if (ts == 0 && detailed_events[ch][i].dt_delta != 0 && current_time > detailed_events[ch][i].dt_delta) {
+                ts = current_time - detailed_events[ch][i].dt_delta;
+            }
+
+            if (ts != 0 && (current_time > ts) && ((current_time - ts) > 7776000U)) { // ~3 months
+                memset(&detailed_events[ch][i], 0, sizeof(history_event_t));
+                detailed_event_timestamps[ch][i] = 0;
             }
         }
     }
@@ -1618,6 +1746,8 @@ watering_error_t watering_history_reset_channel_history(uint8_t channel_id) {
     
     // Clear detailed events for this channel
     memset(detailed_events[channel_id], 0, sizeof(detailed_events[channel_id]));
+    memset(detailed_event_timestamps[channel_id], 0, sizeof(detailed_event_timestamps[channel_id]));
+    last_event_timestamp[channel_id] = 0;
     
     // Clear daily stats entries that contain this channel's data
     for (uint16_t i = 0; i < DAILY_STATS_DAYS; i++) {
@@ -1655,6 +1785,8 @@ watering_error_t watering_history_reset_channel_history(uint8_t channel_id) {
     for (uint16_t i = 0; i < current_settings.detailed_cnt; i++) {
         uint16_t key = NVS_KEY_DETAILED_BASE + (channel_id * 100) + i;
         nvs_config_delete(key);
+        uint16_t ts_key = NVS_KEY_DETAILED_TS_BASE + (channel_id * 100) + i;
+        nvs_config_delete(ts_key);
     }
     
     // Save updated daily/monthly/annual stats to NVS
@@ -1692,6 +1824,8 @@ watering_error_t watering_history_reset_all_history(void) {
     
     // Clear all detailed events
     memset(detailed_events, 0, sizeof(detailed_events));
+    memset(detailed_event_timestamps, 0, sizeof(detailed_event_timestamps));
+    memset(last_event_timestamp, 0, sizeof(last_event_timestamp));
     
     // Clear all daily stats
     memset(daily_stats, 0, sizeof(daily_stats));
@@ -1710,6 +1844,8 @@ watering_error_t watering_history_reset_all_history(void) {
         for (uint16_t i = 0; i < current_settings.detailed_cnt; i++) {
             uint16_t key = NVS_KEY_DETAILED_BASE + (ch * 100) + i;
             nvs_config_delete(key);
+            uint16_t ts_key = NVS_KEY_DETAILED_TS_BASE + (ch * 100) + i;
+            nvs_config_delete(ts_key);
         }
     }
     
@@ -1837,3 +1973,15 @@ watering_error_t watering_history_factory_reset(void) {
     LOG_WRN("FACTORY RESET COMPLETED - All data cleared!");
     return WATERING_SUCCESS;
 }
+
+
+
+
+
+
+
+
+
+
+
+

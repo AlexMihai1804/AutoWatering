@@ -1,0 +1,61 @@
+{
+  "wsl": {
+    "distribution": "Ubuntu-22.04",
+    "project_path": "/tmp/autowatering_tests",
+    "timeout_minutes": 30
+  },
+  "synchronization": {
+    "exclude_patterns": [
+      "build*", ".git", "*.bin", "*.hex", "*.elf",
+      "twister-out*", "*.log", "*.tmp", ".vscode",
+      "__pycache__", "*.pyc", ".pytest_cache"
+    ],
+    "preserve_permissions": true,
+    "incremental_sync": true
+  },
+  "test_execution": {
+    "platforms": ["native_posix_64", "qemu_x86"],
+    "parallel_execution": false,
+    "retry_count": 1,
+    "default_timeout_seconds": 300
+  },
+  "test_suites": {
+    "unit": {
+      "filters": ["--test-pattern=test_*"],
+      "extra_args": ["--verbose"],
+      "timeout": 180
+    },
+    "integration": {
+      "filters": ["--test-pattern=integration_*"],
+      "extra_args": ["--detailed-output"],
+      "timeout": 600
+    },
+    "quick": {
+      "filters": ["--test-pattern=quick_*"],
+      "extra_args": ["--fast"],
+      "timeout": 120
+    }
+  },
+  "enable_debug_mode": false,
+  "logging": {
+    "level": "INFO",
+    "file_rotation": true,
+    "max_log_files": 5
+  },
+  "results": {
+    "output_formats": ["json", "html"],
+    "preserve_logs": true,
+    "compress_results": false
+  },
+  "cleanup": {
+    "auto_cleanup": true,
+    "cleanup_on_exit": true,
+    "preserve_results": true,
+    "cleanup_temp_files": true
+  },
+  "resource_limits": {
+    "max_memory_mb": 2048,
+    "max_disk_gb": 5,
+    "max_execution_time_minutes": 30
+  }
+}

@@ -224,6 +224,9 @@ watering_error_t watering_history_record_task_complete(uint8_t channel_id,
                                                       watering_success_status_t status);
 watering_error_t watering_history_record_task_error(uint8_t channel_id,
                                                    uint8_t error_code);
+watering_error_t watering_history_record_task_skip(uint8_t channel_id,
+                                                   watering_skip_reason_t reason,
+                                                   float rain_amount_mm);
 
 // TLV helper functions
 int tlv_encode_uint8(uint8_t *buffer, uint8_t type, uint8_t value);
@@ -251,7 +254,8 @@ watering_error_t watering_history_query_range(uint8_t channel_id,
 watering_error_t watering_history_query_page(uint8_t channel_id,
                                              uint16_t page_index,
                                              history_event_t *results,
-                                             uint16_t *count);
+                                             uint16_t *count,
+                                             uint32_t *timestamps);
 
 // Statistics aggregation
 watering_error_t watering_history_aggregate_daily(uint16_t day_index, uint16_t year);
@@ -272,6 +276,10 @@ watering_error_t watering_history_get_monthly_stats(uint8_t channel_id,
                                                     uint16_t year,
                                                     monthly_stats_t *results,
                                                     uint16_t *count);
+watering_error_t watering_history_count_events(uint8_t channel_id,
+                                               uint32_t start_epoch,
+                                               uint32_t end_epoch,
+                                               uint16_t *count);
 
 watering_error_t watering_history_get_annual_stats(uint8_t channel_id,
                                                    uint16_t start_year,

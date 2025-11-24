@@ -181,3 +181,45 @@ void watering_log(int level, const char *msg, int err_code)
         printk("[%s] %s\n", level_str, msg);
     }
 }
+
+/**
+ * @brief Log a volume constraint event for historical tracking
+ * 
+ * This function logs when calculated irrigation volumes exceed user-defined
+ * maximum limits, providing visibility into when and how often constraints
+ * are applied.
+ * 
+ * @param channel_id Channel ID that was constrained
+ * @param calculated_volume_l Originally calculated volume (liters)
+ * @param max_volume_limit_l Maximum allowed volume (liters)
+ * @param mode_name Mode name (e.g., "Quality", "Eco")
+ */
+void watering_log_constraint(uint8_t channel_id, 
+                           float calculated_volume_l, 
+                           float max_volume_limit_l, 
+                           const char *mode_name)
+{
+    if (!mode_name) {
+        mode_name = "Unknown";
+    }
+    
+    // Calculate reduction percentage
+    float reduction_pct = 0.0f;
+    if (calculated_volume_l > 0.0f) {
+        reduction_pct = ((calculated_volume_l - max_volume_limit_l) / calculated_volume_l) * 100.0f;
+    }
+    
+    // Create detailed constraint log message
+    char constraint_msg[200];
+    snprintf(constraint_msg, sizeof(constraint_msg),
+             "CONSTRAINT Ch%d %s: %.1fL -> %.1fL (%.1f%% reduction)",
+             channel_id, mode_name, 
+             (double)calculated_volume_l, (double)max_volume_limit_l, 
+             (double)reduction_pct);
+    
+    // Log as warning level since it's important operational information
+    watering_log(WATERING_LOG_LEVEL_WARNING, constraint_msg, 0);
+    
+    // Also write to file logging if enabled for historical tracking
+    watering_log_write(WATERING_LOG_LEVEL_WARNING, constraint_msg);
+}

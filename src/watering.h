@@ -5,6 +5,13 @@
 #include <stdint.h>
 #include <zephyr/drivers/gpio.h>
 
+/* Forward declarations for enhanced database types */
+struct plant_full_data_t;
+struct soil_enhanced_data_t;
+struct irrigation_method_data_t;
+/* Forward declaration for water_balance_t */
+struct water_balance_t;
+
 /**
  * @file watering.h
  * @brief Main interface for the automatic irrigation system
@@ -35,12 +42,11 @@ typedef enum {
     WATERING_ERROR_CONFIG = -7,          /**< Configuration error */
     WATERING_ERROR_RTC_FAILURE = -8,     /**< RTC communication failure */
     WATERING_ERROR_STORAGE = -9,         /**< Storage operation failed */
+    WATERING_ERROR_DATA_CORRUPT = -10,
+    WATERING_ERROR_INVALID_DATA = -11,
+    WATERING_ERROR_BUFFER_FULL = -12,
+    WATERING_ERROR_NO_MEMORY = -13,
 } watering_error_t;
-
-/**
- * @brief Configuration version for compatibility and migrations
- */
-#define WATERING_CONFIG_VERSION 1
 
 /**
  * @brief Schedule type for automatic watering
@@ -56,8 +62,10 @@ typedef enum {
  * @brief Watering mode that determines how irrigation is measured
  */
 typedef enum watering_mode { 
-    WATERING_BY_DURATION, /**< Water for a specific time duration */
-    WATERING_BY_VOLUME    /**< Water until a specific volume is reached */
+    WATERING_BY_DURATION,         /**< Water for a specific time duration */
+    WATERING_BY_VOLUME,           /**< Water until a specific volume is reached */
+    WATERING_AUTOMATIC_QUALITY,   /**< Automatic mode: 100% of calculated requirement */
+    WATERING_AUTOMATIC_ECO        /**< Automatic mode: 70% of calculated requirement for water conservation */
 } watering_mode_t;
 
 /**
@@ -78,6 +86,16 @@ typedef enum {
     WATERING_TRIGGER_SCHEDULED = 1,
     WATERING_TRIGGER_REMOTE = 2
 } watering_trigger_type_t;
+
+/**
+ * @brief Skip reasons for watering tasks
+ */
+typedef enum {
+    WATERING_SKIP_REASON_RAIN = 0,
+    WATERING_SKIP_REASON_MOISTURE = 1,
+    WATERING_SKIP_REASON_MANUAL = 2,
+    WATERING_SKIP_REASON_ERROR = 3
+} watering_skip_reason_t;
 
 /**
  * @brief Type of plant being grown in the channel
@@ -652,16 +670,115 @@ typedef struct {
     struct gpio_dt_spec valve;        /**< GPIO specification for the valve control */
     bool is_active;                   /**< Whether this channel is currently active */
     
-    /* Plant and growing environment fields */
-    plant_info_t plant_info;          /**< Detailed plant type and specific variety */
-    plant_type_t plant_type;          /**< Main type of plant being grown (for backward compatibility) */
-    soil_type_t soil_type;            /**< Type of soil in the growing area */
-    irrigation_method_t irrigation_method; /**< Method of irrigation used */
-    channel_coverage_t coverage;      /**< Area or plant count information */
-    uint8_t sun_percentage;           /**< Percentage of direct sunlight (0-100%) */
+    /* Enhanced growing environment configuration */
+    uint16_t plant_db_index;           /**< Index into plant_full_database (0-based, UINT16_MAX = not set) */
+    uint8_t soil_db_index;             /**< Index into soil_enhanced_database (0-based, UINT8_MAX = not set) */
+    uint8_t irrigation_method_index;   /**< Index into irrigation_methods_database (0-based, UINT8_MAX = not set) */
     
-    /* Custom plant configuration (only used when plant_type == PLANT_TYPE_OTHER) */
-    custom_plant_config_t custom_plant; /**< Custom plant settings */
+    /* Coverage specification */
+    bool use_area_based;               /**< True = area-based calculation, false = plant count-based */
+    union {
+        float area_m2;                 /**< Area in square meters (for area-based) */
+        uint16_t plant_count;          /**< Number of plants (for plant-count-based) */
+    } coverage;
+    
+    /* Automatic mode settings */
+    watering_mode_t auto_mode;         /**< WATERING_AUTOMATIC_QUALITY or WATERING_AUTOMATIC_ECO */
+    float max_volume_limit_l;          /**< Maximum irrigation volume limit (liters) */
+    bool enable_cycle_soak;            /**< Enable cycle and soak for clay soils */
+    
+    /* Plant lifecycle tracking */
+    uint32_t planting_date_unix;       /**< When plants were established (Unix timestamp) */
+    uint16_t days_after_planting;      /**< Calculated field - days since planting */
+    
+    /* Environmental overrides */
+    float latitude_deg;                /**< Location latitude for solar calculations */
+    uint8_t sun_exposure_pct;          /**< Site-specific sun exposure (0-100%) */
+    
+    /* Water balance state (runtime) */
+    struct water_balance_t *water_balance; /**< Current water balance state */
+    uint32_t last_calculation_time;    /**< Last automatic calculation timestamp */
+    
+    /* Legacy fields for backward compatibility */
+    plant_info_t plant_info;          /**< Detailed plant type and specific variety (legacy) */
+    plant_type_t plant_type;          /**< Main type of plant being grown (legacy) */
+    soil_type_t soil_type;            /**< Type of soil in the growing area (legacy) */
+    irrigation_method_t irrigation_method; /**< Method of irrigation used (legacy) */
+    channel_coverage_t coverage_legacy; /**< Area or plant count information (legacy) */
+    uint8_t sun_percentage;           /**< Percentage of direct sunlight (legacy) */
+    custom_plant_config_t custom_plant; /**< Custom plant settings (legacy) */
+    
+    /* Extended fields for BLE service compatibility */
+    struct {
+        bool enabled;                 /**< Rain compensation enabled */
+        float sensitivity;            /**< Rain sensitivity factor */
+        uint16_t lookback_hours;      /**< Hours to look back for rain */
+        float skip_threshold_mm;      /**< Rain threshold to skip watering */
+        float reduction_factor;       /**< Reduction factor for rain */
+    } rain_compensation;
+    
+    struct {
+        bool enabled;                 /**< Temperature compensation enabled */
+        float base_temperature;       /**< Base temperature for calculations */
+        float sensitivity;            /**< Temperature sensitivity factor */
+        float min_factor;             /**< Minimum compensation factor */
+        float max_factor;             /**< Maximum compensation factor */
+    } temp_compensation;
+    
+    struct {
+        float reduction_percentage;   /**< Last rain reduction percentage */
+        bool skip_watering;           /**< Whether rain caused skip */
+    } last_rain_compensation;
+    
+    struct {
+        float compensation_factor;    /**< Last temperature compensation factor */
+        float adjusted_requirement;   /**< Last adjusted requirement */
+    } last_temp_compensation;
+    
+    struct {
+        bool configured;              /**< Whether interval mode is configured */
+        uint16_t watering_minutes;    /**< Watering duration minutes */
+        uint8_t watering_seconds;     /**< Watering duration seconds */
+        uint16_t pause_minutes;       /**< Pause duration minutes */
+        uint8_t pause_seconds;        /**< Pause duration seconds */
+        uint64_t phase_start_time;    /**< When current phase started */
+    } interval_config;
+
+    // Shadow copy compatible with interval_config_t APIs
+    struct {
+        uint16_t watering_minutes;
+        uint8_t watering_seconds;
+        uint16_t pause_minutes;
+        uint8_t pause_seconds;
+        uint32_t total_target;
+        uint32_t cycles_completed;
+        bool currently_watering;
+        uint32_t phase_start_time;
+        uint32_t phase_remaining_sec;
+        bool configured;
+    } interval_config_shadow;
+    
+    struct {
+        bool use_custom_soil;         /**< Whether to use custom soil */
+        struct {
+            char name[32];            /**< Custom soil name */
+            float field_capacity;     /**< Field capacity percentage */
+            float wilting_point;      /**< Wilting point percentage */
+            float infiltration_rate;  /**< Infiltration rate mm/hr */
+            float bulk_density;       /**< Bulk density g/cm³ */
+            float organic_matter;     /**< Organic matter percentage */
+        } custom;
+    } soil_config;
+    
+    struct {
+        bool basic_configured;        /**< Basic configuration complete */
+        bool growing_env_configured;  /**< Growing environment complete */
+        bool compensation_configured; /**< Compensation settings complete */
+        bool custom_soil_configured;  /**< Custom soil complete */
+        bool interval_configured;    /**< Interval settings complete */
+        uint8_t configuration_score; /**< Configuration score 0-100 */
+        uint32_t last_reset_timestamp; /**< Last reset timestamp */
+    } config_status;
 } watering_channel_t;
 
 /**
@@ -1428,5 +1545,225 @@ watering_error_t watering_update_channel_statistics(uint8_t channel_id,
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_reset_channel_statistics(uint8_t channel_id);
+
+/**
+ * @brief Set the planting date for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param planting_date_unix Unix timestamp of when plants were established
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_planting_date(uint8_t channel_id, uint32_t planting_date_unix);
+
+/**
+ * @brief Get the planting date for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param planting_date_unix Pointer to store the planting date Unix timestamp
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_planting_date(uint8_t channel_id, uint32_t *planting_date_unix);
+
+/**
+ * @brief Update days after planting for a channel
+ * 
+ * This function calculates the current days after planting based on the 
+ * planting date and current time. Should be called periodically or when
+ * planting date is updated.
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_update_days_after_planting(uint8_t channel_id);
+
+/**
+ * @brief Get days after planting for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param days_after_planting Pointer to store the days after planting
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_days_after_planting(uint8_t channel_id, uint16_t *days_after_planting);
+
+/**
+ * @brief Update days after planting for all channels
+ * 
+ * This function should be called periodically (e.g., daily) to keep the
+ * days after planting calculations current for all channels.
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_update_all_days_after_planting(void);
+
+/**
+ * @brief Set the latitude for a channel (for solar radiation calculations)
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param latitude_deg Latitude in degrees (-90 to +90)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_latitude(uint8_t channel_id, float latitude_deg);
+
+/**
+ * @brief Get the latitude for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param latitude_deg Pointer to store the latitude in degrees
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_latitude(uint8_t channel_id, float *latitude_deg);
+
+/**
+ * @brief Set the sun exposure percentage for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param sun_exposure_pct Site-specific sun exposure percentage (0-100%)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_sun_exposure(uint8_t channel_id, uint8_t sun_exposure_pct);
+
+/**
+ * @brief Get the sun exposure percentage for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param sun_exposure_pct Pointer to store the sun exposure percentage
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_sun_exposure(uint8_t channel_id, uint8_t *sun_exposure_pct);
+
+/**
+ * @brief Set comprehensive environmental configuration for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param latitude_deg Latitude in degrees (-90 to +90)
+ * @param sun_exposure_pct Site-specific sun exposure percentage (0-100%)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_environmental_config(uint8_t channel_id, 
+                                                  float latitude_deg, 
+                                                  uint8_t sun_exposure_pct);
+
+/**
+ * @brief Get comprehensive environmental configuration for a channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param latitude_deg Pointer to store latitude in degrees (can be NULL)
+ * @param sun_exposure_pct Pointer to store sun exposure percentage (can be NULL)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_environmental_config(uint8_t channel_id, 
+                                                  float *latitude_deg, 
+                                                  uint8_t *sun_exposure_pct);
+
+/**
+ * @brief Run automatic irrigation calculations for all channels
+ * 
+ * This function processes all channels configured for automatic irrigation
+ * and schedules irrigation tasks based on FAO-56 calculations.
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_run_automatic_calculations(void);
+
+/**
+ * @brief Set automatic calculation interval
+ * 
+ * @param interval_hours Interval between automatic calculations in hours (1-24)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_auto_calc_interval(uint8_t interval_hours);
+
+/**
+ * @brief Enable or disable automatic calculations
+ * 
+ * @param enabled True to enable, false to disable
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_auto_calc_enabled(bool enabled);
+
+/**
+ * @brief Get automatic calculation status
+ * 
+ * @param enabled Pointer to store enabled status
+ * @param interval_hours Pointer to store interval in hours
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_auto_calc_status(bool *enabled, uint8_t *interval_hours);
+
+/**
+ * @brief Get the friendly name of a channel
+ *
+ * @param channel_id Channel ID (0-7)
+ * @param out_name Buffer to receive the name (null-terminated)
+ * @param out_name_size Size of the output buffer
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_channel_name(uint8_t channel_id, char *out_name, size_t out_name_size);
+
+/**
+ * @brief Set the friendly name of a channel
+ *
+ * @param channel_id Channel ID (0-7)
+ * @param name Null-terminated name to set
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_set_channel_name(uint8_t channel_id, const char *name);
+
+/* Forward declarations for FAO-56 types - removed to avoid conflicts with generated files */
+
+/**
+ * @brief Save complete channel configuration to NVS
+ * 
+ * @param ch Channel ID
+ * @param channel Channel structure with all configuration data
+ * @return 0 on success, negative error code on failure
+ */
+int nvs_save_complete_channel_config(uint8_t ch, const watering_channel_t *channel);
+
+/**
+ * @brief Load complete channel configuration from NVS
+ * 
+ * @param ch Channel ID
+ * @param channel Channel structure to fill with configuration data
+ * @return 0 on success, negative error code on failure
+ */
+int nvs_load_complete_channel_config(uint8_t ch, watering_channel_t *channel);
+
+/**
+ * @brief Rain integration status structure for monitoring
+ */
+typedef struct {
+    bool sensor_active;                    /**< Rain sensor is active and responding */
+    bool integration_enabled;              /**< Rain integration is enabled */
+    uint32_t last_pulse_time;             /**< Last rain pulse timestamp */
+    float calibration_mm_per_pulse;        /**< Current calibration setting */
+    float rainfall_last_hour;             /**< Rainfall in current hour (mm) */
+    float rainfall_last_24h;              /**< Rainfall in last 24 hours (mm) */
+    float rainfall_last_48h;              /**< Rainfall in last 48 hours (mm) */
+    float sensitivity_pct;                 /**< Rain sensitivity percentage */
+    float skip_threshold_mm;              /**< Skip irrigation threshold (mm) */
+    float channel_reduction_pct[WATERING_CHANNELS_COUNT]; /**< Reduction % per channel */
+    bool channel_skip_irrigation[WATERING_CHANNELS_COUNT]; /**< Skip irrigation per channel */
+    uint16_t hourly_entries;              /**< Number of hourly history entries */
+    uint16_t daily_entries;               /**< Number of daily history entries */
+    uint32_t storage_usage_bytes;         /**< Storage usage in bytes */
+} rain_integration_status_t;
+
+/**
+ * @brief Get comprehensive system status including rain sensor information
+ * 
+ * @param status_buffer Buffer to store status information
+ * @param buffer_size Size of the status buffer
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_system_status_detailed(char *status_buffer, uint16_t buffer_size);
+
+/**
+ * @brief Get rain sensor integration status for monitoring
+ * 
+ * @param integration_status Buffer to store integration status
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_get_rain_integration_status(rain_integration_status_t *integration_status);
 
 #endif // WATERING_H

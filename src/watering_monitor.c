@@ -1,10 +1,15 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
+#include <stdio.h> /* ensure snprintf prototype visible on all build paths */
 #include "flow_sensor.h"
 #include "watering.h"
 #include "watering_internal.h"
 #include "watering_history.h"
 #include "bt_irrigation_service.h"   /* + BLE notifications */
+#include "rain_sensor.h"             /* Rain sensor monitoring */
+#include "rain_integration.h"        /* Rain integration status */
+#include "rain_history.h"            /* Rain history monitoring */
+/* stdio already included above for snprintf */
 
 /**
  * @file watering_monitor.c
@@ -20,7 +25,7 @@
 #define TASK_ERROR_UNEXPECTED_FLOW 2  /**< Flow detected when valves are closed */
 
 /** Stack size for flow monitor thread */
-#define FLOW_MONITOR_STACK_SIZE 1024
+#define FLOW_MONITOR_STACK_SIZE 2048
 
 /** Thread stack for flow monitor */
 K_THREAD_STACK_DEFINE(flow_monitor_stack, FLOW_MONITOR_STACK_SIZE);
@@ -48,10 +53,12 @@ static uint32_t last_task_pulses      = 0;
 static uint32_t last_pulse_update_ts  = 0;
 static watering_task_t *watched_task  = NULL;
 
-/* ---------- NEW: flow-rate helpers ----------------------------------- */
-static uint32_t last_rate_check_time = 0;
-static uint32_t last_rate_pulses    = 0;
-// ----------------------------------------------------------------------
+
+size_t flow_monitor_get_unused_stack(void)
+{
+    /* Stack diagnostics rely on CONFIG_THREAD_STACK_INFO; return 0 otherwise */
+    return 0;
+}
 
 /* --- alarm codes used by bt_irrigation_alarm_notify ------------------- */
 #define ALARM_NO_FLOW          1
@@ -225,6 +232,61 @@ watering_error_t check_flow_anomalies(void)
         }
     }
     
+    /* Rain sensor status monitoring */
+    static uint32_t last_rain_check = 0;
+    if ((now - last_rain_check) > 30000) { /* Check every 30 seconds */
+        last_rain_check = now;
+        
+        /* Check rain sensor connectivity and status */
+        if (rain_sensor_is_active()) {
+            /* Rain sensor is working - check for recent activity */
+            uint32_t last_pulse_time = rain_sensor_get_last_pulse_time();
+            uint32_t time_since_pulse = now - last_pulse_time;
+            
+            /* If no pulses for more than 7 days during rain season, sensor might be disconnected */
+            if (time_since_pulse > (7 * 24 * 3600 * 1000)) {
+                static bool rain_sensor_warning_logged = false;
+                if (!rain_sensor_warning_logged) {
+                    printk("WARNING: Rain sensor inactive for %u days - check connection\n", 
+                           time_since_pulse / (24 * 3600 * 1000));
+                    rain_sensor_warning_logged = true;
+                }
+            } else {
+                /* Reset warning flag if sensor shows activity */
+                static bool rain_sensor_warning_logged = false;
+                rain_sensor_warning_logged = false;
+            }
+        } else {
+            /* Rain sensor initialization failed or not connected */
+            static bool rain_init_warning_logged = false;
+            if (!rain_init_warning_logged) {
+                printk("WARNING: Rain sensor not initialized - rain integration disabled\n");
+                rain_init_warning_logged = true;
+            }
+        }
+        
+        /* Check rain integration system health */
+        if (rain_integration_is_enabled()) {
+            /* Perform periodic maintenance on rain history system */
+            watering_error_t rain_maintenance_result = rain_history_maintenance();
+            if (rain_maintenance_result != WATERING_SUCCESS) {
+                printk("WARNING: Rain history maintenance failed: %d\n", rain_maintenance_result);
+            }
+        }
+        
+        /* Run comprehensive rain sensor diagnostics */
+        rain_sensor_periodic_diagnostics();
+        
+        /* Run rain integration health check */
+        rain_integration_periodic_health_check();
+        
+        /* Check for critical health conditions */
+        if (rain_sensor_is_health_critical()) {
+            printk("CRITICAL: Rain sensor health is critical - check sensor connection\n");
+            /* Could trigger system alert or notification here */
+        }
+    }
+    
     k_mutex_unlock(&flow_monitor_mutex);
     return WATERING_SUCCESS;
 }
@@ -259,7 +321,6 @@ static void flow_monitor_fn(void *p1, void *p2, void *p3) {
         // Detectează completion-ul task-ului
         if (last_task_in_progress && (!watering_task_state.task_in_progress || current_task == NULL)) {
             task_just_completed = true;
-            printk("🎉 Task completion detected! Sending final notification.\n");
         }
         
         // Actualizează starea monitorizată
@@ -320,37 +381,10 @@ static void flow_monitor_fn(void *p1, void *p2, void *p3) {
             should_send_progress_update = true;
             last_progress_notification_time = now_ms;
             last_significant_progress = 100; // 100% complete
-            printk("📡 Task completion notification triggered\n");
         }
 
-        /* --- NEW: compute l/min every 0.5 seconds for responsiveness --- */
-        if (now_ms - last_rate_check_time >= 500) {     /* 0.5 s window - ultra responsive */
-            uint32_t delta_p = pulses - last_rate_pulses;
-            uint32_t delta_t = now_ms - last_rate_check_time;   /* ms   */
-            uint32_t calib;
-            if (delta_p > 0 &&
-                watering_get_flow_calibration(&calib) == WATERING_SUCCESS &&
-                calib > 0) {
-
-                /* l/min = pulses * 60000 / (Δt * calib) */
-                uint32_t l_per_min_x100 = (delta_p * 60000u * 100u) /
-                                          (delta_t * calib);
-                printk("Current flow: %u.%02u L/min\n",
-                       l_per_min_x100 / 100, l_per_min_x100 % 100);
-            }
-            last_rate_check_time = now_ms;
-            last_rate_pulses     = pulses;
-        }
-
-        /* existing reporting of total pulses & liters ---------------- */
+        /* Report abnormal statuses when pulses observed */
         if (pulses > 0) {
-            uint32_t calibration;
-            if (watering_get_flow_calibration(&calibration) == WATERING_SUCCESS) {
-                float liters = (float)pulses / calibration;
-                printk("Flow sensor pulses: %u (%.2f liters)\n",
-                       pulses, (double)liters);
-            }
-            
             // Report on any abnormal system status
             watering_status_t current_status;
             if (watering_get_status(&current_status) == WATERING_SUCCESS && 
@@ -383,13 +417,7 @@ static void flow_monitor_fn(void *p1, void *p2, void *p3) {
             #ifdef CONFIG_BT
             // Apelează notificarea pentru task-ul curent
             int notify_result = bt_irrigation_current_task_notify();
-            if (notify_result == 0) {
-                if (task_just_completed) {
-                    printk("🎉 Task completion notification sent successfully!\n");
-                } else {
-                    printk("📊 Progress notification sent: %u%% complete\n", last_significant_progress);
-                }
-            } else {
+            if (notify_result != 0) {
                 printk("❌ Failed to send progress notification: %d\n", notify_result);
             }
             #endif
@@ -412,6 +440,16 @@ static void flow_monitor_fn(void *p1, void *p2, void *p3) {
                 break;
             default:
                 break;
+        }
+        
+        /* Periodic rain sensor health monitoring */
+        static uint32_t last_rain_health_check = 0;
+        if ((now_ms - last_rain_health_check) > 300000) { /* Every 5 minutes */
+            last_rain_health_check = now_ms;
+            watering_error_t rain_health = check_rain_sensor_health();
+            if (rain_health != WATERING_SUCCESS) {
+                printk("Rain sensor health check failed: %d\n", rain_health);
+            }
         }
         
         k_sleep(K_MSEC(sleep_time));
@@ -494,4 +532,154 @@ void flow_monitor_clear_errors(void)
     /* Clear all errors unconditionally when explicitly requested */
     system_status = WATERING_STATUS_OK;
     k_mutex_unlock(&flow_monitor_mutex);
+}
+/**
+ * @brief Rain sensor error recovery function
+ * 
+ * Attempts to recover from rain sensor errors and reinitialize the system
+ * 
+ * @return WATERING_SUCCESS on successful recovery, error code on failure
+ */
+watering_error_t rain_sensor_error_recovery(void)
+{
+    static uint8_t rain_recovery_attempts = 0;
+    static uint32_t last_recovery_attempt = 0;
+    uint32_t now = k_uptime_get_32();
+    
+    /* Limit recovery attempts to prevent system overload */
+    if (rain_recovery_attempts >= 3) {
+        if ((now - last_recovery_attempt) < 300000) { /* 5 minutes */
+            return WATERING_ERROR_BUSY; /* Too many recent attempts */
+        } else {
+            rain_recovery_attempts = 0; /* Reset after cooldown period */
+        }
+    }
+    
+    printk("Attempting rain sensor error recovery (attempt %d/3)\n", rain_recovery_attempts + 1);
+    last_recovery_attempt = now;
+    rain_recovery_attempts++;
+    
+    /* Try to reinitialize rain sensor */
+    watering_error_t ret = rain_sensor_init();
+    if (ret != WATERING_SUCCESS) {
+        printk("Rain sensor reinitialization failed: %d\n", ret);
+        return ret;
+    }
+    
+    /* Try to reinitialize rain integration */
+    ret = rain_integration_init();
+    if (ret != WATERING_SUCCESS) {
+        printk("Rain integration reinitialization failed: %d\n", ret);
+        return ret;
+    }
+    
+    /* Try to reinitialize rain history */
+    ret = rain_history_init();
+    if (ret != WATERING_SUCCESS) {
+        printk("Rain history reinitialization failed: %d\n", ret);
+        return ret;
+    }
+    
+    printk("Rain sensor error recovery successful\n");
+    rain_recovery_attempts = 0; /* Reset on success */
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Check rain sensor system health and perform recovery if needed
+ * 
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t check_rain_sensor_health(void)
+{
+    static uint32_t last_health_check = 0;
+    uint32_t now = k_uptime_get_32();
+    
+    /* Check every 5 minutes */
+    if ((now - last_health_check) < 300000) {
+        return WATERING_SUCCESS;
+    }
+    
+    last_health_check = now;
+    
+    /* Check if rain sensor is responsive */
+    if (!rain_sensor_is_active()) {
+        printk("Rain sensor health check failed - attempting recovery\n");
+        return rain_sensor_error_recovery();
+    }
+    
+    /* Check rain history system integrity */
+    watering_error_t ret = rain_history_validate_data();
+    if (ret != WATERING_SUCCESS) {
+        printk("Rain history data validation failed: %d\n", ret);
+        /* Try to recover by clearing corrupted data */
+        rain_history_clear_all();
+    }
+    
+    /* Check rain integration configuration */
+    rain_integration_config_t config;
+    ret = rain_integration_get_config(&config);
+    if (ret != WATERING_SUCCESS) {
+        printk("Rain integration config check failed: %d - resetting to defaults\n", ret);
+        rain_integration_reset_config();
+    }
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Get rain sensor system status for health monitoring
+ * 
+ * @param status_buffer Buffer to store status string
+ * @param buffer_size Size of the status buffer
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t get_rain_sensor_status(char *status_buffer, uint16_t buffer_size)
+{
+    if (!status_buffer || buffer_size < 100) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    int written = 0;
+    
+    /* Rain sensor status */
+    if (rain_sensor_is_active()) {
+        uint32_t last_pulse = rain_sensor_get_last_pulse_time();
+        uint32_t time_since = (k_uptime_get_32() - last_pulse) / 1000;
+        written += snprintf(status_buffer + written, buffer_size - written,
+                           "Rain sensor: Active (last pulse %us ago)\n", time_since);
+    } else {
+        written += snprintf(status_buffer + written, buffer_size - written,
+                           "Rain sensor: Inactive/Error\n");
+    }
+    
+    /* Rain integration status */
+    if (rain_integration_is_enabled()) {
+    float sensitivity = rain_integration_get_sensitivity();
+    float threshold = rain_integration_get_skip_threshold();
+        written += snprintf(status_buffer + written, buffer_size - written,
+               "Rain integration: Enabled (%.1f%% sensitivity, %.1fmm threshold)\n",
+               (double)sensitivity, (double)threshold);
+    } else {
+        written += snprintf(status_buffer + written, buffer_size - written,
+                           "Rain integration: Disabled\n");
+    }
+    
+    /* Recent rainfall data */
+    float recent_24h = rain_history_get_last_24h();
+    float recent_48h = rain_history_get_recent_total(48);
+    written += snprintf(status_buffer + written, buffer_size - written,
+                       "Recent rainfall: 24h=%.2fmm, 48h=%.2fmm\n",
+                       (double)recent_24h, (double)recent_48h);
+    
+    /* Rain history status */
+    rain_history_stats_t stats;
+    watering_error_t ret = rain_history_get_stats(&stats);
+    if (ret == WATERING_SUCCESS) {
+        written += snprintf(status_buffer + written, buffer_size - written,
+                           "Rain history: %u hourly, %u daily entries\n",
+                           stats.hourly_entries, stats.daily_entries);
+    }
+    
+    return WATERING_SUCCESS;
 }

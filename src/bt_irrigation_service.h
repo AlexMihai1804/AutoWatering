@@ -10,8 +10,12 @@
 #define CONFIG_BT_MAX_CONN 1
 #endif
 
+#include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/gatt.h>
+#include <zephyr/bluetooth/uuid.h>
+#include <zephyr/logging/log.h>
+#include <zephyr/sys/util.h>
 #include "watering.h"
 #include "rtc.h"  // Add RTC header for time synchronization
 
@@ -47,6 +51,8 @@
  * 13. Diagnostics - Read/Notify system diagnostics
  * 14. Growing Environment - Read/Write/Notify environmental settings
  * 15. Current Task - Read/Write/Notify real-time task monitoring
+ * 16. Lifecycle Config - Read/Write/Notify plant lifecycle settings
+ * 17. Auto Calc Status - Read/Notify automatic calculation results
  * 
  * Recent Improvements:
  * - Simplified notification system with direct calls (no queues)
@@ -60,7 +66,7 @@
  * @brief Initialize the Bluetooth irrigation service
  * 
  * Initializes the complete BLE service including:
- * - GATT service registration with all 15 characteristics
+ * - GATT service registration with all 17 characteristics
  * - Direct notification system setup (500ms minimum delay)
  * - Background task update thread for current task monitoring
  * - Default value initialization for all characteristics
@@ -351,6 +357,27 @@ int bt_irrigation_history_notify_event(uint8_t channel_id, uint8_t event_type, u
 int bt_irrigation_growing_env_update(uint8_t channel_id);
 
 /**
+ * @brief Send automatic calculation status notification via Bluetooth
+ * 
+ * Sends current automatic irrigation calculation status and results via BLE.
+ * Provides real-time information about water balance calculations, ET0 values,
+ * and irrigation requirements for automatic mode channels.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_auto_calc_status_notify(void);
+
+/**
+ * @brief Notify BLE clients of growing environment changes
+ * 
+ * Triggers BLE notifications when growing environment parameters change,
+ * including plant, soil, and irrigation method selections.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_growing_env_notify(void);
+
+/**
  * @brief Execute a direct command on a channel
  * 
  * Executes direct valve commands via BLE. Supports open, close, and pulse
@@ -435,6 +462,11 @@ int bt_irrigation_update_history_aggregations(void);
 int bt_irrigation_debug_notifications(void);
 
 /**
+ * @brief Periodically update rain data and notify BLE client.
+ */
+void bt_irrigation_rain_periodic_update(void);
+
+/**
  * @brief Test channel configuration notification
  * 
  * Forces a channel configuration notification regardless of client subscription state.
@@ -457,7 +489,7 @@ int bt_irrigation_force_enable_notifications(void);
 
 #else /* !CONFIG_BT */
 
-/* Bluetooth disabled - provide stub function declarations */
+/* Bluetooth disabled - provide no-op function declarations */
 #include <stdint.h>
 #include <stdbool.h>
 #include "watering.h"
@@ -492,6 +524,7 @@ int bt_irrigation_history_notify_event(uint8_t channel_id, uint8_t event_type,
 int bt_irrigation_direct_command(uint8_t channel_id, uint8_t command, uint16_t param);
 int bt_irrigation_record_error(uint8_t channel_id, uint8_t error_code);
 int bt_irrigation_update_history_aggregations(void);
+int bt_irrigation_auto_calc_status_notify(void);
 
 /* Diagnostics functions */
 /**
@@ -515,6 +548,29 @@ int bt_irrigation_diagnostics_notify(void);
  */
 int bt_irrigation_diagnostics_update(uint16_t error_count, uint8_t last_error, uint8_t valve_status);
 
+/* Environmental data notification functions */
+/**
+ * @brief Send environmental data notification
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_environmental_data_notify(void);
+
+/**
+ * @brief Send compensation status notification
+ * @param channel_id Channel ID to send compensation status for
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_compensation_status_notify(uint8_t channel_id);
+
+/**
+ * @brief Send interval mode phase change notification
+ * @param channel_id Channel ID in interval mode
+ * @param is_watering True if currently watering, false if pausing
+ * @param phase_remaining_sec Seconds remaining in current phase
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_interval_mode_phase_notify(uint8_t channel_id, bool is_watering, uint32_t phase_remaining_sec);
+
 /* Timezone configuration functions */
 /**
  * @brief Read timezone configuration from BLE characteristic
@@ -529,7 +585,7 @@ int bt_irrigation_diagnostics_update(uint16_t error_count, uint8_t last_error, u
  * @param offset Read offset
  * @return Number of bytes read, or negative error code
  */
-ssize_t read_timezone(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+size_t read_timezone(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                       void *buf, uint16_t len, uint16_t offset);
 
 /**
@@ -546,7 +602,7 @@ ssize_t read_timezone(struct bt_conn *conn, const struct bt_gatt_attr *attr,
  * @param flags Write flags
  * @return Number of bytes written, or negative error code
  */
-ssize_t write_timezone(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+size_t write_timezone(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                        const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
 
 /**
@@ -561,6 +617,71 @@ void timezone_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 
 /* Debugging and diagnostic functions */
 void bt_irrigation_debug_notification_status(void);
+
+/* Rain sensor BLE notification functions */
+
+/**
+ * @brief Send rain configuration notification
+ * 
+ * Notifies connected clients about rain sensor configuration changes.
+ */
+void bt_irrigation_rain_config_notify(void);
+
+/**
+ * @brief Send rain data notification
+ * 
+ * Notifies connected clients about current rain sensor data.
+ */
+void bt_irrigation_rain_data_notify(void);
+
+/**
+ * @brief Send rain sensor pulse notification
+ * 
+ * Called when rain is detected to notify clients of new pulse data.
+ * 
+ * @param pulse_count Current total pulse count
+ * @param current_rate_mm_h Current rainfall rate in mm/h
+ */
+void bt_irrigation_rain_pulse_notify(uint32_t pulse_count, float current_rate_mm_h);
+
+/**
+ * @brief Send rain integration status notification
+ * 
+ * Notifies clients about rain-based irrigation adjustments.
+ * 
+ * @param channel_id Channel being affected
+ * @param reduction_pct Percentage reduction in irrigation
+ * @param skip_irrigation Whether irrigation is being skipped
+ */
+void bt_irrigation_rain_integration_notify(uint8_t channel_id, float reduction_pct, bool skip_irrigation);
+
+/**
+ * @brief Periodic rain data update
+ * 
+ * Called periodically to update rain sensor data notifications.
+ */
+void bt_irrigation_rain_periodic_update(void);
+
+/* Onboarding functions */
+/**
+ * @brief Notify onboarding status update
+ * 
+ * Sends notification to connected clients about onboarding progress changes.
+ * Includes completion percentages for channels, system, and schedules.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_onboarding_status_notify(void);
+
+/**
+ * @brief Notify reset control status update
+ * 
+ * Sends notification to connected clients about reset operation status.
+ * Includes confirmation codes and operation results.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_reset_control_notify(void);
 
 #endif /* CONFIG_BT */
 #endif /* BT_IRRIGATION_SERVICE_H_ */

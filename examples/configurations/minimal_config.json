@@ -1,0 +1,21 @@
+{
+  "wsl": {
+    "distribution": "Ubuntu-22.04",
+    "project_path": "/tmp/autowatering_tests"
+  },
+  "test_execution": {
+    "platforms": ["native_posix_64"],
+    "parallel_execution": false,
+    "default_timeout_seconds": 300
+  },
+  "synchronization": {
+    "exclude_patterns": ["build*", ".git", "*.bin", "*.hex"],
+    "incremental_sync": true
+  },
+  "logging": {
+    "level": "INFO"
+  },
+  "cleanup": {
+    "auto_cleanup": true
+  }
+}

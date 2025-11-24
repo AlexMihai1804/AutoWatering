@@ -1,0 +1,459 @@
+{
+  "metadata": {
+    "source": "irrigation_methods.csv",
+    "irrigation_methods_count": 15,
+    "generation_timestamp": "1752940306.242591"
+  },
+  "irrigation_methods": [
+    {
+      "method_id": 0,
+      "method_name": "Surface Flood (Level Basin)",
+      "code_enum": "IRRIG_SURFACE_FLOOD",
+      "efficiency": {
+        "application_efficiency_percent": 50,
+        "distribution_uniformity_percent": 60,
+        "efficiency_category": "Low"
+      },
+      "coverage": {
+        "wetting_fraction": 1.0,
+        "wetting_percent": 100.0,
+        "coverage_type": "Full"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 40.0,
+          "maximum": 80.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 15.0,
+          "maximum": 25.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Silt loam to clay",
+        "recommended_for": "Rice",
+        "notes": "forages; needs land leveling; risk of runoff and percolation losses"
+      }
+    },
+    {
+      "method_id": 1,
+      "method_name": "Border Strip",
+      "code_enum": "IRRIG_SURFACE_BORDER",
+      "efficiency": {
+        "application_efficiency_percent": 55,
+        "distribution_uniformity_percent": 65,
+        "efficiency_category": "Low"
+      },
+      "coverage": {
+        "wetting_fraction": 1.0,
+        "wetting_percent": 100.0,
+        "coverage_type": "Full"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 40.0,
+          "maximum": 70.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 10.0,
+          "maximum": 20.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Loam to clay",
+        "recommended_for": "Cereals",
+        "notes": "alfalfa; requires gentle slope and good leveling"
+      }
+    },
+    {
+      "method_id": 2,
+      "method_name": "Furrow",
+      "code_enum": "IRRIG_SURFACE_FURROW",
+      "efficiency": {
+        "application_efficiency_percent": 60,
+        "distribution_uniformity_percent": 70,
+        "efficiency_category": "Low"
+      },
+      "coverage": {
+        "wetting_fraction": 0.5,
+        "wetting_percent": 50.0,
+        "coverage_type": "Partial"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 30.0,
+          "maximum": 60.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 5.0,
+          "maximum": 15.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Sandy loam to clay loam",
+        "recommended_for": "Corn",
+        "notes": "row vegetables; improved distribution vs full flood"
+      }
+    },
+    {
+      "method_id": 3,
+      "method_name": "Conventional Sprinkler (Hand/Set)",
+      "code_enum": "IRRIG_SPRINKLER_SET",
+      "efficiency": {
+        "application_efficiency_percent": 70,
+        "distribution_uniformity_percent": 75,
+        "efficiency_category": "Medium"
+      },
+      "coverage": {
+        "wetting_fraction": 1.0,
+        "wetting_percent": 100.0,
+        "coverage_type": "Full"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 15.0,
+          "maximum": 35.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 5.0,
+          "maximum": 10.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Sandy loam to clay loam",
+        "recommended_for": "Vegetables",
+        "notes": "turf; wind and evaporation losses"
+      }
+    },
+    {
+      "method_id": 4,
+      "method_name": "Center Pivot Mid-Pressure",
+      "code_enum": "IRRIG_SPRINKLER_PIVOT",
+      "efficiency": {
+        "application_efficiency_percent": 80,
+        "distribution_uniformity_percent": 85,
+        "efficiency_category": "Medium"
+      },
+      "coverage": {
+        "wetting_fraction": 1.0,
+        "wetting_percent": 100.0,
+        "coverage_type": "Full"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 15.0,
+          "maximum": 30.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 6.0,
+          "maximum": 12.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Loamy sand to silt loam",
+        "recommended_for": "Cereals",
+        "notes": "oilseeds; automated"
+      }
+    },
+    {
+      "method_id": 5,
+      "method_name": "Low Energy Precision (LEPA/Drop)",
+      "code_enum": "IRRIG_SPRINKLER_LEPA",
+      "efficiency": {
+        "application_efficiency_percent": 90,
+        "distribution_uniformity_percent": 90,
+        "efficiency_category": "High"
+      },
+      "coverage": {
+        "wetting_fraction": 0.85,
+        "wetting_percent": 85.0,
+        "coverage_type": "Partial"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 10.0,
+          "maximum": 25.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 5.0,
+          "maximum": 8.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Loamy sand to clay loam",
+        "recommended_for": "Row crops; minimizes evaporation and drift",
+        "notes": ""
+      }
+    },
+    {
+      "method_id": 6,
+      "method_name": "Micro-sprayer/Microjet",
+      "code_enum": "IRRIG_MICRO_SPRAY",
+      "efficiency": {
+        "application_efficiency_percent": 85,
+        "distribution_uniformity_percent": 85,
+        "efficiency_category": "High"
+      },
+      "coverage": {
+        "wetting_fraction": 0.6,
+        "wetting_percent": 60.0,
+        "coverage_type": "Partial"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 10.0,
+          "maximum": 25.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 2.0,
+          "maximum": 6.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Loamy sand to loam",
+        "recommended_for": "Orchards",
+        "notes": "ornamentals; larger wetted area than drip"
+      }
+    },
+    {
+      "method_id": 7,
+      "method_name": "Drip Surface (Line+Emitters)",
+      "code_enum": "IRRIG_DRIP_SURFACE",
+      "efficiency": {
+        "application_efficiency_percent": 90,
+        "distribution_uniformity_percent": 90,
+        "efficiency_category": "High"
+      },
+      "coverage": {
+        "wetting_fraction": 0.3,
+        "wetting_percent": 30.0,
+        "coverage_type": "Localized"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 8.0,
+          "maximum": 20.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 1.0,
+          "maximum": 3.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Sand to clay (adjust flow)",
+        "recommended_for": "High-value vegetables",
+        "notes": "young orchards; filtration required"
+      }
+    },
+    {
+      "method_id": 8,
+      "method_name": "Drip Subsurface (SDI)",
+      "code_enum": "IRRIG_DRIP_SUBSURFACE",
+      "efficiency": {
+        "application_efficiency_percent": 92,
+        "distribution_uniformity_percent": 92,
+        "efficiency_category": "High"
+      },
+      "coverage": {
+        "wetting_fraction": 0.25,
+        "wetting_percent": 25.0,
+        "coverage_type": "Localized"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 8.0,
+          "maximum": 20.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 1.0,
+          "maximum": 2.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Loamy sand to clay loam",
+        "recommended_for": "Field row crops",
+        "notes": "orchards; eliminates surface evaporation"
+      }
+    },
+    {
+      "method_id": 9,
+      "method_name": "Drip Inline Tape (Row Crops)",
+      "code_enum": "IRRIG_DRIP_TAPE",
+      "efficiency": {
+        "application_efficiency_percent": 88,
+        "distribution_uniformity_percent": 88,
+        "efficiency_category": "High"
+      },
+      "coverage": {
+        "wetting_fraction": 0.35,
+        "wetting_percent": 35.0,
+        "coverage_type": "Localized"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 10.0,
+          "maximum": 25.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 1.0,
+          "maximum": 3.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Sandy loam to loam",
+        "recommended_for": "Vegetables",
+        "notes": "strawberry under mulch; clogging risk"
+      }
+    },
+    {
+      "method_id": 10,
+      "method_name": "Bubbler (Tree Basin)",
+      "code_enum": "IRRIG_BUBBLER",
+      "efficiency": {
+        "application_efficiency_percent": 80,
+        "distribution_uniformity_percent": 80,
+        "efficiency_category": "Medium"
+      },
+      "coverage": {
+        "wetting_fraction": 0.1,
+        "wetting_percent": 10.0,
+        "coverage_type": "Localized"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 20.0,
+          "maximum": 40.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 20.0,
+          "maximum": 40.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Loam to clay",
+        "recommended_for": "Young trees; rapid controlled basin filling",
+        "notes": ""
+      }
+    },
+    {
+      "method_id": 11,
+      "method_name": "Sub-Irrigation (Controlled Water Table)",
+      "code_enum": "IRRIG_SUBIRRIGATION",
+      "efficiency": {
+        "application_efficiency_percent": 90,
+        "distribution_uniformity_percent": 85,
+        "efficiency_category": "High"
+      },
+      "coverage": {
+        "wetting_fraction": 1.0,
+        "wetting_percent": 100.0,
+        "coverage_type": "Full"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 30.0,
+          "maximum": 60.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 1.0,
+          "maximum": 6.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Peat/loam over restrictive layer",
+        "recommended_for": "Greenhouse benches",
+        "notes": "large containers; needs water table control"
+      }
+    },
+    {
+      "method_id": 12,
+      "method_name": "Wicking Bed (Capillary)",
+      "code_enum": "IRRIG_WICK_BED",
+      "efficiency": {
+        "application_efficiency_percent": 85,
+        "distribution_uniformity_percent": 85,
+        "efficiency_category": "High"
+      },
+      "coverage": {
+        "wetting_fraction": 1.0,
+        "wetting_percent": 100.0,
+        "coverage_type": "Full"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 15.0,
+          "maximum": 30.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 1.0,
+          "maximum": 6.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Potting mixes",
+        "recommended_for": "Container vegetables; bottom reservoir maintenance",
+        "notes": ""
+      }
+    },
+    {
+      "method_id": 13,
+      "method_name": "Hydroponic Recirculating (NFT/Drip Fertigation)",
+      "code_enum": "IRRIG_HYDROPONIC_RECIRC",
+      "efficiency": {
+        "application_efficiency_percent": 95,
+        "distribution_uniformity_percent": 95,
+        "efficiency_category": "High"
+      },
+      "coverage": {
+        "wetting_fraction": 1.0,
+        "wetting_percent": 100.0,
+        "coverage_type": "Full"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 10.0,
+          "maximum": 20.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 1.0,
+          "maximum": 6.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "Inert media / no soil",
+        "recommended_for": "Greenhouse leafy greens",
+        "notes": "herbs; monitor EC and pH closely"
+      }
+    },
+    {
+      "method_id": 14,
+      "method_name": "Mist / Aeroponic",
+      "code_enum": "IRRIG_AEROPONIC",
+      "efficiency": {
+        "application_efficiency_percent": 90,
+        "distribution_uniformity_percent": 90,
+        "efficiency_category": "High"
+      },
+      "coverage": {
+        "wetting_fraction": 1.0,
+        "wetting_percent": 100.0,
+        "coverage_type": "Full"
+      },
+      "application_characteristics": {
+        "typical_depth_range_mm": {
+          "minimum": 10.0,
+          "maximum": 20.0
+        },
+        "application_rate_range_mm_per_hour": {
+          "minimum": 1.0,
+          "maximum": 6.0
+        }
+      },
+      "suitability": {
+        "compatible_soil_textures": "No soil (suspended roots)",
+        "recommended_for": "Propagation",
+        "notes": "high-tech systems; highly sensitive to outages"
+      }
+    }
+  ]
+}

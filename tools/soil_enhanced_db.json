@@ -1,0 +1,309 @@
+{
+  "metadata": {
+    "source": "soil_db_new.csv",
+    "soil_types_count": 15,
+    "generation_timestamp": "1752939772.9100804"
+  },
+  "soil_types": [
+    {
+      "soil_id": 0,
+      "soil_type": "Sand",
+      "texture": "Coarse sand",
+      "hydraulic_properties": {
+        "field_capacity_percent": 16.0,
+        "permanent_wilting_point_percent": 6.0,
+        "available_water_capacity_mm_per_m": 100.0,
+        "available_water_range_percent": 10.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 25.0,
+        "infiltration_category": "High"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.3,
+        "default_depletion_percent": 30.0,
+        "management_strategy": "Conservative"
+      }
+    },
+    {
+      "soil_id": 1,
+      "soil_type": "LoamySand",
+      "texture": "Loamy sand",
+      "hydraulic_properties": {
+        "field_capacity_percent": 18.0,
+        "permanent_wilting_point_percent": 8.0,
+        "available_water_capacity_mm_per_m": 100.0,
+        "available_water_range_percent": 10.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 20.0,
+        "infiltration_category": "High"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.35,
+        "default_depletion_percent": 35.0,
+        "management_strategy": "Conservative"
+      }
+    },
+    {
+      "soil_id": 2,
+      "soil_type": "SandyLoam",
+      "texture": "Sandy loam",
+      "hydraulic_properties": {
+        "field_capacity_percent": 23.0,
+        "permanent_wilting_point_percent": 10.0,
+        "available_water_capacity_mm_per_m": 130.0,
+        "available_water_range_percent": 13.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 15.0,
+        "infiltration_category": "Medium"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.4,
+        "default_depletion_percent": 40.0,
+        "management_strategy": "Moderate"
+      }
+    },
+    {
+      "soil_id": 3,
+      "soil_type": "Loam",
+      "texture": "Loam",
+      "hydraulic_properties": {
+        "field_capacity_percent": 35.0,
+        "permanent_wilting_point_percent": 17.0,
+        "available_water_capacity_mm_per_m": 180.0,
+        "available_water_range_percent": 18.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 11.0,
+        "infiltration_category": "Medium"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.5,
+        "default_depletion_percent": 50.0,
+        "management_strategy": "Moderate"
+      }
+    },
+    {
+      "soil_id": 4,
+      "soil_type": "SiltLoam",
+      "texture": "Silt loam",
+      "hydraulic_properties": {
+        "field_capacity_percent": 39.0,
+        "permanent_wilting_point_percent": 19.0,
+        "available_water_capacity_mm_per_m": 200.0,
+        "available_water_range_percent": 20.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 9.0,
+        "infiltration_category": "Medium"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.5,
+        "default_depletion_percent": 50.0,
+        "management_strategy": "Moderate"
+      }
+    },
+    {
+      "soil_id": 5,
+      "soil_type": "SandyClayLoam",
+      "texture": "Sandy clay loam",
+      "hydraulic_properties": {
+        "field_capacity_percent": 33.0,
+        "permanent_wilting_point_percent": 18.0,
+        "available_water_capacity_mm_per_m": 150.0,
+        "available_water_range_percent": 15.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 8.0,
+        "infiltration_category": "Medium"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.45,
+        "default_depletion_percent": 45.0,
+        "management_strategy": "Moderate"
+      }
+    },
+    {
+      "soil_id": 6,
+      "soil_type": "ClayLoam",
+      "texture": "Clay loam",
+      "hydraulic_properties": {
+        "field_capacity_percent": 37.0,
+        "permanent_wilting_point_percent": 21.0,
+        "available_water_capacity_mm_per_m": 160.0,
+        "available_water_range_percent": 16.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 6.0,
+        "infiltration_category": "Medium"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.5,
+        "default_depletion_percent": 50.0,
+        "management_strategy": "Moderate"
+      }
+    },
+    {
+      "soil_id": 7,
+      "soil_type": "SiltyClayLoam",
+      "texture": "Silty clay loam",
+      "hydraulic_properties": {
+        "field_capacity_percent": 41.0,
+        "permanent_wilting_point_percent": 27.0,
+        "available_water_capacity_mm_per_m": 140.0,
+        "available_water_range_percent": 14.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 5.0,
+        "infiltration_category": "Low"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.55,
+        "default_depletion_percent": 55.00000000000001,
+        "management_strategy": "Moderate"
+      }
+    },
+    {
+      "soil_id": 8,
+      "soil_type": "SandyClay",
+      "texture": "Sandy clay",
+      "hydraulic_properties": {
+        "field_capacity_percent": 38.0,
+        "permanent_wilting_point_percent": 25.0,
+        "available_water_capacity_mm_per_m": 130.0,
+        "available_water_range_percent": 13.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 5.0,
+        "infiltration_category": "Low"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.55,
+        "default_depletion_percent": 55.00000000000001,
+        "management_strategy": "Moderate"
+      }
+    },
+    {
+      "soil_id": 9,
+      "soil_type": "SiltyClay",
+      "texture": "Silty clay",
+      "hydraulic_properties": {
+        "field_capacity_percent": 44.0,
+        "permanent_wilting_point_percent": 30.0,
+        "available_water_capacity_mm_per_m": 140.0,
+        "available_water_range_percent": 14.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 4.0,
+        "infiltration_category": "Low"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.55,
+        "default_depletion_percent": 55.00000000000001,
+        "management_strategy": "Moderate"
+      }
+    },
+    {
+      "soil_id": 10,
+      "soil_type": "Clay",
+      "texture": "Heavy clay",
+      "hydraulic_properties": {
+        "field_capacity_percent": 48.0,
+        "permanent_wilting_point_percent": 31.0,
+        "available_water_capacity_mm_per_m": 170.0,
+        "available_water_range_percent": 17.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 3.0,
+        "infiltration_category": "Low"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.6,
+        "default_depletion_percent": 60.0,
+        "management_strategy": "Aggressive"
+      }
+    },
+    {
+      "soil_id": 11,
+      "soil_type": "PeatOrganic",
+      "texture": "High organic peat",
+      "hydraulic_properties": {
+        "field_capacity_percent": 65.0,
+        "permanent_wilting_point_percent": 40.0,
+        "available_water_capacity_mm_per_m": 250.0,
+        "available_water_range_percent": 25.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 6.0,
+        "infiltration_category": "Medium"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.6,
+        "default_depletion_percent": 60.0,
+        "management_strategy": "Aggressive"
+      }
+    },
+    {
+      "soil_id": 12,
+      "soil_type": "GravellyLoam",
+      "texture": "Stony/gravelly loam",
+      "hydraulic_properties": {
+        "field_capacity_percent": 30.0,
+        "permanent_wilting_point_percent": 19.0,
+        "available_water_capacity_mm_per_m": 110.0,
+        "available_water_range_percent": 11.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 18.0,
+        "infiltration_category": "High"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.4,
+        "default_depletion_percent": 40.0,
+        "management_strategy": "Moderate"
+      }
+    },
+    {
+      "soil_id": 13,
+      "soil_type": "PottingMix",
+      "texture": "Container soilless mix",
+      "hydraulic_properties": {
+        "field_capacity_percent": 60.0,
+        "permanent_wilting_point_percent": 40.0,
+        "available_water_capacity_mm_per_m": 200.0,
+        "available_water_range_percent": 20.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 16.0,
+        "infiltration_category": "High"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.5,
+        "default_depletion_percent": 50.0,
+        "management_strategy": "Moderate"
+      }
+    },
+    {
+      "soil_id": 14,
+      "soil_type": "Hydroponic",
+      "texture": "No soil (solution)",
+      "hydraulic_properties": {
+        "field_capacity_percent": 0.0,
+        "permanent_wilting_point_percent": 0.0,
+        "available_water_capacity_mm_per_m": 0.0,
+        "available_water_range_percent": 0.0
+      },
+      "infiltration": {
+        "infiltration_rate_mm_per_hour": 0.0,
+        "infiltration_category": "Low"
+      },
+      "water_management": {
+        "default_depletion_fraction": 0.25,
+        "default_depletion_percent": 25.0,
+        "management_strategy": "Conservative"
+      }
+    }
+  ]
+}
