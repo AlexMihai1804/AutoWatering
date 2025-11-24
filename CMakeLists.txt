@@ -49,7 +49,6 @@ add_custom_command(
         ${TOOLS_DIR}/soil_db_new.csv
         ${TOOLS_DIR}/irrigation_methods.csv
         ${TOOLS_DIR}/build_database.py
-        ${TOOLS_DIR}/validate_db.py
         ${TOOLS_DIR}/csv2plant_full.py
         ${TOOLS_DIR}/csv2soil_enhanced.py
         ${TOOLS_DIR}/csv2irrigation_methods.py
