@@ -160,8 +160,13 @@
 };
 
 /* ---------- expand application code partition ------------------- */
-&code_partition {
-    reg = <0x00010000 0x000c8000>;  /* enlarge code region up to NVS */
+/* Remove conflicting partitions to make space */
+/delete-node/ &slot1_partition;
+/delete-node/ &storage_partition;
+
+/* Resize slot0 to fill up to NVS (Start 0xC000, End 0xD8000 -> Size 0xCC000) */
+&slot0_partition {
+    reg = <0x0000c000 0x000cc000>;
 };
 
 /* ---------- USB CDC ACM UART --------------------- */

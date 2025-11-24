@@ -54,22 +54,22 @@ BT_GATT_SERVICE_DEFINE(custom_config_svc,
 
     BT_GATT_CHARACTERISTIC(&custom_soil_config_uuid.uuid,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                           BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                            bt_custom_soil_config_read, bt_custom_soil_config_write,
                            &custom_soil_response),
-    BT_GATT_CCC(custom_soil_config_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CCC(custom_soil_config_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
 
     BT_GATT_CHARACTERISTIC(&custom_config_reset_uuid.uuid,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                           BT_GATT_PERM_READ,
+                           BT_GATT_PERM_READ_ENCRYPT,
                            bt_config_reset_read, NULL, &reset_response),
-    BT_GATT_CCC(custom_config_reset_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CCC(custom_config_reset_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
 
     BT_GATT_CHARACTERISTIC(&custom_config_status_uuid.uuid,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                           BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                            bt_config_status_read, bt_config_status_write, &status_response),
-    BT_GATT_CCC(custom_config_status_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE)
+    BT_GATT_CCC(custom_config_status_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT)
 );
 
 int bt_custom_soil_handlers_init(void)

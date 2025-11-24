@@ -1843,207 +1843,207 @@ BT_GATT_SERVICE_DEFINE(irrigation_svc,
     // Valve control characteristic
     BT_GATT_CHARACTERISTIC(&valve_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_valve, write_valve, valve_value),
     BT_GATT_CCC(valve_ccc_cfg_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Flow sensor characteristic  
     BT_GATT_CHARACTERISTIC(&flow_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ,
+                         BT_GATT_PERM_READ_ENCRYPT,
                          read_flow, NULL, flow_value),
     BT_GATT_CCC(flow_ccc_cfg_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Status characteristic
     BT_GATT_CHARACTERISTIC(&status_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ,
+                         BT_GATT_PERM_READ_ENCRYPT,
                          read_status, NULL, status_value),
     BT_GATT_CCC(status_ccc_cfg_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Channel configuration characteristic
     BT_GATT_CHARACTERISTIC(&channel_config_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_channel_config, write_channel_config, channel_config_value),
     BT_GATT_CCC(channel_config_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Schedule configuration characteristic
     BT_GATT_CHARACTERISTIC(&schedule_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_schedule, write_schedule, schedule_value),
     BT_GATT_CCC(schedule_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // System configuration characteristic
     BT_GATT_CHARACTERISTIC(&system_config_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_system_config, write_system_config, system_config_value),
     BT_GATT_CCC(system_config_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Task queue characteristic
     BT_GATT_CHARACTERISTIC(&task_queue_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_task_queue, write_task_queue, task_queue_value),
     BT_GATT_CCC(task_queue_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Statistics characteristic
     BT_GATT_CHARACTERISTIC(&statistics_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_statistics, write_statistics, statistics_value),
     BT_GATT_CCC(statistics_ccc_cfg_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // RTC characteristic
     BT_GATT_CHARACTERISTIC(&rtc_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_rtc, write_rtc, rtc_value),
     BT_GATT_CCC(rtc_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Alarm characteristic
     BT_GATT_CHARACTERISTIC(&alarm_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_alarm, write_alarm, alarm_value),
     BT_GATT_CCC(alarm_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Calibration characteristic
     BT_GATT_CHARACTERISTIC(&calibration_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_calibration, write_calibration, calibration_value),
     BT_GATT_CCC(calibration_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // History characteristic
     BT_GATT_CHARACTERISTIC(&history_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_history, write_history, history_value),
     BT_GATT_CCC(history_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Diagnostics characteristic
     BT_GATT_CHARACTERISTIC(&diagnostics_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ,
+                         BT_GATT_PERM_READ_ENCRYPT,
                          read_diagnostics, NULL, diagnostics_value),
     BT_GATT_CCC(diagnostics_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Growing environment characteristic
     BT_GATT_CHARACTERISTIC(&growing_env_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_growing_env, write_growing_env, growing_env_value),
     BT_GATT_CCC(growing_env_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Automatic calculation status characteristic
     BT_GATT_CHARACTERISTIC(&auto_calc_status_char_uuid.uuid,
                         BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                        BT_GATT_PERM_READ | BT_GATT_PERM_WRITE, 
+                        BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT, 
                         read_auto_calc_status, write_auto_calc_status, auto_calc_status_value),
     BT_GATT_CCC(auto_calc_status_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Current task characteristic
     BT_GATT_CHARACTERISTIC(&current_task_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_current_task, write_current_task, current_task_value),
     BT_GATT_CCC(current_task_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Timezone configuration characteristic
     BT_GATT_CHARACTERISTIC(&timezone_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_timezone, write_timezone, timezone_value),
     BT_GATT_CCC(timezone_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Rain sensor configuration characteristic
     BT_GATT_CHARACTERISTIC(&rain_config_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_rain_config, write_rain_config, rain_config_value),
     BT_GATT_CCC(rain_config_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Rain sensor data characteristic
     BT_GATT_CHARACTERISTIC(&rain_data_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ,
+                         BT_GATT_PERM_READ_ENCRYPT,
                          read_rain_data, NULL, rain_data_value),
     BT_GATT_CCC(rain_data_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Rain history control characteristic
     BT_GATT_CHARACTERISTIC(&rain_history_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_rain_history, write_rain_history, rain_history_value),
     BT_GATT_CCC(rain_history_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Environmental data characteristic (BME280 readings)
     BT_GATT_CHARACTERISTIC(&environmental_data_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ,
+                         BT_GATT_PERM_READ_ENCRYPT,
                          read_environmental_data, NULL, environmental_data_value),
     BT_GATT_CCC(environmental_data_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Environmental history characteristic (with fragmentation support)
     BT_GATT_CHARACTERISTIC(&environmental_history_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_environmental_history, write_environmental_history, environmental_history_value),
     BT_GATT_CCC(environmental_history_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Compensation status characteristic (real-time compensation information)
     BT_GATT_CHARACTERISTIC(&compensation_status_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_compensation_status, write_compensation_status, compensation_status_value),
     BT_GATT_CCC(compensation_status_ccc_changed,
-               BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Onboarding status characteristic
     BT_GATT_CHARACTERISTIC(&onboarding_status_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ,
+                         BT_GATT_PERM_READ_ENCRYPT,
                          read_onboarding_status, NULL, NULL),
-    BT_GATT_CCC(onboarding_status_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CCC(onboarding_status_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
     
     // Reset control characteristic
     BT_GATT_CHARACTERISTIC(&reset_control_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_reset_control, write_reset_control, NULL),
-    BT_GATT_CCC(reset_control_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CCC(reset_control_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
 
     // Rain Integration Status characteristic (separate from rain config)
     BT_GATT_CHARACTERISTIC(&rain_integration_status_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
-                         BT_GATT_PERM_READ,
+                         BT_GATT_PERM_READ_ENCRYPT,
                          read_rain_integration_status, NULL, rain_integration_status_value),
-    BT_GATT_CCC(rain_integration_status_ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE)
+    BT_GATT_CCC(rain_integration_status_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT)
 );
 
 /* ------------------------------------------------------------------ */

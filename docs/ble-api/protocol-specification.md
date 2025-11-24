@@ -10,7 +10,7 @@ For quick reference tables see `ble-api/README.md`; this spec focuses on protoco
 - **Service UUID**: `12345678-1234-5678-1234-56789abcdef0`
 - **Service Type**: Primary GATT Service
 - **Characteristics Count**: 26 (indexed 1-26 - see Characteristic Index below)
-- **Pairing / Security**: No pairing, no encryption, no MITM required (all data considered low sensitivity). Future hardening may introduce optional LE Secure Connections.
+- **Pairing / Security**: **Encryption Enforced**. All characteristics require an encrypted link (Level 2). "Just Works" pairing is supported.
 - **Negotiated MTU**: ATT MTU negotiated by stack (often >20); application purposely caps individual write fragment payloads to 20 bytes for widest client compatibility.
 
 ### Connection Parameters (Typical / Constraints)
@@ -18,7 +18,7 @@ For quick reference tables see `ble-api/README.md`; this spec focuses on protoco
 - **Slave Latency**: 0-499 (no hard dependency in application logic)
 - **Supervision Timeout**: 100 ms - 32 s
 - **Concurrent Connections**: 1 (application designed for single central at a time)
-- **Security Level**: Open (SMP not enforced)
+- **Security Level**: **Level 2 (Encryption Required)**
 
 ## Characteristic Specifications
 
