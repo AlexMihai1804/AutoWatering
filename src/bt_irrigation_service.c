@@ -6866,6 +6866,65 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
     .disconnected = disconnected,
 };
 
+/* ------------------------------------------------------------------ */
+/* Authentication Callbacks                                           */
+/* ------------------------------------------------------------------ */
+
+static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_INF("Passkey for %s: %06u", addr, passkey);
+}
+
+static void auth_passkey_entry(struct bt_conn *conn)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_INF("Passkey entry requested for %s", addr);
+}
+
+static void auth_cancel(struct bt_conn *conn)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_INF("Pairing cancelled: %s", addr);
+}
+
+static void auth_pairing_confirm(struct bt_conn *conn)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_INF("Pairing confirmation requested for %s", addr);
+    bt_conn_auth_pairing_confirm(conn);
+}
+
+static void auth_pairing_complete(struct bt_conn *conn, bool bonded)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_INF("Pairing completed: %s, bonded: %d", addr, bonded);
+}
+
+static void auth_pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
+{
+    char addr[BT_ADDR_LE_STR_LEN];
+    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+    LOG_WRN("Pairing failed with %s: %d", addr, reason);
+}
+
+static struct bt_conn_auth_cb auth_cb_display = {
+    .passkey_display = auth_passkey_display,
+    .passkey_entry = auth_passkey_entry,
+    .cancel = auth_cancel,
+    .pairing_confirm = auth_pairing_confirm,
+};
+
+static struct bt_conn_auth_info_cb auth_cb_info = {
+    .pairing_complete = auth_pairing_complete,
+    .pairing_failed = auth_pairing_failed,
+};
+
 /* ================================================================== */
 /* Onboarding Notification Functions                                 */
 /* ================================================================== */
@@ -7038,6 +7097,10 @@ int bt_irrigation_service_init(void) {
         LOG_ERR("Bluetooth init failed: %d", err);
         return err;
     }
+    
+    /* Register authentication callbacks */
+    bt_conn_auth_cb_register(&auth_cb_display);
+    bt_conn_auth_info_cb_register(&auth_cb_info);
     
     LOG_DBG("Bluetooth initialized");
     

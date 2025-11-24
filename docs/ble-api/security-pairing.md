@@ -12,7 +12,7 @@ This document states the *actual* security posture of the current firmware. The 
 | SMP / bonding capability | Enabled and required for access | `CONFIG_BT_SMP=y`, `CONFIG_BT_MAX_PAIRED=1` |
 | Required security level for characteristics | **Encryption Required** (Level 2) | Service implementation (`bt_irrigation_service.c`, `bt_custom_soil_handlers.c`) |
 | Encryption on link | Enforced by GATT permissions | `BT_GATT_PERM_READ_ENCRYPT`, `BT_GATT_PERM_WRITE_ENCRYPT` |
-| Authentication (MITM / LESC) | Not enforced (Just Works pairing allowed) | No passkey / numeric comparison callbacks coded |
+| Authentication (MITM / LESC) | Callbacks implemented (Logging) | `bt_conn_auth_cb` registered (Passkey display/entry via logs) |
 | Authorization / roles | Not present | No application role table |
 | At-rest data encryption | Not enabled (plain NVS) | NVS config in `prj.conf` |
 | Single bonded device limit | Configured | `CONFIG_BT_MAX_PAIRED=1` |
@@ -42,7 +42,7 @@ This means:
 
 ## 4. Recommended Near-Term Hardening Roadmap
 
-1. Add passkey or numeric comparison callbacks (Zephyr: implement `bt_conn_auth_cb` + `bt_conn_auth_info_cb`) to mitigate MITM during pairing.
+1. **[COMPLETED]** Add passkey or numeric comparison callbacks (Zephyr: implement `bt_conn_auth_cb` + `bt_conn_auth_info_cb`) to mitigate MITM during pairing.
 2. Introduce a lightweight application token (e.g., 128-bit one-time commissioning secret written once, thereafter required in a signed header for control writes).
 3. Enable encrypted settings at rest (migrate to MCUboot + TF-M / or implement application-level AEAD wrap for stored structs).
 4. Rate limit / log failed pairing attempts (future ring buffer characteristic or debug log export).
