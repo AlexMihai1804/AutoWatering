@@ -35,8 +35,8 @@ The characteristic mirrors the dispatcher's execution state so clients can displ
 | Value | Meaning | Behaviour |
 |-------|---------|-----------|
 | `0` | Idle | No active task (`channel_id = 0xFF`, counters zeroed) |
-| `1` | Running | Task in progress; periodic notifications enabled |
-| `2` | Paused | Task paused; periodic worker keeps scheduling but early-exits |
+| `1` | Running | Task in progress; periodic notifications enabled. **Note:** Includes interval-mode wait phases (valve closed but task active). |
+| `2` | Paused | Task paused by user command; periodic worker keeps scheduling but early-exits |
 | `3` | Completed | Reserved for future use (current firmware transitions directly to Idle) |
 
 ### Field Notes

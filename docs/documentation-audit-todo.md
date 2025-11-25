@@ -6,7 +6,7 @@ Curated checklist covering the active documentation set. Each entry records the 
 ## Platform & Architecture Docs
 - [x] `docs/FEATURES_FULL.md`     Updated threading/flow-sensor sections to match `watering_start_tasks()` and `flow_sensor.c`. **TODO:** Fold rain/temperature compensation auto-pipeline wiring into this overview once implemented.
 - [x] `docs/FEATURES.md`     Matches published capabilities (queue gating, single active task). **TODO:** Revisit when simultaneous-valve support graduates from design notes.
-- [x] `docs/system-architecture.md`     Data paths and queue orchestration reflect current `watering_tasks.c`. **TODO:** Add diagram call-outs for `safe_notify` priority classes when BLE scheduling stabilises.
+- [x] `docs/system-architecture.md`     Data paths and queue orchestration reflect current `watering_tasks.c`. **DONE 2025-11-25:** Added details for `safe_notify` priority classes and adaptive throttling.
 - [x] `docs/INSTALLATION.md`     Tooling & Zephyr version instructions align with current `CMakeLists.txt`. **TODO:** Capture Windows-specific west init nuances observed during recent setup runs.
 - [x] `docs/plant-database-fao56-system.md`     Database sizing and CSV regeneration scripts match `tools/` outputs. **TODO:** Document checksum/validation step once dataset auto-tests land.
 ## BLE Service Overview
@@ -22,16 +22,16 @@ Curated checklist covering the active documentation set. Each entry records the 
 - [x] `docs/ble-api/characteristics/04-channel-configuration.md`     Basic struct verified against `channel_config_data`. **DONE 2025-10-16:** Added cross-link advising simultaneous updates with Growing Environment.
 - [x] `docs/ble-api/characteristics/05-schedule-configuration.md`     Interval handling matches `schedule_config_data`; queue back-pressure behaviour now documented.
 - [x] `docs/ble-api/characteristics/06-system-configuration.md`     Snapshot confirmed against `enhanced_system_config_data`. **DONE 2025-10-16:** Added troubleshooting entry for BME280 configuration failures.
-- [x] `docs/ble-api/characteristics/07-task-queue-management.md`     Control commands align with `task_queue_value` handlers. **TODO:** Document task ID recycle behaviour after queue purge work finalises.
-- [x] `docs/ble-api/characteristics/08-statistics.md`     Content matches `statistics_data` updates. **TODO:** Note aggregation window if rolling averages are introduced.
+- [x] `docs/ble-api/characteristics/07-task-queue-management.md`     Control commands align with `task_queue_value` handlers. **DONE 2025-11-25:** Confirmed `active_task_id` uses simple 0/1 logic (no complex recycling).
+- [x] `docs/ble-api/characteristics/08-statistics.md`     Content matches `statistics_data` updates. **DONE:** No rolling averages used; simple estimation fallback.
+- [x] `docs/ble-api/characteristics/13-diagnostics.md`    Content matches `diagnostics_data` updates. **DONE:** Stack usage not reported (reserved bytes zeroed).
+- [x] `docs/ble-api/characteristics/16-current-task-status.md` Content matches `current_task_data` updates. **DONE:** Pause/Resume logic clarified (Interval wait = Running).
 - [x] `docs/ble-api/characteristics/09-rtc-configuration.md`     RTC read/write semantics match timezone helpers. **DONE 2025-10-16:** Added DST edge-case write example.
 - [x] `docs/ble-api/characteristics/10-alarm-status.md`     Codes align with `watering_monitor.c` enums. **DONE 2025-10-16:** Linked to recovery strategy section in system architecture doc.
 - [x] `docs/ble-api/characteristics/11-calibration-management.md`     Actions map to calibration handler logic. **DONE 2025-10-16:** Documented BT_ATT_ERR_UNLIKELY path when NVS persistence fails.
 - [x] `docs/ble-api/characteristics/12-history-management.md`     TLV framing matches `history_fragment_header_t`. **TODO:** Include rain-history eject examples after retention policy lands.
-- [x] `docs/ble-api/characteristics/13-diagnostics.md`     Fields correspond to diagnostics snapshots. **TODO:** Expand with flow monitor spare stack bytes once exported via BLE.
 - [x] `docs/ble-api/characteristics/14-growing-environment.md`     Struct validated against `growing_env_data`. **DONE 2025-10-16:** Validation matrix already covers coverage/index constraints; updated as part of audit.
 - [x] `docs/ble-api/characteristics/15-auto-calc-status.md`     Layout confirmed with `auto_calc_status_data`. **TODO:** Capture heuristics for `next_irrigation_time` when prediction service matures.
-- [x] `docs/ble-api/characteristics/16-current-task-status.md`     Mirrors `current_task_data` notifications. **TODO:** Document pause/resume state transitions after interval controller telemetry expands.
 - [x] `docs/ble-api/characteristics/17-timezone-configuration.md`     Matches timezone persistence helpers. **DONE 2025-10-16:** Added DST/UTC offset transition write example.
 - [x] `docs/ble-api/characteristics/18-rain-sensor-config.md`     Config struct aligns with rain sensor storage. **DONE 2025-10-16:** Validation table calls out 0.1-10.0 mm/pulse calibration and 10-1000 ms debounce guard rails.
 - [x] `docs/ble-api/characteristics/19-rain-sensor-data.md`     Snapshot matches `rain_data_data`. **DONE 2025-10-16:** Expanded client guidance on `data_quality` signalling.

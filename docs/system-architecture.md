@@ -93,6 +93,15 @@ All module initializations log warnings on failure but keep the system running u
 - Large payloads (channel config, histories) use the shared fragmentation helpers with 3-byte headers.
 - History control/insights characteristics mirror the structures defined in the history modules; settings persist through NVS.
 
+#### BLE Notification Priority System
+- **Priority Classes**:
+  - `NOTIFY_PRIORITY_CRITICAL` (0ms): Alarms, errors - immediate delivery.
+  - `NOTIFY_PRIORITY_HIGH` (50ms): Status updates, valve changes.
+  - `NOTIFY_PRIORITY_NORMAL` (200ms): Flow data, statistics.
+  - `NOTIFY_PRIORITY_LOW` (1000ms): History, diagnostics.
+- **Mechanism**: `safe_notify` (aliased to `advanced_notify`) uses a buffer pool (`BLE_BUFFER_POOL_SIZE=8`) and adaptive throttling.
+- **Macros**: `SMART_NOTIFY` handles standard throttling, `CRITICAL_NOTIFY` bypasses checks for urgent alerts, `CHANNEL_CONFIG_NOTIFY` handles name change throttling.
+
 ### Diagnostics & Power
 - Status codes (`WATERING_STATUS_*`) published via BLE and logs; leak detection relies on flow anomaly detection.
 - Power modes (`POWER_MODE_NORMAL`, `POWER_MODE_ENERGY_SAVING`, `POWER_MODE_ULTRA_LOW_POWER`) adjust sleep intervals inside monitoring loops.
