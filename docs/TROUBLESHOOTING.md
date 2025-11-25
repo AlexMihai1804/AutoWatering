@@ -126,7 +126,7 @@ If no data:
 
 - Reapply the RTC Config characteristic after replacing hardware; reads should show UTC.For full environment setup consult INSTALLATION.md. Quick checks:
 
-- Timezone support is limited to an UTC baseline-client applications must convert to local time.- west available (`west --version`).
+- Timezone configuration is persisted (offset + DST); ensure the Timezone characteristic matches your locality before scheduling (DST rules applied automatically).- west available (`west --version`).
 
 - Zephyr SDK or toolchain in PATH.
 

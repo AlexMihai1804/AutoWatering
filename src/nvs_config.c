@@ -7,15 +7,15 @@
 #include <zephyr/kernel.h>
 #include <zephyr/devicetree.h>    // for DT_MTD_FROM_FIXED_PARTITION, DEVICE_DT_GET
 #include <zephyr/drivers/flash.h>
-#include <string.h>   /* ← NEW */
+#include <string.h>   /* ΓåÉ NEW */
 #include <stdio.h>    /* for snprintf */
 #include <errno.h>    /* for EINVAL */
 
-/* ——— instanţă NVS —————————————————————————————————————— */
+/* ΓÇöΓÇöΓÇö instan┼ú─â NVS ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 static struct nvs_fs fs;
 static bool nvs_ready;
 
-/* ——— iniţializare ————————————————————————————————————— */
+/* ΓÇöΓÇöΓÇö ini┼úializare ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 int nvs_config_init(void)
 {
     const struct device *flash_dev =
@@ -29,7 +29,7 @@ int nvs_config_init(void)
     fs.offset       = NVS_OFFSET;
     fs.sector_size  = NVS_SECTOR_SIZE;
     fs.sector_count = NVS_SECTOR_COUNT;
-    fs.flash_device = flash_dev;          /* <—— fix esenţial */
+    fs.flash_device = flash_dev;          /* <ΓÇöΓÇö fix esen┼úial */
 
     int rc = nvs_mount(&fs);
     if (rc == 0) {
@@ -45,7 +45,7 @@ bool nvs_config_is_ready(void)
     return nvs_ready;
 }
 
-/* ——— RAW read/write/delete ————————————————————————————— */
+/* ΓÇöΓÇöΓÇö RAW read/write/delete ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 int nvs_config_read(uint16_t id, void *data, size_t len)
 {
     return nvs_ready ? nvs_read (&fs, id, data, len) : -ENODEV;
@@ -61,14 +61,14 @@ int nvs_config_delete(uint16_t id)
     return nvs_ready ? nvs_delete(&fs, id) : -ENODEV;
 }
 
-/* ——— IDs logice ——————————————————————————————————————— */
+/* ΓÇöΓÇöΓÇö IDs logice ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 enum {
     ID_WATERING_CFG     =  1,
     ID_CHANNEL_CFG_BASE = 100,   /* +ch (0-7) */
     ID_FLOW_CALIB       = 200,
     ID_DAYS_SINCE_START = 201,
-    ID_CHANNEL_NAME_BASE= 300,   /* +ch (0-7)  ← NEW */
-    /* ID 400 reserved (timezone configuration removed) */
+    ID_CHANNEL_NAME_BASE= 300,   /* +ch (0-7)  ΓåÉ NEW */
+    ID_TIMEZONE_CONFIG  = 400,   /* timezone_config_t */
     ID_ENHANCED_CHANNEL_CFG_BASE = 500, /* Enhanced channel config +ch (0-7) */
     ID_WATER_BALANCE_BASE = 600, /* Water balance state +ch (0-7) */
     ID_AUTOMATIC_CALC_STATE = 700, /* Automatic calculation state */
@@ -83,7 +83,7 @@ enum {
     ID_CONFIG_RESET_LOG_BASE = 940, /* Configuration reset logs +ch (0-7) */
 };
 
-/* ——— nivel înalt —————————————————————————————————————— */
+/* ΓÇöΓÇöΓÇö nivel ├«nalt ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 int nvs_save_watering_config(const void *cfg, size_t sz)
 {
     return nvs_config_write(ID_WATERING_CFG, cfg, sz);
@@ -192,8 +192,35 @@ int nvs_load_channel_name(uint8_t ch, char *buf, size_t sz)
     return ret;
 }
 
-/* ——— Timezone configuration functions ————————————————— */
-/* ——— Enhanced Growing Environment Configuration Functions ——— */
+/* Timezone configuration functions */
+int nvs_save_timezone_config(const timezone_config_t *config)
+{
+    if (!config) {
+        return -EINVAL;
+    }
+    return nvs_config_write(ID_TIMEZONE_CONFIG, config, sizeof(*config));
+}
+
+int nvs_load_timezone_config(timezone_config_t *config)
+{
+    if (!config) {
+        return -EINVAL;
+    }
+
+    int ret = nvs_config_read(ID_TIMEZONE_CONFIG, config, sizeof(*config));
+    if (ret < 0) {
+        timezone_config_t default_config = DEFAULT_TIMEZONE_CONFIG;
+        *config = default_config;
+        ret = sizeof(*config);
+    } else if (ret != sizeof(*config)) {
+        timezone_config_t default_config = DEFAULT_TIMEZONE_CONFIG;
+        *config = default_config;
+        ret = sizeof(*config);
+    }
+    return ret;
+}
+
+/* Enhanced Growing Environment Configuration Functions */
 
 int nvs_save_enhanced_channel_config(uint8_t ch, const enhanced_channel_config_t *config)
 {
@@ -320,7 +347,7 @@ int nvs_load_automatic_calc_state(automatic_calc_state_t *state)
     return ret;
 }
 
-/* ——— Enhanced Channel Management Functions ————————————————— */
+/* ΓÇöΓÇöΓÇö Enhanced Channel Management Functions ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 
 int nvs_save_complete_channel_config(uint8_t ch, const watering_channel_t *channel)
 {
@@ -668,8 +695,8 @@ int nvs_get_storage_usage(size_t *used_bytes, size_t *total_bytes)
     }
     
     return 0;
-}/* ——— R
-ain History NVS Functions ————————————————————————————— */
+}/* ΓÇöΓÇöΓÇö R
+ain History NVS Functions ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 
 int nvs_save_rain_config(const rain_nvs_config_t *config)
 {
@@ -1109,7 +1136,7 @@ int nvs_get_rain_storage_usage(size_t *used_bytes, size_t *total_bytes)
     return 0;
 }
 /* 
-——— Onboarding State NVS Functions ————————————————————————————— */
+ΓÇöΓÇöΓÇö Onboarding State NVS Functions ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 
 int nvs_save_onboarding_state(const onboarding_state_t *state)
 {

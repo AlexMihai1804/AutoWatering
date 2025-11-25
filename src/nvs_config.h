@@ -89,7 +89,7 @@ typedef struct {
 #define CHANNEL_FLAG_ENABLED            (1 << 7)
 
 // System configuration flag bits
-#define SYSTEM_FLAG_TIMEZONE_SET        (1 << 0) /* Reserved (timezone support removed) */
+#define SYSTEM_FLAG_TIMEZONE_SET        (1 << 0) /* Timezone/DST configuration persisted */
 #define SYSTEM_FLAG_FLOW_CALIBRATED     (1 << 1)
 #define SYSTEM_FLAG_MASTER_VALVE_SET    (1 << 2)
 #define SYSTEM_FLAG_RTC_CONFIGURED      (1 << 3)
@@ -289,8 +289,11 @@ int nvs_load_days_since_start(uint16_t *days);
 int nvs_save_channel_name (uint8_t ch, const char *name);
 int nvs_load_channel_name (uint8_t ch, char *name_buf, size_t buf_sz);
 
-/* ——— Timezone configuration functions ————————————————— */
-/* ——— Enhanced Growing Environment Configuration Functions ——— */
+/* Timezone configuration functions */
+int nvs_save_timezone_config(const timezone_config_t *config);
+int nvs_load_timezone_config(timezone_config_t *config);
+
+/* Enhanced Growing Environment Configuration Functions */
 int nvs_save_enhanced_channel_config(uint8_t ch, const enhanced_channel_config_t *config);
 int nvs_load_enhanced_channel_config(uint8_t ch, enhanced_channel_config_t *config);
 

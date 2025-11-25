@@ -51,7 +51,7 @@ graph LR
 1. USB CDC ACM (optional console) via `setup_usb_cdc_acm()`.
 2. Persistent storage: `nvs_config_init()`.
 3. Valve hardware (`valve_init()`), flow sensor, and rain sensor drivers.
-4. RTC (`rtc_init()` with uptime fallback) and timezone helpers (UTC baseline only).
+4. RTC (`rtc_init()` with uptime fallback) and timezone helpers (UTC default with configurable offset/DST persisted via NVS).
 5. Core watering engine: `watering_init()` followed by `watering_start_tasks()` (spawns processing threads and work items).
 6. Support services: storage monitor, configuration status, onboarding state, reset controller, enhanced status/error handlers.
 7. Sensor stack: `sensor_manager`, BME280 driver, environmental data + history modules.

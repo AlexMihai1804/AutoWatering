@@ -357,12 +357,12 @@ int main(void) {
         set_default_rtc_time();
     }
     
-    // Initialize timezone helpers (UTC baseline only)
+    // Initialize timezone helpers (persisted timezone/DST)
     ret = timezone_init();
     if (ret != 0) {
         printk("WARNING: Timezone init failed (%d)\n", ret);
     } else {
-        printk("Timezone helpers ready (UTC baseline)\n");
+        printk("Timezone helpers ready (RTC+timezone config loaded)\n");
     }
     printk("Starting watering subsystem init...\n");
     ret = watering_init_wrapper();

@@ -36,7 +36,7 @@ The characteristic exposes the timezone and Daylight Saving Time rule set the fi
 ### Field Notes
 - When `dst_enabled == 0`, the handler zeroes all DST rule fields and `dst_offset_minutes` before caching the struct.
 - Reserved bytes are copied through untouched; the firmware does not validate them when DST is enabled.
-- The current timezone implementation does not yet calculate live DST transitions-`timezone_is_dst_active()` always reports `false`, so `utc_offset_minutes` is the only offset applied.
+- DST transitions are applied at runtime (02:00 local by default); `timezone_is_dst_active()` reflects the active offset using the configured rules. Ambiguous fall-back times are resolved by trying the DST offset first, then the base offset.
 
 ## Behaviour
 
@@ -49,7 +49,7 @@ The characteristic exposes the timezone and Daylight Saving Time rule set the fi
 - Demands exactly 16 bytes at offset `0`. Any other length or offset returns `BT_ATT_ERR_INVALID_ATTRIBUTE_LEN` or `BT_ATT_ERR_INVALID_OFFSET`.
 - Validates all range constraints listed below; out-of-range values yield `BT_ATT_ERR_VALUE_NOT_ALLOWED`.
 - Automatically clears DST rule bytes when `dst_enabled` is `0`.
-- Applies the configuration through `timezone_set_config()`. The current implementation stores the struct in RAM only; persistence across resets requires another subsystem.
+- Applies the configuration through `timezone_set_config()`, which now persists the struct in NVS when storage is available.
 - Updates the attribute buffer and, if notifications are enabled, immediately notifies subscribers.
 
 ### Notifications (`timezone_ccc_changed`)
@@ -71,7 +71,7 @@ The characteristic exposes the timezone and Daylight Saving Time rule set the fi
 ## Client Guidance
 - Always send the full struct; partial writes are not supported and will be rejected.
 - Keep reserved bytes zeroed to remain compatible with future firmware updates.
-- Because the configuration currently lives in volatile memory, reissue the desired settings after a device reboot if long-term persistence is required.
+- Configuration changes are persisted; reissue only if the NVS partition was wiped or a factory reset was performed.
 - To observe whether DST is active at runtime, consult the RTC characteristic (`09`), which reports the effective offset and DST flag.
 
 ## Firmware References

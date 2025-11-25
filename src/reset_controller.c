@@ -379,7 +379,7 @@ static int reset_controller_reset_all_schedules(void) {
 }
 
 static int reset_controller_reset_system_config(void) {
-    /* Reset timezone to default (in-memory only) */
+    /* Reset timezone to default (persisted) */
     timezone_config_t default_timezone = DEFAULT_TIMEZONE_CONFIG;
     int ret = timezone_set_config(&default_timezone);
     if (ret < 0) {
