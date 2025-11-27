@@ -1,10 +1,14 @@
 # Onboarding Status Characteristic (UUID: 12345678-1234-5678-1234-56789abcde20)
 
+> **⚠️ CRITICAL: Read vs Notify Format Difference**
+> - **Read**: Returns raw 29-byte struct (NO header)
+> - **Notify**: Returns 8-byte header + payload (ALWAYS has header, even if single fragment)
+
 > Operation Summary
 | Operation | Payload | Size | Fragmentation | Notes |
 |-----------|---------|------|---------------|-------|
-| Read | `struct onboarding_status_data` | 29 B | None | Direct snapshot, no header |
-| Notify | `history_fragment_header_t` + payload | 8 B + <=29 B | Always uses unified header | Emitted on CCC enable and every state mutation |
+| Read | `struct onboarding_status_data` | 29 B | None | **Direct data, NO header** |
+| Notify | `history_fragment_header_t` + payload | 8 B + ≤29 B | Always uses unified header | **ALWAYS has 8-byte header prefix** |
 | Write | - | - | - | Flags mutate through internal onboarding APIs only |
 
 Snapshot of onboarding progress used by clients to drive setup workflows. Firmware stores the underlying state in NVS and recomputes percentages on each read/notify.
@@ -65,25 +69,92 @@ The handler computes the negotiated ATT payload (`mtu - 3`). If it exceeds 29 by
 - Treat the struct as authoritative; percentages and flags are recomputed at emission time and remain consistent across read/notify.
 - Persist timestamps to track overall onboarding duration (`onboarding_start_time`) and last activity (`last_update_time`).
 
-### Minimal Parsing Example (Web Bluetooth)
+### Parsing Examples (Web Bluetooth)
+
+**IMPORTANT**: Read and Notify return DIFFERENT formats!
+- **Read**: Returns raw 29-byte `onboarding_status_data` structure (no header)
+- **Notify**: Returns 8-byte `history_fragment_header_t` + payload (may be fragmented)
+
+#### Parsing a Read Response (no header, 29 bytes)
 ```javascript
-function parseOnboardingStatus(dataView) {
+function parseOnboardingStatusRead(dataView) {
+  // Read response has NO header - starts directly with data
   let offset = 0;
   const readU8 = () => dataView.getUint8(offset++);
-  const readU32 = () => dataView.getUint32((offset += 4) - 4, true);
-  const readU64 = () => dataView.getBigUint64((offset += 8) - 8, true);
+  const readU32 = () => { const v = dataView.getUint32(offset, true); offset += 4; return v; };
+  const readU64 = () => { const v = dataView.getBigUint64(offset, true); offset += 8; return v; };
 
   return {
-    overall: readU8(),
-    channels: readU8(),
-    system: readU8(),
-    schedules: readU8(),
-    channelFlags: readU64(),
-    systemFlags: readU32(),
-    scheduleFlags: readU8(),
-    onboardingStart: readU32(),
-    lastUpdate: readU32()
+    overall: readU8(),           // offset 0
+    channels: readU8(),          // offset 1
+    system: readU8(),            // offset 2
+    schedules: readU8(),         // offset 3
+    channelFlags: readU64(),     // offset 4-11
+    systemFlags: readU32(),      // offset 12-15
+    scheduleFlags: readU8(),     // offset 16
+    onboardingStart: readU32(),  // offset 17-20
+    lastUpdate: readU32()        // offset 21-24
+    // reserved[4] at offset 25-28 (ignored)
   };
+}
+```
+
+#### Parsing Notifications (with 8-byte header, may be fragmented)
+```javascript
+// Buffer to accumulate fragments
+let onboardingFragments = [];
+let expectedFragments = 0;
+
+function handleOnboardingNotification(dataView) {
+  // First 8 bytes are always the fragment header
+  const header = {
+    dataType: dataView.getUint8(0),           // 0 = onboarding status
+    status: dataView.getUint8(1),             // 0 = OK
+    entryCount: dataView.getUint16(2, true),  // always 1
+    fragmentIndex: dataView.getUint8(4),      // 0-based
+    totalFragments: dataView.getUint8(5),     // total count
+    fragmentSize: dataView.getUint8(6),       // payload bytes in this fragment
+    reserved: dataView.getUint8(7)
+  };
+
+  // Extract payload after header (8 bytes)
+  const payload = new Uint8Array(dataView.buffer, dataView.byteOffset + 8, header.fragmentSize);
+
+  // Handle fragmentation
+  if (header.fragmentIndex === 0) {
+    onboardingFragments = [];
+    expectedFragments = header.totalFragments;
+  }
+  onboardingFragments[header.fragmentIndex] = payload;
+
+  // Check if all fragments received
+  if (onboardingFragments.length === expectedFragments &&
+      onboardingFragments.every(f => f !== undefined)) {
+    // Reassemble complete payload
+    const totalLength = onboardingFragments.reduce((sum, f) => sum + f.length, 0);
+    const complete = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const frag of onboardingFragments) {
+      complete.set(frag, offset);
+      offset += frag.length;
+    }
+    
+    // Parse the reassembled 29-byte structure
+    const view = new DataView(complete.buffer);
+    return parseOnboardingStatusRead(view);
+  }
+  
+  return null; // Still waiting for fragments
+}
+```
+
+#### Single-Fragment Shortcut (MTU >= 40)
+If your MTU is large enough (≥40 bytes), the entire payload fits in one fragment:
+```javascript
+function parseOnboardingSingleFragment(dataView) {
+  // Skip 8-byte header, then parse as read response
+  const payloadView = new DataView(dataView.buffer, dataView.byteOffset + 8);
+  return parseOnboardingStatusRead(payloadView);
 }
 ```
 
