@@ -83,7 +83,7 @@ All structures are serialized back-to-back without padding.
 | 14 | `success_status` | `uint8_t` | Boolean success flag. |
 | 15 | `error_code` | `uint8_t` | Domain error code when `event_type = 3`. |
 | 16 | `flow_rate_avg` | `uint16_t` | Average ml/s. |
-| 18 | `reserved` | `uint8_t[6]` | Zero-filled. |
+| 18 | `reserved` | `uint8_t[2]` | Zero-filled. |
 
 Entries are sourced from `watering_history_query_page()`. The current implementation always queries a single channel (either the specified channel or channel 0 when `0xFF` was provided) and reconstructs timestamps by subtracting stored `dt_delta` values from the current UTC timestamp, so historical accuracy degrades for long gaps.
 

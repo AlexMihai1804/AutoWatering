@@ -49,4 +49,4 @@ Structure size is exactly 78 bytes (build asserted in firmware). Floats follow I
 ## Related Characteristics
 - `19-rain-data.md` - raw rain sensor telemetry.
 - `20-rain-history-control.md` - command/response access to archived rainfall data.
-- `25-compensation-status.md` - per-channel compensation view consuming rain integration results.
+- `23-compensation-status.md` - per-channel compensation view consuming rain integration results.

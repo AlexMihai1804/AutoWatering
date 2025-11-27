@@ -3,9 +3,9 @@
 > Operation Summary
 | Operation | Payload | Size | Fragmentation | Notes |
 |-----------|---------|------|---------------|-------|
-| Read | `timezone_config_t` | 16 B | None | Returns the cached timezone snapshot |
-| Write | `timezone_config_t` | 16 B | None | Full-frame only; validates bounds before applying |
-| Notify | `timezone_config_t` | 16 B | None | Fired on CCC enable and after successful writes |
+| Read | `timezone_config_t` | 11 B | None | Returns the cached timezone snapshot |
+| Write | `timezone_config_t` | 11 B | None | Full-frame only; validates bounds before applying |
+| Notify | `timezone_config_t` | 11 B | None | Fired on CCC enable and after successful writes |
 
 The characteristic exposes the timezone and Daylight Saving Time rule set the firmware uses when converting between RTC ticks and Unix timestamps. The payload mirrors the packed `timezone_config_t` structure defined in `nvs_config.h`.
 
@@ -15,7 +15,7 @@ The characteristic exposes the timezone and Daylight Saving Time rule set the fi
 | UUID | `12345678-1234-5678-9abc-def123456793` |
 | Properties | Read, Write, Notify |
 | Permissions | Read, Write |
-| Payload Size | 16 bytes |
+| Payload Size | 11 bytes |
 | Notification Priority | Normal (`bt_gatt_notify`) |
 | CCC Handler | `timezone_ccc_changed` |
 
@@ -31,22 +31,20 @@ The characteristic exposes the timezone and Daylight Saving Time rule set the fi
 | 7 | `dst_end_week` | `uint8_t` | `1...5` |
 | 8 | `dst_end_dow` | `uint8_t` | `0...6` |
 | 9 | `dst_offset_minutes` | `int16_t` | Minutes applied while DST is active (`-120...+120`) |
-| 11 | `reserved[5]` | `uint8_t[5]` | Reserved; keep zeroed for forward compatibility |
 
 ### Field Notes
 - When `dst_enabled == 0`, the handler zeroes all DST rule fields and `dst_offset_minutes` before caching the struct.
-- Reserved bytes are copied through untouched; the firmware does not validate them when DST is enabled.
 - DST transitions are applied at runtime (02:00 local by default); `timezone_is_dst_active()` reflects the active offset using the configured rules. Ambiguous fall-back times are resolved by trying the DST offset first, then the base offset.
 
 ## Behaviour
 
 ### Read (`read_timezone`)
 - Retrieves the current struct via `timezone_get_config()` and copies it into the attribute buffer.
-- Responds with a single 16-byte snapshot for every read; no history is maintained per connection.
+- Responds with a single 11-byte snapshot for every read; no history is maintained per connection.
 - If `timezone_get_config()` fails, the handler returns `-EIO` (mapped to ATT Unlikely Error) without producing a payload.
 
 ### Write (`write_timezone`)
-- Demands exactly 16 bytes at offset `0`. Any other length or offset returns `BT_ATT_ERR_INVALID_ATTRIBUTE_LEN` or `BT_ATT_ERR_INVALID_OFFSET`.
+- Demands exactly 11 bytes at offset `0`. Any other length or offset returns `BT_ATT_ERR_INVALID_ATTRIBUTE_LEN` or `BT_ATT_ERR_INVALID_OFFSET`.
 - Validates all range constraints listed below; out-of-range values yield `BT_ATT_ERR_VALUE_NOT_ALLOWED`.
 - Automatically clears DST rule bytes when `dst_enabled` is `0`.
 - Applies the configuration through `timezone_set_config()`, which now persists the struct in NVS when storage is available.
@@ -60,7 +58,7 @@ The characteristic exposes the timezone and Daylight Saving Time rule set the fi
 ## Validation & Errors
 | Check | Accepted Values | ATT Error on Failure |
 |-------|-----------------|----------------------|
-| Payload length | 16 bytes | `BT_ATT_ERR_INVALID_ATTRIBUTE_LEN` |
+| Payload length | 11 bytes | `BT_ATT_ERR_INVALID_ATTRIBUTE_LEN` |
 | Offset | 0 | `BT_ATT_ERR_INVALID_OFFSET` |
 | `utc_offset_minutes` | `-720`...`+840` | `BT_ATT_ERR_VALUE_NOT_ALLOWED` |
 | `dst_enabled` | `0` or `1` | `BT_ATT_ERR_VALUE_NOT_ALLOWED` |
@@ -70,7 +68,6 @@ The characteristic exposes the timezone and Daylight Saving Time rule set the fi
 
 ## Client Guidance
 - Always send the full struct; partial writes are not supported and will be rejected.
-- Keep reserved bytes zeroed to remain compatible with future firmware updates.
 - Configuration changes are persisted; reissue only if the NVS partition was wiped or a factory reset was performed.
 - To observe whether DST is active at runtime, consult the RTC characteristic (`09`), which reports the effective offset and DST flag.
 
