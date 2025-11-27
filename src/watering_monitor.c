@@ -265,25 +265,28 @@ watering_error_t check_flow_anomalies(void)
             }
         }
         
-        /* Check rain integration system health */
-        if (rain_integration_is_enabled()) {
-            /* Perform periodic maintenance on rain history system */
-            watering_error_t rain_maintenance_result = rain_history_maintenance();
-            if (rain_maintenance_result != WATERING_SUCCESS) {
-                printk("WARNING: Rain history maintenance failed: %d\n", rain_maintenance_result);
+        /* Run rain-related checks only when sensor is initialized/enabled */
+        if (rain_sensor_is_enabled()) {
+            /* Check rain integration system health */
+            if (rain_integration_is_enabled()) {
+                /* Perform periodic maintenance on rain history system */
+                watering_error_t rain_maintenance_result = rain_history_maintenance();
+                if (rain_maintenance_result != WATERING_SUCCESS) {
+                    printk("WARNING: Rain history maintenance failed: %d\n", rain_maintenance_result);
+                }
             }
-        }
-        
-        /* Run comprehensive rain sensor diagnostics */
-        rain_sensor_periodic_diagnostics();
-        
-        /* Run rain integration health check */
-        rain_integration_periodic_health_check();
-        
-        /* Check for critical health conditions */
-        if (rain_sensor_is_health_critical()) {
-            printk("CRITICAL: Rain sensor health is critical - check sensor connection\n");
-            /* Could trigger system alert or notification here */
+            
+            /* Run comprehensive rain sensor diagnostics */
+            rain_sensor_periodic_diagnostics();
+            
+            /* Run rain integration health check */
+            rain_integration_periodic_health_check();
+            
+            /* Check for critical health conditions */
+            if (rain_sensor_is_health_critical()) {
+                printk("CRITICAL: Rain sensor health is critical - check sensor connection\n");
+                /* Could trigger system alert or notification here */
+            }
         }
     }
     
@@ -473,22 +476,11 @@ watering_error_t flow_monitor_init(void) {
     flow_error_attempts = 0;
     last_flow_check_time = 0;
     exit_tasks = false;
-    
-    // Create and start the flow monitoring thread
-    k_tid_t flow_tid =
-            k_thread_create(&flow_monitor_data, flow_monitor_stack, K_THREAD_STACK_SIZEOF(flow_monitor_stack),
-                            flow_monitor_fn, NULL, NULL, NULL, K_PRIO_PREEMPT(6), 0, K_NO_WAIT);
-    
-    if (flow_tid != NULL) {
-        k_thread_name_set(flow_tid, "flow_monitor");
-        printk("Flow monitoring task started\n");
-        k_mutex_unlock(&flow_monitor_mutex);
-        return WATERING_SUCCESS;
-    } else {
-        printk("Error starting flow monitoring task\n");
-        k_mutex_unlock(&flow_monitor_mutex);
-        return WATERING_ERROR_CONFIG;
-    }
+
+    /* DEBUG: Disable flow monitor thread to isolate lockups during BLE init */
+    printk("Flow monitoring task DISABLED for debug\n");
+    k_mutex_unlock(&flow_monitor_mutex);
+    return WATERING_SUCCESS;
 }
 
 /**

@@ -114,20 +114,21 @@ typedef enum {
 /* Buffer Pool Management */
 #define BLE_BUFFER_POOL_SIZE    8      /* Number of notification buffers */
 #define MAX_NOTIFICATION_RETRIES 3
+#define BLE_MAX_NOTIFICATION_SIZE 250  /* Increased to support large structs (e.g. channel config 76B) */
 
 /* Enhanced BLE characteristic support flags */
 static bool enhanced_features_enabled __attribute__((unused)) = true;
 #define BUFFER_RECOVERY_TIME_MS 2000   /* Time to wait before retry after buffer exhaustion */
 
-/* Connection parameter targets tuned for low-power operation (units: 1.25 ms / 10 ms) */
-#define LOW_POWER_CONN_INTERVAL_MIN 160U  /* 200 ms */
-#define LOW_POWER_CONN_INTERVAL_MAX 320U  /* 400 ms */
-#define LOW_POWER_CONN_LATENCY       4U
+/* Connection parameter targets tuned for better Windows compatibility (units: 1.25 ms) */
+#define LOW_POWER_CONN_INTERVAL_MIN 24U   /* 30 ms */
+#define LOW_POWER_CONN_INTERVAL_MAX 40U   /* 50 ms */
+#define LOW_POWER_CONN_LATENCY       0U   /* No latency for better stability */
 #define LOW_POWER_CONN_TIMEOUT     500U   /* 5 s */
 
 /* Buffer Pool Structure */
 typedef struct {
-    uint8_t data[23];              /* Maximum BLE notification size */
+    uint8_t data[BLE_MAX_NOTIFICATION_SIZE]; /* Maximum BLE notification size */
     uint16_t len;                  /* Data length */
     const struct bt_gatt_attr *attr; /* Target attribute */
     notify_priority_t priority;    /* Notification priority */
@@ -141,6 +142,9 @@ static uint8_t pool_head = 0;     /* Next buffer to allocate */
 static uint8_t buffers_in_use = 0; /* Number of allocated buffers */
 static uint32_t last_buffer_exhaustion = 0; /* Last time we ran out of buffers */
 static bool notification_system_enabled = true;
+
+/* Mutex for thread-safe buffer pool access */
+static K_MUTEX_DEFINE(notification_mutex);
 
 /* Adaptive throttling state per priority */
 static struct {
@@ -501,6 +505,8 @@ static bool should_throttle_channel_name_notification(uint8_t channel_id) {
 
 /* Allocate a buffer from the pool */
 static ble_notification_buffer_t* allocate_notification_buffer(void) {
+    k_mutex_lock(&notification_mutex, K_FOREVER);
+    
     for (int i = 0; i < BLE_BUFFER_POOL_SIZE; i++) {
         uint8_t idx = (pool_head + i) % BLE_BUFFER_POOL_SIZE;
         if (!notification_pool[idx].in_use) {
@@ -508,6 +514,7 @@ static ble_notification_buffer_t* allocate_notification_buffer(void) {
             notification_pool[idx].timestamp = k_uptime_get_32();
             pool_head = (idx + 1) % BLE_BUFFER_POOL_SIZE;
             buffers_in_use++;
+            k_mutex_unlock(&notification_mutex);
             return &notification_pool[idx];
         }
     }
@@ -515,14 +522,21 @@ static ble_notification_buffer_t* allocate_notification_buffer(void) {
     /* No buffers available */
     last_buffer_exhaustion = k_uptime_get_32();
     LOG_WRN("⚠️ BLE buffer pool exhausted (%d/%d in use)", buffers_in_use, BLE_BUFFER_POOL_SIZE);
+    k_mutex_unlock(&notification_mutex);
     return NULL;
 }
 
 /* Release a buffer back to the pool */
 static void release_notification_buffer(ble_notification_buffer_t* buffer) {
-    if (buffer && buffer->in_use) {
-        buffer->in_use = false;
-        buffers_in_use--;
+    if (buffer) {
+        k_mutex_lock(&notification_mutex, K_FOREVER);
+        if (buffer->in_use) {
+            buffer->in_use = false;
+            if (buffers_in_use > 0) {
+                buffers_in_use--;
+            }
+        }
+        k_mutex_unlock(&notification_mutex);
     }
 }
 
@@ -645,8 +659,21 @@ static bool should_throttle_notification(notify_priority_t priority) {
 /* Advanced notification function with buffer pooling and adaptive throttling */
 static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                           const void *data, uint16_t len) {
-    if (!conn || !attr || !data || len > 23) {
+    /* Check against buffer size */
+    if (!conn || !attr || !data || len > BLE_MAX_NOTIFICATION_SIZE) {
         return -EINVAL;
+    }
+    
+    /* Check against connection MTU (minus 3 bytes for opcode/handle) */
+    /* Note: If MTU is default (23), max payload is 20. */
+    uint16_t mtu = bt_gatt_get_mtu(conn);
+    uint16_t max_payload = (mtu > 3) ? (mtu - 3) : 20;
+    
+    if (len > max_payload) {
+        /* Payload too large for current MTU - requires fragmentation */
+        /* For now, we return error to avoid partial packets or truncation */
+        /* TODO: Implement automatic fragmentation for generic notifications */
+        return -EMSGSIZE;
     }
     
     if (!notification_system_enabled || !connection_active || conn != default_conn) {
@@ -689,6 +716,9 @@ static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr
                 break;
             case -ENOMEM:
                 LOG_ERR("  → Out of memory for BLE buffers");
+                break;
+            case -EMSGSIZE:
+                LOG_ERR("  → Payload (%u) > MTU (%u) - fragmentation required", len, bt_gatt_get_mtu(conn));
                 break;
             case -ENOTCONN:
                 LOG_ERR("  → No active BLE connection");
@@ -1002,6 +1032,31 @@ static uint8_t  rain_last_status_sent = 0xFF; /* invalid at boot to force first 
 /* Environmental data characteristic value handles */
 static uint8_t environmental_data_value[sizeof(struct environmental_data_ble)];
 static uint8_t environmental_history_value[256]; // Fixed size buffer for history response
+/* Async fragmentation state for environmental data notifications */
+static struct {
+    bool active;
+    uint8_t buf[sizeof(struct environmental_data_ble)];
+    uint16_t len;
+    uint8_t chunk;
+    uint8_t total_frags;
+    uint8_t next_frag;
+} env_frag_state = {0};
+static void env_frag_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(env_frag_work, env_frag_work_handler);
+/* Async fragmentation state for watering history notifications */
+static struct {
+    bool active;
+    uint8_t *buf;
+    size_t len;
+    uint8_t total_frags;
+    uint8_t next_frag;
+    uint8_t history_type;
+    uint16_t entry_count_le;
+    struct bt_conn *conn;
+    const struct bt_gatt_attr *attr;
+} history_frag_state = {0};
+static void history_frag_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(history_frag_work, history_frag_work_handler);
 static uint8_t compensation_status_value[sizeof(struct compensation_status_data)];
 /* Rain Integration Status characteristic value buffer */
 static uint8_t rain_integration_status_value[sizeof(struct rain_integration_status_ble)];
@@ -1191,7 +1246,7 @@ static void current_task_periodic_work_handler(struct k_work *work) {
     }
 
     /* Re-schedule at 2s cadence while notifications stay enabled */
-    k_work_schedule(&current_task_periodic_work, K_SECONDS(2));
+    k_work_cancel_delayable(&current_task_periodic_work);
 }
 
 
@@ -1217,8 +1272,8 @@ static ssize_t read_status(struct bt_conn *conn, const struct bt_gatt_attr *attr
                            void *buf, uint16_t len, uint16_t offset);
 
 static void status_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value);
-/* Forward declaration: timer instance used for periodic fault re-notifications */
-static struct k_timer status_periodic_timer;
+/* Forward declaration: work item instance used for periodic fault re-notifications */
+static struct k_work_delayable status_periodic_work;
 
 static void channel_config_ccc_changed(const struct bt_gatt_attr *attr,
                                        uint16_t value);
@@ -1468,6 +1523,166 @@ static void environmental_history_ccc_changed(const struct bt_gatt_attr *attr, u
         LOG_INF("Environmental history notifications enabled");
     } else {
         LOG_INF("Environmental history notifications disabled");
+    }
+}
+
+/* Environmental data BLE notification functions */
+int bt_irrigation_environmental_data_notify(void) {
+    if (!default_conn || !notification_state.environmental_data_notifications_enabled) {
+        return 0; // No connection or notifications disabled
+    }
+    
+    /* Read current environmental data and send notification */
+    struct environmental_data_ble env_data;
+    memset(&env_data, 0, sizeof(env_data));
+
+    bool data_available = false;
+
+    /* Prefer processed environmental data for consistency with reads */
+    bme280_environmental_data_t processed;
+    if (environmental_data_get_current(&processed) == 0 && processed.current.valid) {
+        env_data.temperature = processed.current.temperature;
+        env_data.humidity = processed.current.humidity;
+        env_data.pressure = processed.current.pressure;
+        env_data.timestamp = processed.current.timestamp;
+        env_data.sensor_status = 1;
+
+        env_data_validation_t validation;
+        if (env_data_validate_reading(&processed.current, NULL, &validation) == 0) {
+            env_data.data_quality = env_data_calculate_quality_score(&processed.current, &validation);
+        }
+        data_available = true;
+    } else {
+        /* Fallback to direct sensor read if processor data unavailable */
+        bme280_reading_t reading;
+        if (bme280_system_read_data(&reading) == 0 && reading.valid) {
+            env_data.temperature = reading.temperature;
+            env_data.humidity = reading.humidity;
+            env_data.pressure = reading.pressure;
+            env_data.timestamp = reading.timestamp;
+            env_data.sensor_status = 1;
+
+            env_data_validation_t validation;
+            if (env_data_validate_reading(&reading, NULL, &validation) == 0) {
+                env_data.data_quality = env_data_calculate_quality_score(&reading, &validation);
+            }
+            data_available = true;
+        }
+    }
+
+    if (!data_available) {
+        env_data.sensor_status = 0;
+        env_data.data_quality = 0;
+        env_data.timestamp = k_uptime_get_32();
+    }
+
+    /* Incorporate system health metrics for additional context */
+    env_sensor_status_t sensor_status;
+    if (env_sensors_get_status(&sensor_status) == WATERING_SUCCESS) {
+        bool any_sensor_online = sensor_status.temp_sensor_online ||
+                                 sensor_status.humidity_sensor_online ||
+                                 sensor_status.pressure_sensor_online;
+
+        if (!any_sensor_online) {
+            env_data.sensor_status = 0;
+        } else if (env_data.sensor_status == 0) {
+            env_data.sensor_status = 1;
+        }
+
+        if (sensor_status.overall_health > 0) {
+            if (env_data.data_quality > 0) {
+                env_data.data_quality = MIN(env_data.data_quality, sensor_status.overall_health);
+            } else {
+                env_data.data_quality = sensor_status.overall_health;
+            }
+        }
+    }
+    
+    /* Get measurement interval */
+    bme280_config_t config;
+    if (bme280_system_get_config(&config) == 0) {
+        env_data.measurement_interval = config.measurement_interval;
+    } else {
+        env_data.measurement_interval = 60; /* Default */
+    }
+    
+    /* Update value buffer and send notification */
+    memcpy(environmental_data_value, &env_data, sizeof(env_data));
+    
+    const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_DATA_VALUE];
+
+    /* MTU-aware send: single frame if fits, else fragmented with [seq,total,len] header */
+    uint16_t mtu = bt_gatt_get_mtu(default_conn);
+    uint16_t max_payload = (mtu > 3) ? (mtu - 3) : 20;
+    /* advanced_notify enforces a 23-byte ceiling; anything larger must use the manual fragment path */
+    if (sizeof(env_data) <= max_payload && sizeof(env_data) <= 23U) {
+        int result = safe_notify(default_conn, attr, &env_data, sizeof(env_data));
+        if (result == 0) {
+            LOG_DBG("Environmental data notification sent (single frame)");
+        } else {
+            LOG_WRN("Environmental data notification failed: %d", result);
+        }
+        return result;
+    }
+
+    /* Asynchronous fragmentation to keep BT host thread unblocked */
+    uint16_t chunk = (max_payload > 3) ? (max_payload - 3) : 0;
+    if (chunk == 0) {
+        LOG_WRN("MTU too small to send environmental data fragments");
+        return -EMSGSIZE;
+    }
+    if (env_frag_state.active) {
+        LOG_WRN("Environmental notify busy, dropping update");
+        return -EBUSY;
+    }
+
+    memcpy(env_frag_state.buf, &env_data, sizeof(env_data));
+    env_frag_state.len = sizeof(env_data);
+    env_frag_state.chunk = (uint8_t)chunk;
+    env_frag_state.total_frags = (uint8_t)((env_frag_state.len + env_frag_state.chunk - 1) / env_frag_state.chunk);
+    env_frag_state.next_frag = 0;
+    env_frag_state.active = true;
+
+    k_work_schedule(&env_frag_work, K_NO_WAIT);
+    return 0;
+}
+
+/* Async fragment sender for environmental data */
+static void env_frag_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    if (!env_frag_state.active || !default_conn || !notification_state.environmental_data_notifications_enabled) {
+        env_frag_state.active = false;
+        return;
+    }
+
+    const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_DATA_VALUE];
+    const uint16_t header_sz = 3;
+    uint8_t frag_buf[32];
+
+    uint16_t offset = env_frag_state.next_frag * env_frag_state.chunk;
+    uint16_t remaining = env_frag_state.len - offset;
+    uint16_t this_len = (remaining > env_frag_state.chunk) ? env_frag_state.chunk : remaining;
+
+    frag_buf[0] = env_frag_state.next_frag;
+    frag_buf[1] = env_frag_state.total_frags;
+    frag_buf[2] = (uint8_t)this_len;
+    memcpy(&frag_buf[header_sz], &env_frag_state.buf[offset], this_len);
+
+    int err = bt_gatt_notify(default_conn, attr, frag_buf, header_sz + this_len);
+    if (err) {
+        LOG_WRN("Environmental fragment %u/%u notify failed: %d",
+                env_frag_state.next_frag + 1, env_frag_state.total_frags, err);
+        env_frag_state.active = false;
+        return;
+    }
+
+    env_frag_state.next_frag++;
+    if (env_frag_state.next_frag < env_frag_state.total_frags) {
+        k_work_schedule(&env_frag_work, K_MSEC(5));
+    } else {
+        env_frag_state.active = false;
+        LOG_DBG("Environmental data notification sent in %u fragments", env_frag_state.total_frags);
     }
 }
 
@@ -2677,9 +2892,9 @@ static void system_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t 
 }
 
 /* Task queue characteristics implementation */
-/* Forward declare periodic handler and define timer early so CCC can start/stop it */
-static void task_queue_periodic_timer_handler(struct k_timer *timer);
-static K_TIMER_DEFINE(task_queue_periodic_timer, task_queue_periodic_timer_handler, NULL);
+/* Forward declare periodic handler and define work item early so CCC can start/stop it */
+static void task_queue_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(task_queue_periodic_work, task_queue_work_handler);
 /* Helper: send error-shaped Task Queue notification (current_task_type=0xFF, current_value=error_code) */
 static void task_queue_send_error(uint8_t error_code)
 {
@@ -2944,12 +3159,12 @@ static void task_queue_ccc_changed(const struct bt_gatt_attr *attr, uint16_t val
         queue_data->active_task_id = 0; /* No active task */
 
     /* Start periodic 5s updates while a task is active */
-    k_timer_start(&task_queue_periodic_timer, K_SECONDS(5), K_SECONDS(5));
+    k_work_schedule(&task_queue_periodic_work, K_SECONDS(5));
     } else {
         LOG_INF("Task Queue notifications disabled");
         /* Clear task_queue_value when notifications disabled */
         memset(task_queue_value, 0, sizeof(task_queue_value));
-    k_timer_stop(&task_queue_periodic_timer);
+    k_work_cancel_delayable(&task_queue_periodic_work);
     }
 }
 
@@ -3499,7 +3714,7 @@ static void current_task_ccc_changed(const struct bt_gatt_attr *attr, uint16_t v
     notification_state.current_task_notifications_enabled = notif_enabled;
     
     if (notif_enabled) {
-        LOG_INF("✅ Current Task notifications ENABLED - will send updates every 2 seconds during execution");
+        LOG_INF("✅ Current Task notifications ENABLED - on-demand only (periodic disabled)");
         
         /* Per BLE API Documentation: Current Task notifications are sent:
          * - Every 2 seconds during active watering
@@ -3540,7 +3755,7 @@ static void current_task_ccc_changed(const struct bt_gatt_attr *attr, uint16_t v
         }
         
     /* Start 2s periodic progress updates while running */
-    k_work_schedule(&current_task_periodic_work, K_SECONDS(2));
+    k_work_cancel_delayable(&current_task_periodic_work);
     } else {
         LOG_INF("Current Task notifications disabled");
         /* Clear current_task_value when notifications disabled */
@@ -3908,33 +4123,28 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
     }
 
     uint8_t total_frags = (total_payload + RAIN_HISTORY_FRAGMENT_SIZE - 1) / RAIN_HISTORY_FRAGMENT_SIZE;
-    for (uint8_t frag = 0; frag < total_frags; frag++) {
-        history_fragment_header_t header = {0};
-        header.data_type = history_type;
-        header.status = 0;
-        header.entry_count = sys_cpu_to_le16(actual_entries);
-        header.fragment_index = frag;
-        header.total_fragments = total_frags;
-        size_t frag_offset = frag * RAIN_HISTORY_FRAGMENT_SIZE;
-        size_t remain = total_payload - frag_offset;
-        size_t frag_size = (remain > RAIN_HISTORY_FRAGMENT_SIZE) ? RAIN_HISTORY_FRAGMENT_SIZE : remain;
-        header.fragment_size = (uint8_t)frag_size;
-        /* Compose notification buffer: header + fragment data */
-        uint8_t notify_buf[sizeof(history_fragment_header_t) + RAIN_HISTORY_FRAGMENT_SIZE];
-        memcpy(notify_buf, &header, sizeof(header));
-        memcpy(notify_buf + sizeof(header), &packed[frag_offset], frag_size);
-        size_t notify_len = sizeof(header) + frag_size;
-        if (notification_state.history_notifications_enabled) {
-            int nret = bt_gatt_notify(conn, attr, notify_buf, notify_len);
-            if (nret < 0) {
-                LOG_ERR("History fragment notify failed %d", nret);
-                break;
-            }
-        }
-        if (frag + 1 < total_frags) {
-            k_sleep(K_MSEC(50)); /* small spacing */
-        }
+
+    /* Send fragments asynchronously to avoid blocking BT host thread */
+    if (history_frag_state.active) {
+        LOG_WRN("History notify busy, dropping request");
+        return -EBUSY;
     }
+    uint8_t *heap_copy = k_malloc(total_payload);
+    if (!heap_copy) {
+        LOG_ERR("History notify OOM for %zu bytes", total_payload);
+        return -ENOMEM;
+    }
+    memcpy(heap_copy, packed, total_payload);
+    history_frag_state.active = true;
+    history_frag_state.buf = heap_copy;
+    history_frag_state.len = total_payload;
+    history_frag_state.total_frags = total_frags;
+    history_frag_state.next_frag = 0;
+    history_frag_state.history_type = history_type;
+    history_frag_state.entry_count_le = sys_cpu_to_le16(actual_entries);
+    history_frag_state.attr = attr;
+    history_frag_state.conn = bt_conn_ref(conn);
+    k_work_schedule(&history_frag_work, K_NO_WAIT);
     return len;
 }
 
@@ -3971,6 +4181,61 @@ static void history_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
         /* Clear history_value when notifications disabled */
         memset(history_value, 0, sizeof(struct history_data));
     }
+}
+
+/* Async fragment sender for watering history */
+static void history_frag_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    if (!history_frag_state.active || !history_frag_state.buf || !history_frag_state.conn || !notification_state.history_notifications_enabled) {
+        if (history_frag_state.buf) {
+            k_free(history_frag_state.buf);
+        }
+        if (history_frag_state.conn) {
+            bt_conn_unref(history_frag_state.conn);
+        }
+        history_frag_state.active = false;
+        history_frag_state.buf = NULL;
+        history_frag_state.conn = NULL;
+        return;
+    }
+
+    const uint16_t header_sz = sizeof(history_fragment_header_t);
+    uint8_t notify_buf[sizeof(history_fragment_header_t) + RAIN_HISTORY_FRAGMENT_SIZE];
+
+    size_t frag_offset = history_frag_state.next_frag * RAIN_HISTORY_FRAGMENT_SIZE;
+    size_t remain = history_frag_state.len - frag_offset;
+    size_t frag_size = (remain > RAIN_HISTORY_FRAGMENT_SIZE) ? RAIN_HISTORY_FRAGMENT_SIZE : remain;
+
+    history_fragment_header_t *hdr = (history_fragment_header_t *)notify_buf;
+    hdr->data_type = history_frag_state.history_type;
+    hdr->status = 0;
+    hdr->entry_count = history_frag_state.entry_count_le;
+    hdr->fragment_index = history_frag_state.next_frag;
+    hdr->total_fragments = history_frag_state.total_frags;
+    hdr->fragment_size = (uint8_t)frag_size;
+    hdr->reserved = 0;
+
+    memcpy(&notify_buf[header_sz], &history_frag_state.buf[frag_offset], frag_size);
+
+    int nret = bt_gatt_notify(history_frag_state.conn, history_frag_state.attr, notify_buf, header_sz + frag_size);
+    if (nret < 0) {
+        LOG_ERR("History fragment notify failed %d", nret);
+        goto cleanup;
+    }
+
+    history_frag_state.next_frag++;
+    if (history_frag_state.next_frag < history_frag_state.total_frags) {
+        k_work_schedule(&history_frag_work, K_MSEC(5));
+        return;
+    }
+
+cleanup:
+    k_free(history_frag_state.buf);
+    bt_conn_unref(history_frag_state.conn);
+    history_frag_state.buf = NULL;
+    history_frag_state.conn = NULL;
+    history_frag_state.active = false;
 }
 
 /* Diagnostics characteristics implementation */
@@ -4185,6 +4450,12 @@ static void connected(struct bt_conn *conn, uint8_t err) {
         return;
     }
 
+    /* Request security level 2 (Encryption, No MITM) for Just Works bonding */
+    int sec_err = bt_conn_set_security(conn, BT_SECURITY_L2);
+    if (sec_err) {
+        printk("Failed to set security: %d\n", sec_err);
+    }
+
     /* Reset notification system completely */
     notification_system_enabled = true;
     
@@ -4209,17 +4480,12 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     
     printk("Connected - system status updated to: 0\n");
 
-    /* Ask for a slower connection to reduce radio wakeups */
-    const struct bt_le_conn_param conn_params = {
-        .interval_min = LOW_POWER_CONN_INTERVAL_MIN,
-        .interval_max = LOW_POWER_CONN_INTERVAL_MAX,
-        .latency = LOW_POWER_CONN_LATENCY,
-        .timeout = LOW_POWER_CONN_TIMEOUT,
-    };
-    int update_err = bt_conn_le_param_update(conn, &conn_params);
-    if (update_err) {
-        printk("Conn param update failed\n");
-    }
+    /* 
+     * NOTE: We do NOT request connection parameter updates here immediately.
+     * Windows needs time for service discovery and bonding.
+     * We rely on CONFIG_BT_GAP_AUTO_UPDATE_CONN_PARAMS=y to handle this
+     * after the configured delay (5s).
+     */
 
     if (!default_conn) {
         default_conn = bt_conn_ref(conn);
@@ -4253,9 +4519,6 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     }
     
     printk("Connected to irrigation controller - values cleared and status updated\n");
-    
-    /* Auto-enable all notifications for better user experience */
-    force_enable_all_notifications();
     
     /* DO NOT start task update thread - it can cause BLE freezes */
     /* Task updates will be handled through other mechanisms */
@@ -4326,6 +4589,10 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
         bt_conn_unref(default_conn);
         default_conn = NULL;
     }
+
+    /* Cancel periodic works */
+    k_work_cancel_delayable(&task_queue_periodic_work);
+    k_work_cancel_delayable(&status_periodic_work);
 
     /* Clear all characteristic values on disconnect to prevent stale data */
     memset(valve_value, 0, sizeof(struct valve_control_data));
@@ -4649,19 +4916,19 @@ static void status_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t val
             LOG_WRN("Status CCC enabled - defaulted to OK status");
         }
         
-    /* Start periodic reminder timer for fault-like states */
-    k_timer_start(&status_periodic_timer, K_SECONDS(30), K_SECONDS(30));
+    /* Start periodic reminder work for fault-like states */
+    k_work_schedule(&status_periodic_work, K_SECONDS(30));
     /* Do not send immediate notification here; notify on transitions */
     } else {
         LOG_INF("System Status notifications disabled");
-    k_timer_stop(&status_periodic_timer);
+    k_work_cancel_delayable(&status_periodic_work);
     }
 }
 
 /* Periodic re-notification for fault conditions (every 30s) */
-static void status_periodic_timer_handler(struct k_timer *timer)
+static void status_work_handler(struct k_work *work)
 {
-    ARG_UNUSED(timer);
+    ARG_UNUSED(work);
     if (!default_conn || !notification_state.status_notifications_enabled) {
         return;
     }
@@ -4678,14 +4945,16 @@ static void status_periodic_timer_handler(struct k_timer *timer)
             safe_notify(default_conn, attr, status_value, sizeof(uint8_t));
         }
     }
+    /* Reschedule */
+    k_work_schedule(&status_periodic_work, K_SECONDS(30));
 }
 
-static K_TIMER_DEFINE(status_periodic_timer, status_periodic_timer_handler, NULL);
+static K_WORK_DELAYABLE_DEFINE(status_periodic_work, status_work_handler);
 
 /* Periodic Task Queue status updates (every 5s while a task is active) */
-static void task_queue_periodic_timer_handler(struct k_timer *timer)
+static void task_queue_work_handler(struct k_work *work)
 {
-    ARG_UNUSED(timer);
+    ARG_UNUSED(work);
     if (!default_conn || !notification_state.task_queue_notifications_enabled) {
         return;
     }
@@ -4694,6 +4963,8 @@ static void task_queue_periodic_timer_handler(struct k_timer *timer)
         /* Send a periodic status update while a task is running */
         bt_irrigation_queue_status_notify();
     }
+    /* Reschedule */
+    k_work_schedule(&task_queue_periodic_work, K_SECONDS(5));
 }
 
 /* Timer defined earlier to be usable in CCC callback */
@@ -6870,20 +7141,6 @@ BT_CONN_CB_DEFINE(conn_callbacks) = {
 /* Authentication Callbacks                                           */
 /* ------------------------------------------------------------------ */
 
-static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
-{
-    char addr[BT_ADDR_LE_STR_LEN];
-    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
-    LOG_INF("Passkey for %s: %06u", addr, passkey);
-}
-
-static void auth_passkey_entry(struct bt_conn *conn)
-{
-    char addr[BT_ADDR_LE_STR_LEN];
-    bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
-    LOG_INF("Passkey entry requested for %s", addr);
-}
-
 static void auth_cancel(struct bt_conn *conn)
 {
     char addr[BT_ADDR_LE_STR_LEN];
@@ -6913,9 +7170,7 @@ static void auth_pairing_failed(struct bt_conn *conn, enum bt_security_err reaso
     LOG_WRN("Pairing failed with %s: %d", addr, reason);
 }
 
-static struct bt_conn_auth_cb auth_cb_display = {
-    .passkey_display = auth_passkey_display,
-    .passkey_entry = auth_passkey_entry,
+static struct bt_conn_auth_cb auth_cb_just_works = {
     .cancel = auth_cancel,
     .pairing_confirm = auth_pairing_confirm,
 };
@@ -7024,14 +7279,14 @@ int bt_irrigation_onboarding_status_notify(void) {
 
         memcpy(&notify_buf[hdr_sz], &payload[offset], this_len);
 
-        int bt_err = safe_notify(default_conn, attr, notify_buf, hdr_sz + this_len);
+        /* Use direct notify to avoid 23B limit in advanced_notify */
+        int bt_err = bt_gatt_notify(default_conn, attr, notify_buf, hdr_sz + this_len);
         if (bt_err != 0) {
             LOG_WRN("Onboarding status fragment %u/%u notify failed: %d", seq + 1, total_frags, bt_err);
             return bt_err;
         }
         offset += this_len;
         remaining -= this_len;
-        k_sleep(K_MSEC(20));
     }
 
     LOG_DBG("Onboarding status notification sent in %u fragments", (unsigned)total_frags);
@@ -7099,7 +7354,7 @@ int bt_irrigation_service_init(void) {
     }
     
     /* Register authentication callbacks */
-    bt_conn_auth_cb_register(&auth_cb_display);
+    bt_conn_auth_cb_register(&auth_cb_just_works);
     bt_conn_auth_info_cb_register(&auth_cb_info);
     
     LOG_DBG("Bluetooth initialized");
@@ -8742,15 +8997,20 @@ static void buffer_pool_maintenance(void) {
     last_maintenance = now;
     
     // Clean up expired buffers
+    k_mutex_lock(&notification_mutex, K_FOREVER);
     for (int i = 0; i < BLE_BUFFER_POOL_SIZE; i++) {
         if (notification_pool[i].in_use) {
             // Check if buffer has been in use too long (over 60 seconds)
             if ((k_uptime_get_32() - notification_pool[i].timestamp) > 60000) {
                 notification_pool[i].in_use = false;
+                if (buffers_in_use > 0) {
+                    buffers_in_use--;
+                }
                 LOG_DBG("Cleaned expired notification buffer %d", i);
             }
         }
     }
+    k_mutex_unlock(&notification_mutex);
     
     // Adaptive throttling adjustments per priority
     for (int p = 0; p < 4; p++) {
@@ -8864,6 +9124,47 @@ int bt_irrigation_force_enable_notifications(void) {
     return 0;
 }
 
+/* Rain history command processing state and helpers (CONFIG_BT) */
+static void rain_history_fragment_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(rain_history_fragment_work, rain_history_fragment_work_handler);
+
+static struct {
+    bool command_active;
+    uint8_t current_command;
+    uint32_t start_timestamp;
+    uint32_t end_timestamp;
+    uint16_t max_entries;
+    uint8_t data_type;
+    uint16_t total_entries;
+    uint16_t current_entry;
+    uint8_t current_fragment;
+    uint8_t total_fragments;
+    uint8_t *fragment_buffer;
+    bool fragment_buffer_owned;
+    struct bt_conn *requesting_conn;
+} rain_history_cmd_state = {0};
+
+/* Clear state and free owned buffers after a command completes */
+static void rain_history_reset_state(void) {
+    if (rain_history_cmd_state.fragment_buffer_owned && rain_history_cmd_state.fragment_buffer) {
+        k_free(rain_history_cmd_state.fragment_buffer);
+    }
+    rain_history_cmd_state.command_active = false;
+    rain_history_cmd_state.current_command = 0;
+    rain_history_cmd_state.start_timestamp = 0;
+    rain_history_cmd_state.end_timestamp = 0;
+    rain_history_cmd_state.max_entries = 0;
+    rain_history_cmd_state.data_type = 0;
+    rain_history_cmd_state.total_entries = 0;
+    rain_history_cmd_state.current_entry = 0;
+    rain_history_cmd_state.current_fragment = 0;
+    rain_history_cmd_state.total_fragments = 0;
+    rain_history_cmd_state.fragment_buffer = NULL;
+    rain_history_cmd_state.fragment_buffer_owned = false;
+    rain_history_cmd_state.requesting_conn = NULL;
+    k_work_cancel_delayable(&rain_history_fragment_work);
+}
+
 /* ------------------------------------------------------------------ */
 /* Rain History Helper Functions                                     */
 /* ------------------------------------------------------------------ */
@@ -8887,7 +9188,7 @@ static void rain_history_send_error_response(struct bt_conn *conn, uint8_t error
                       &error_response, notify_len);
     }
     
-    rain_history_state.command_active = false;
+    rain_history_reset_state();
 }
 
 /**
@@ -8901,7 +9202,7 @@ static int process_rain_history_hourly_request(uint32_t start_time, uint32_t end
     rain_hourly_data_t *hourly_data = k_malloc(max_entries * sizeof(rain_hourly_data_t));
     if (!hourly_data) {
         LOG_ERR("Failed to allocate memory for hourly data");
-        rain_history_send_error_response(rain_history_state.requesting_conn, 0x05); /* Memory error */
+        rain_history_send_error_response(rain_history_cmd_state.requesting_conn, 0x05); /* Memory error */
         return -ENOMEM;
     }
     
@@ -8911,7 +9212,7 @@ static int process_rain_history_hourly_request(uint32_t start_time, uint32_t end
     if (ret != WATERING_SUCCESS) {
         LOG_ERR("Failed to retrieve hourly rain data: %d", ret);
         k_free(hourly_data);
-        rain_history_send_error_response(rain_history_state.requesting_conn, 0x06); /* Data error */
+        rain_history_send_error_response(rain_history_cmd_state.requesting_conn, 0x06); /* Data error */
         return -EIO;
     }
     
@@ -8924,33 +9225,19 @@ static int process_rain_history_hourly_request(uint32_t start_time, uint32_t end
     if (total_fragments > RAIN_HISTORY_MAX_FRAGMENTS) {
         LOG_ERR("Too many fragments required: %u (max %u)", total_fragments, RAIN_HISTORY_MAX_FRAGMENTS);
         k_free(hourly_data);
-        rain_history_send_error_response(rain_history_state.requesting_conn, 0x07); /* Too much data */
+        rain_history_send_error_response(rain_history_cmd_state.requesting_conn, 0x07); /* Too much data */
         return -E2BIG;
     }
     
-    rain_history_state.total_entries = actual_count;
-    rain_history_state.total_fragments = total_fragments;
+    rain_history_cmd_state.total_entries = actual_count;
+    rain_history_cmd_state.total_fragments = total_fragments;
     
-    /* Stash pointer for fragmenting */
-    rain_history_state.fragment_buffer = (uint8_t *)hourly_data;
-
-    /* Send all fragments sequentially */
-    int result = 0;
-    for (uint8_t frag = 0; frag < total_fragments; frag++) {
-        if (frag > 0) {
-        k_sleep(K_MSEC(50)); /* Small delay between fragments */
-        }
-        int r = send_rain_history_fragment(rain_history_state.requesting_conn, frag);
-        if (r < 0 && result == 0) {
-            result = r; /* capture first error */
-        }
-    }
+    /* Stash pointer for fragmenting and send asynchronously to avoid blocking BT thread */
+    rain_history_cmd_state.fragment_buffer = (uint8_t *)hourly_data;
+    rain_history_cmd_state.fragment_buffer_owned = true;
+    k_work_schedule(&rain_history_fragment_work, K_NO_WAIT);
     
-    k_free(hourly_data);
-    rain_history_state.fragment_buffer = NULL;
-    rain_history_state.command_active = false;
-    
-    return result;
+    return 0;
 }
 
 /**
@@ -8964,7 +9251,7 @@ static int process_rain_history_daily_request(uint32_t start_time, uint32_t end_
     rain_daily_data_t *daily_data = k_malloc(max_entries * sizeof(rain_daily_data_t));
     if (!daily_data) {
         LOG_ERR("Failed to allocate memory for daily data");
-        rain_history_send_error_response(rain_history_state.requesting_conn, 0x05); /* Memory error */
+        rain_history_send_error_response(rain_history_cmd_state.requesting_conn, 0x05); /* Memory error */
         return -ENOMEM;
     }
     
@@ -8974,7 +9261,7 @@ static int process_rain_history_daily_request(uint32_t start_time, uint32_t end_
     if (ret != WATERING_SUCCESS) {
         LOG_ERR("Failed to retrieve daily rain data: %d", ret);
         k_free(daily_data);
-        rain_history_send_error_response(rain_history_state.requesting_conn, 0x06); /* Data error */
+        rain_history_send_error_response(rain_history_cmd_state.requesting_conn, 0x06); /* Data error */
         return -EIO;
     }
     
@@ -8987,60 +9274,47 @@ static int process_rain_history_daily_request(uint32_t start_time, uint32_t end_
     if (total_fragments > RAIN_HISTORY_MAX_FRAGMENTS) {
         LOG_ERR("Too many fragments required: %u (max %u)", total_fragments, RAIN_HISTORY_MAX_FRAGMENTS);
         k_free(daily_data);
-        rain_history_send_error_response(rain_history_state.requesting_conn, 0x07); /* Too much data */
+        rain_history_send_error_response(rain_history_cmd_state.requesting_conn, 0x07); /* Too much data */
         return -E2BIG;
     }
     
-    rain_history_state.total_entries = actual_count;
-    rain_history_state.total_fragments = total_fragments;
+    rain_history_cmd_state.total_entries = actual_count;
+    rain_history_cmd_state.total_fragments = total_fragments;
     
-    rain_history_state.fragment_buffer = (uint8_t *)daily_data;
-
-    int result = 0;
-    for (uint8_t frag = 0; frag < total_fragments; frag++) {
-        if (frag > 0) {
-        k_sleep(K_MSEC(50)); /* Small delay between fragments */
-        }
-        int r = send_rain_history_fragment(rain_history_state.requesting_conn, frag);
-        if (r < 0 && result == 0) {
-            result = r;
-        }
-    }
+    rain_history_cmd_state.fragment_buffer = (uint8_t *)daily_data;
+    rain_history_cmd_state.fragment_buffer_owned = true;
+    k_work_schedule(&rain_history_fragment_work, K_NO_WAIT);
     
-    k_free(daily_data);
-    rain_history_state.fragment_buffer = NULL;
-    rain_history_state.command_active = false;
-    
-    return result;
+    return 0;
 }
 
 /**
  * @brief Send a specific fragment of rain history data
  */
 static int send_rain_history_fragment(struct bt_conn *conn, uint8_t fragment_id) {
-    if (!conn || fragment_id >= rain_history_state.total_fragments) {
+    if (!conn || fragment_id >= rain_history_cmd_state.total_fragments) {
         return -EINVAL;
     }
     
     rain_history_response_t response = {0};
     response.header.fragment_index = fragment_id;
-    response.header.total_fragments = (uint8_t)rain_history_state.total_fragments;
+    response.header.total_fragments = (uint8_t)rain_history_cmd_state.total_fragments;
     response.header.status = 0; /* Success */
-    response.header.data_type = rain_history_state.data_type;
+    response.header.data_type = rain_history_cmd_state.data_type;
     
     /* Calculate fragment data */
-    size_t entry_size = (rain_history_state.data_type == 0) ? 
+    size_t entry_size = (rain_history_cmd_state.data_type == 0) ? 
                        sizeof(rain_hourly_data_t) : sizeof(rain_daily_data_t);
     size_t fragment_offset = fragment_id * RAIN_HISTORY_FRAGMENT_SIZE;
-    size_t remaining_data = (rain_history_state.total_entries * entry_size) - fragment_offset;
+    size_t remaining_data = (rain_history_cmd_state.total_entries * entry_size) - fragment_offset;
     size_t fragment_data_size = (remaining_data > RAIN_HISTORY_FRAGMENT_SIZE) ? 
                                RAIN_HISTORY_FRAGMENT_SIZE : remaining_data;
     
     response.header.fragment_size = (uint8_t)fragment_data_size;
     
     /* Copy real data from fragment buffer if available */
-    if (rain_history_state.fragment_buffer) {
-        memcpy(response.data, rain_history_state.fragment_buffer + fragment_offset, fragment_data_size);
+    if (rain_history_cmd_state.fragment_buffer) {
+        memcpy(response.data, rain_history_cmd_state.fragment_buffer + fragment_offset, fragment_data_size);
     } else {
         memset(response.data, 0, fragment_data_size); /* Fallback (should not happen) */
     }
@@ -9060,9 +9334,36 @@ static int send_rain_history_fragment(struct bt_conn *conn, uint8_t fragment_id)
     }
     
     LOG_DBG("Sent rain history fragment %u/%u (%u bytes)", 
-            fragment_id + 1, rain_history_state.total_fragments, (unsigned)fragment_data_size);
+            fragment_id + 1, rain_history_cmd_state.total_fragments, (unsigned)fragment_data_size);
     
     return 0;
+}
+
+/* Work handler to stream fragments without blocking the BT host thread */
+static void rain_history_fragment_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    if (!rain_history_cmd_state.command_active || !rain_history_cmd_state.requesting_conn || !connection_active || !default_conn) {
+        rain_history_reset_state();
+        return;
+    }
+
+    int ret = send_rain_history_fragment(rain_history_cmd_state.requesting_conn,
+                                         rain_history_cmd_state.current_fragment);
+    if (ret < 0) {
+        LOG_ERR("Rain history fragment send failed: %d", ret);
+        rain_history_send_error_response(rain_history_cmd_state.requesting_conn, 0x03);
+        rain_history_reset_state();
+        return;
+    }
+
+    rain_history_cmd_state.current_fragment++;
+    if (rain_history_cmd_state.current_fragment < rain_history_cmd_state.total_fragments) {
+        /* Short delay to avoid flooding the stack, without sleeping on BT thread */
+        k_work_schedule(&rain_history_fragment_work, K_MSEC(5));
+    } else {
+        rain_history_reset_state();
+    }
 }
 
 /**
@@ -9222,6 +9523,50 @@ void bt_irrigation_rain_integration_notify(uint8_t channel_id, float reduction_p
     } else {
         LOG_DBG("Rain integration: ch=%u, red=%.1f%%, skip=%u", channel_id, (double)reduction_pct, (unsigned)delta.skip_irrigation);
     }
+}
+
+/**
+ * @brief Send full rain integration status notification
+ */
+int bt_irrigation_rain_integration_status_notify(void) {
+    if (!default_conn || !notification_state.rain_integration_status_notifications_enabled) {
+        return 0;
+    }
+
+    rain_integration_status_t sys = {0};
+    if (watering_get_rain_integration_status(&sys) != WATERING_SUCCESS) {
+        memset(&sys, 0, sizeof(sys));
+    }
+
+    struct rain_integration_status_ble ble = {0};
+    ble.sensor_active = sys.sensor_active ? 1 : 0;
+    ble.integration_enabled = sys.integration_enabled ? 1 : 0;
+    ble.last_pulse_time = sys.last_pulse_time;
+    ble.calibration_mm_per_pulse = sys.calibration_mm_per_pulse;
+    ble.rainfall_last_hour = sys.rainfall_last_hour;
+    ble.rainfall_last_24h = sys.rainfall_last_24h;
+    ble.rainfall_last_48h = sys.rainfall_last_48h;
+    ble.sensitivity_pct = sys.sensitivity_pct;
+    ble.skip_threshold_mm = sys.skip_threshold_mm;
+    for (int i = 0; i < 8; ++i) {
+        ble.channel_reduction_pct[i] = sys.channel_reduction_pct[i];
+        ble.channel_skip_irrigation[i] = sys.channel_skip_irrigation[i] ? 1 : 0;
+    }
+    ble.hourly_entries = sys.hourly_entries;
+    ble.daily_entries = sys.daily_entries;
+    ble.storage_usage_bytes = sys.storage_usage_bytes;
+
+    memcpy(rain_integration_status_value, &ble, sizeof(ble));
+
+    const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE];
+    int ret = safe_notify(default_conn, attr, rain_integration_status_value, sizeof(ble));
+    
+    if (ret < 0) {
+        LOG_ERR("Failed to send rain integration status notify: %d", ret);
+    } else {
+        LOG_DBG("Rain integration status notification sent");
+    }
+    return ret;
 }
 
 /**
@@ -9484,6 +9829,13 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
         return -EINVAL;
     }
 
+    /* Only one rain history command at a time to keep BT host responsive */
+    if (rain_history_cmd_state.command_active) {
+        LOG_WRN("Rain history command already in progress");
+        rain_history_send_error_response(conn, 0x01); /* Busy error */
+        return -EBUSY;
+    }
+    
     const struct rain_history_cmd_data *cmd = (const struct rain_history_cmd_data *)buf;
 
     /* Echo command into value buffer for read-back */
@@ -9509,26 +9861,30 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
     }
 
     /* Setup state */
-    rain_history_state.command_active = true;
-    rain_history_state.requesting_conn = conn;
-    rain_history_state.current_command = cmd->command;
-    rain_history_state.start_timestamp = cmd->start_timestamp;
-    rain_history_state.end_timestamp = cmd->end_timestamp;
-    rain_history_state.max_entries = cmd->max_entries;
-    rain_history_state.data_type = cmd->data_type;
-    rain_history_state.current_entry = 0;
-    rain_history_state.total_entries = 0;
-    rain_history_state.current_fragment = 0;
-    rain_history_state.total_fragments = 0;
+    rain_history_cmd_state.command_active = true;
+    rain_history_cmd_state.requesting_conn = conn;
+    rain_history_cmd_state.current_command = cmd->command;
+    rain_history_cmd_state.start_timestamp = cmd->start_timestamp;
+    rain_history_cmd_state.end_timestamp = cmd->end_timestamp;
+    rain_history_cmd_state.max_entries = cmd->max_entries;
+    rain_history_cmd_state.data_type = cmd->data_type;
+    rain_history_cmd_state.current_entry = 0;
+    rain_history_cmd_state.total_entries = 0;
+    rain_history_cmd_state.current_fragment = 0;
+    rain_history_cmd_state.total_fragments = 0;
+    rain_history_cmd_state.fragment_buffer = NULL;
+    rain_history_cmd_state.fragment_buffer_owned = false;
+
+    int result = 0;
 
     switch (cmd->command) {
     case 0x01: /* RAIN_CMD_GET_HOURLY */
-        rain_history_state.data_type = 0; /* hourly */
-        process_rain_history_hourly_request(cmd->start_timestamp, cmd->end_timestamp, cmd->max_entries);
+        rain_history_cmd_state.data_type = 0; /* hourly */
+        result = process_rain_history_hourly_request(cmd->start_timestamp, cmd->end_timestamp, cmd->max_entries);
         break;
     case 0x02: /* RAIN_CMD_GET_DAILY */
-        rain_history_state.data_type = 1; /* daily */
-        process_rain_history_daily_request(cmd->start_timestamp, cmd->end_timestamp, cmd->max_entries);
+        rain_history_cmd_state.data_type = 1; /* daily */
+        result = process_rain_history_daily_request(cmd->start_timestamp, cmd->end_timestamp, cmd->max_entries);
         break;
     case 0x03: { /* RAIN_CMD_GET_RECENT */
         /* Build recent totals response using unified header (single fragment) */
@@ -9551,7 +9907,7 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
         if (notification_state.rain_history_notifications_enabled) {
             bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], &response, notify_len);
         }
-        rain_history_state.command_active = false;
+        rain_history_cmd_state.command_active = false;
         break; }
     case 0x10: /* RAIN_CMD_RESET_DATA */
         if (rain_history_clear_all() != WATERING_SUCCESS) {
@@ -9567,7 +9923,7 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
                 bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], &resp, sizeof(resp.header));
             }
         }
-        rain_history_state.command_active = false;
+        rain_history_cmd_state.command_active = false;
         break;
     case 0x20: /* RAIN_CMD_CALIBRATE */
         rain_sensor_reset_counters();
@@ -9583,11 +9939,15 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
         if (notification_state.rain_history_notifications_enabled) {
             bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], &cal, sizeof(cal.header));
         }
-        rain_history_state.command_active = false;
+        rain_history_cmd_state.command_active = false;
         break;
     default:
         rain_history_send_error_response(conn, 0xFF); /* Invalid command */
         break;
+    }
+
+    if (result < 0) {
+        rain_history_reset_state();
     }
 
     return len;
@@ -9643,10 +10003,7 @@ static void rain_integration_status_ccc_changed(const struct bt_gatt_attr *attr,
     LOG_INF("Rain integration status notifications %s", notify_enabled ? "enabled" : "disabled");
     if (notify_enabled && default_conn) {
         /* Snapshot on subscribe */
-        (void)read_rain_integration_status(default_conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE],
-                                           rain_integration_status_value, sizeof(rain_integration_status_value), 0);
-        (void)bt_gatt_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE],
-                             rain_integration_status_value, sizeof(struct rain_integration_status_ble));
+        bt_irrigation_rain_integration_status_notify();
     }
 }
 #else /* CONFIG_BT */
@@ -9905,14 +10262,39 @@ static struct {
     uint16_t current_entry;
     uint8_t current_fragment;
     uint8_t total_fragments;
+    uint8_t *fragment_buffer;
+    bool fragment_buffer_owned;
     struct bt_conn *requesting_conn;
-} rain_history_state = {0};
+} rain_history_cmd_state = {0};
 
 /* Forward declarations for rain history processing */
 static int process_rain_history_hourly_request(uint32_t start_time, uint32_t end_time, uint16_t max_entries);
 static int process_rain_history_daily_request(uint32_t start_time, uint32_t end_time, uint16_t max_entries);
 static int send_rain_history_fragment(struct bt_conn *conn, uint8_t fragment_id);
 static void rain_history_send_error_response(struct bt_conn *conn, uint8_t error_code);
+static void rain_history_fragment_work_handler(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(rain_history_fragment_work, rain_history_fragment_work_handler);
+
+/* Clear state and free owned buffers after a command completes */
+static void rain_history_reset_state(void) {
+    if (rain_history_cmd_state.fragment_buffer_owned && rain_history_cmd_state.fragment_buffer) {
+        k_free(rain_history_cmd_state.fragment_buffer);
+    }
+    rain_history_cmd_state.command_active = false;
+    rain_history_cmd_state.current_command = 0;
+    rain_history_cmd_state.start_timestamp = 0;
+    rain_history_cmd_state.end_timestamp = 0;
+    rain_history_cmd_state.max_entries = 0;
+    rain_history_cmd_state.data_type = 0;
+    rain_history_cmd_state.total_entries = 0;
+    rain_history_cmd_state.current_entry = 0;
+    rain_history_cmd_state.current_fragment = 0;
+    rain_history_cmd_state.total_fragments = 0;
+    rain_history_cmd_state.fragment_buffer = NULL;
+    rain_history_cmd_state.fragment_buffer_owned = false;
+    rain_history_cmd_state.requesting_conn = NULL;
+    k_work_cancel_delayable(&rain_history_fragment_work);
+}
 
 ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                  const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
@@ -9939,22 +10321,24 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
             cmd->max_entries, cmd->data_type);
     
     /* Check if another command is already in progress */
-    if (rain_history_state.command_active && rain_history_state.requesting_conn != conn) {
+    if (rain_history_cmd_state.command_active && rain_history_cmd_state.requesting_conn != conn) {
         LOG_WRN("Rain history command already in progress for another connection");
         rain_history_send_error_response(conn, 0x01); /* Busy error */
         return -EBUSY;
     }
     
     /* Initialize command state */
-    rain_history_state.command_active = true;
-    rain_history_state.current_command = cmd->command;
-    rain_history_state.start_timestamp = cmd->start_timestamp;
-    rain_history_state.end_timestamp = cmd->end_timestamp;
-    rain_history_state.max_entries = cmd->max_entries;
-    rain_history_state.data_type = cmd->data_type;
-    rain_history_state.requesting_conn = conn;
-    rain_history_state.current_entry = 0;
-    rain_history_state.current_fragment = 0;
+    rain_history_cmd_state.command_active = true;
+    rain_history_cmd_state.current_command = cmd->command;
+    rain_history_cmd_state.start_timestamp = cmd->start_timestamp;
+    rain_history_cmd_state.end_timestamp = cmd->end_timestamp;
+    rain_history_cmd_state.max_entries = cmd->max_entries;
+    rain_history_cmd_state.data_type = cmd->data_type;
+    rain_history_cmd_state.requesting_conn = conn;
+    rain_history_cmd_state.current_entry = 0;
+    rain_history_cmd_state.current_fragment = 0;
+    rain_history_cmd_state.fragment_buffer = NULL;
+    rain_history_cmd_state.fragment_buffer_owned = false;
     
     int result = 0;
     
@@ -10017,7 +10401,7 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
                               &response, recent_len);
             }
             
-            rain_history_state.command_active = false;
+            rain_history_cmd_state.command_active = false;
             result = 0;
             break;
             
@@ -10043,7 +10427,7 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
             } else {
                 rain_history_send_error_response(conn, 0x03); /* Operation failed */
             }
-            rain_history_state.command_active = false;
+            rain_history_cmd_state.command_active = false;
             result = 0;
             break;
             
@@ -10066,7 +10450,7 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
                               &cal_response, cal_len);
             }
             
-            rain_history_state.command_active = false;
+            rain_history_cmd_state.command_active = false;
             result = 0;
             break;
             
@@ -10078,7 +10462,7 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
     }
     
     if (result < 0) {
-        rain_history_state.command_active = false;
+        rain_history_cmd_state.command_active = false;
     }
     
     /* Update global value buffer with command */
@@ -10139,141 +10523,6 @@ int bt_irrigation_rain_data_notify(void) {
     
     return bt_gatt_notify(NULL, &irrigation_svc.attrs[ATTR_IDX_RAIN_DATA_VALUE], 
                          rain_data_value, sizeof(data));
-}
-
-/* Environmental data BLE notification functions */
-int bt_irrigation_environmental_data_notify(void) {
-    if (!default_conn || !notification_state.environmental_data_notifications_enabled) {
-        return 0; // No connection or notifications disabled
-    }
-    
-    /* Read current environmental data and send notification */
-    struct environmental_data_ble env_data;
-    memset(&env_data, 0, sizeof(env_data));
-
-    bool data_available = false;
-
-    /* Prefer processed environmental data for consistency with reads */
-    bme280_environmental_data_t processed;
-    if (environmental_data_get_current(&processed) == 0 && processed.current.valid) {
-        env_data.temperature = processed.current.temperature;
-        env_data.humidity = processed.current.humidity;
-        env_data.pressure = processed.current.pressure;
-        env_data.timestamp = processed.current.timestamp;
-        env_data.sensor_status = 1;
-
-        env_data_validation_t validation;
-        if (env_data_validate_reading(&processed.current, NULL, &validation) == 0) {
-            env_data.data_quality = env_data_calculate_quality_score(&processed.current, &validation);
-        }
-        data_available = true;
-    } else {
-        /* Fallback to direct sensor read if processor data unavailable */
-        bme280_reading_t reading;
-        if (bme280_system_read_data(&reading) == 0 && reading.valid) {
-            env_data.temperature = reading.temperature;
-            env_data.humidity = reading.humidity;
-            env_data.pressure = reading.pressure;
-            env_data.timestamp = reading.timestamp;
-            env_data.sensor_status = 1;
-
-            env_data_validation_t validation;
-            if (env_data_validate_reading(&reading, NULL, &validation) == 0) {
-                env_data.data_quality = env_data_calculate_quality_score(&reading, &validation);
-            }
-            data_available = true;
-        }
-    }
-
-    if (!data_available) {
-        env_data.sensor_status = 0;
-        env_data.data_quality = 0;
-        env_data.timestamp = k_uptime_get_32();
-    }
-
-    /* Incorporate system health metrics for additional context */
-    env_sensor_status_t sensor_status;
-    if (env_sensors_get_status(&sensor_status) == WATERING_SUCCESS) {
-        bool any_sensor_online = sensor_status.temp_sensor_online ||
-                                 sensor_status.humidity_sensor_online ||
-                                 sensor_status.pressure_sensor_online;
-
-        if (!any_sensor_online) {
-            env_data.sensor_status = 0;
-        } else if (env_data.sensor_status == 0) {
-            env_data.sensor_status = 1;
-        }
-
-        if (sensor_status.overall_health > 0) {
-            if (env_data.data_quality > 0) {
-                env_data.data_quality = MIN(env_data.data_quality, sensor_status.overall_health);
-            } else {
-                env_data.data_quality = sensor_status.overall_health;
-            }
-        }
-    }
-    
-    /* Get measurement interval */
-    bme280_config_t config;
-    if (bme280_system_get_config(&config) == 0) {
-        env_data.measurement_interval = config.measurement_interval;
-    } else {
-        env_data.measurement_interval = 60; /* Default */
-    }
-    
-    /* Update value buffer and send notification */
-    memcpy(environmental_data_value, &env_data, sizeof(env_data));
-    
-    const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_DATA_VALUE];
-
-    /* MTU-aware send: single frame if fits, else fragmented with [seq,total,len] header */
-    uint16_t mtu = bt_gatt_get_mtu(default_conn);
-    uint16_t max_payload = (mtu > 3) ? (mtu - 3) : 20;
-    /* advanced_notify enforces a 23-byte ceiling; anything larger must use the manual fragment path */
-    if (sizeof(env_data) <= max_payload && sizeof(env_data) <= 23U) {
-        int result = safe_notify(default_conn, attr, &env_data, sizeof(env_data));
-        if (result == 0) {
-            LOG_DBG("Environmental data notification sent (single frame)");
-        } else {
-            LOG_WRN("Environmental data notification failed: %d", result);
-        }
-        return result;
-    }
-
-    uint8_t all_bytes[sizeof(env_data)];
-    memcpy(all_bytes, &env_data, sizeof(env_data));
-    const uint16_t header_sz = 3;
-    uint8_t frag_buf[64];
-    uint16_t max_chunk = (sizeof(frag_buf) > header_sz) ? (sizeof(frag_buf) - header_sz) : 0;
-    uint16_t chunk = (max_payload > header_sz) ? (max_payload - header_sz) : 0;
-    if (chunk == 0) {
-        LOG_WRN("MTU too small to send environmental data fragments");
-        return -EMSGSIZE;
-    }
-    if (chunk > max_chunk) chunk = max_chunk;
-
-    uint16_t remaining = sizeof(all_bytes);
-    uint16_t offset = 0;
-    uint8_t total_frags = (remaining + chunk - 1) / chunk;
-    for (uint8_t seq = 0; seq < total_frags; seq++) {
-        uint16_t this_len = (remaining > chunk) ? chunk : remaining;
-        frag_buf[0] = seq;
-        frag_buf[1] = total_frags;
-        frag_buf[2] = (uint8_t)this_len;
-        memcpy(&frag_buf[header_sz], &all_bytes[offset], this_len);
-
-        int err = bt_gatt_notify(default_conn, attr, frag_buf, header_sz + this_len);
-        if (err) {
-            LOG_WRN("Environmental fragment %u/%u notify failed: %d", seq + 1, total_frags, err);
-            return err;
-        }
-        offset += this_len;
-        remaining -= this_len;
-        k_sleep(K_MSEC(20));
-    }
-
-    LOG_DBG("Environmental data notification sent in %u fragments", (unsigned)total_frags);
-    return 0;
 }
 
 int bt_irrigation_compensation_status_notify(uint8_t channel_id) {
@@ -10343,3 +10592,6 @@ int bt_irrigation_interval_mode_phase_notify(uint8_t channel_id, bool is_waterin
 
 
 #endif /* CONFIG_BT */
+
+
+

@@ -656,6 +656,16 @@ void bt_irrigation_rain_pulse_notify(uint32_t pulse_count, float current_rate_mm
 void bt_irrigation_rain_integration_notify(uint8_t channel_id, float reduction_pct, bool skip_irrigation);
 
 /**
+ * @brief Send full rain integration status notification
+ * 
+ * Sends the complete rain integration status structure to connected clients.
+ * Used for initial synchronization and periodic full updates.
+ * 
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_rain_integration_status_notify(void);
+
+/**
  * @brief Periodic rain data update
  * 
  * Called periodically to update rain sensor data notifications.

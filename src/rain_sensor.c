@@ -1198,9 +1198,10 @@ void rain_sensor_periodic_diagnostics(void)
                 sensor_health.consecutive_errors);
     }
     
-    /* Log periodic health summary */
-    LOG_INF("Rain sensor health: accuracy=%.1f%%, pulses=%u, errors=%u",
-            (double)sensor_health.pulse_accuracy_percentage,
+    /* Log periodic health summary without floats to avoid formatter issues */
+    uint32_t acc_x10 = (uint32_t)(sensor_health.pulse_accuracy_percentage * 10.0f);
+    LOG_INF("Rain sensor health: accuracy=%u.%u%%, pulses=%u, errors=%u",
+            acc_x10 / 10U, acc_x10 % 10U,
             sensor_health.total_pulses_lifetime,
             sensor_health.consecutive_errors);
 }

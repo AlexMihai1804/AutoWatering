@@ -1,6 +1,8 @@
 #include <zephyr/kernel.h>
-#include <zephyr/sys/printk.h>
 #include <zephyr/sys/reboot.h>
+#include <hal/nrf_power.h>
+#include <hal/nrf_wdt.h>
+#include <zephyr/sys/printk.h>
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/devicetree.h>
@@ -63,6 +65,25 @@ static int setup_usb_cdc_acm(void);
 static uint32_t boot_start_ms;
 
 static int set_default_rtc_time(void);
+
+/* WDT feed helper when bootloader watchdog is running */
+static void wdt_feed_timer_handler(struct k_timer *timer)
+{
+    ARG_UNUSED(timer);
+
+    if ((NRF_WDT->RUNSTATUS & WDT_RUNSTATUS_RUNSTATUS_Msk) == 0) {
+        return;
+    }
+
+    uint32_t mask = NRF_WDT->RREN;
+    for (int i = 0; i < 8; i++) {
+        if (mask & (1u << i)) {
+            NRF_WDT->RR[i] = NRF_WDT_RR_VALUE;
+        }
+    }
+}
+
+static K_TIMER_DEFINE(wdt_feed_timer, wdt_feed_timer_handler, NULL);
 
 // Memory diagnostic function
 static void print_memory_stats(void) {
@@ -306,17 +327,21 @@ static int nvs_init_wrapper(void) {
 
 int main(void) {
     boot_start_ms = k_uptime_get_32();
+    uint32_t resetreas = NRF_POWER->RESETREAS;
+    NRF_POWER->RESETREAS = resetreas; /* clear so next boot is clean */
+
     printk("\n\n==============================\n");
     printk("AutoWatering System v2.4\n");
     printk("SERIAL PORT FIX BUILD\n");
     printk("==============================\n\n");
+    printk("Reset reason bits: 0x%08lx\n", (unsigned long)resetreas);
     critical_section_active = true;
     printk("Starting USB init with port release safeguards...\n");
     int usb_ret = setup_usb_cdc_acm();
     if (usb_ret != 0) {
         printk("WARNING: USB init failed (%d), continuing without USB console\n", usb_ret);
     } else {
-        printk("USB init complete\n");
+    printk("USB init complete\n");
     }
     int ret = nvs_config_init();
     if (ret != 0) {
@@ -336,7 +361,7 @@ int main(void) {
     printk("Starting flow sensor init...\n");
     ret = flow_sensor_init_wrapper();
     if (ret != 0) {
-        printk("Flow sensor initialization failed: %d – continuing\n", ret);
+        printk("Flow sensor initialization failed: %d - continuing\n", ret);
     } else {
         printk("Flow sensor initialization successful\n");
     }
@@ -382,8 +407,7 @@ int main(void) {
     critical_section_active = false;
     printk("System initialization complete\n");
     uint32_t boot_time_ms = k_uptime_get_32() - boot_start_ms;
-    printk("Boot completed in %u ms (%.2f s)\n",
-           boot_time_ms, (double)(boot_time_ms) / 1000.0);
+    printk("Boot completed in %u ms\n", boot_time_ms);
 
     // Print memory statistics after initialization
     print_memory_stats();
@@ -565,18 +589,43 @@ int main(void) {
     }
 #endif
     
-    // Main loop with periodic memory monitoring
-    int loop_count = 0;
+    // Detect if a hardware watchdog was started by the bootloader; feed it to prevent unexpected resets
+    bool bootloader_wdt_active = (NRF_WDT->RUNSTATUS & WDT_RUNSTATUS_RUNSTATUS_Msk) != 0;
+    if (bootloader_wdt_active) {
+        printk("Bootloader watchdog detected - will feed via 100ms timer\n");
+        k_timer_start(&wdt_feed_timer, K_MSEC(100), K_MSEC(100));
+    }
+
+    // Main loop with periodic memory monitoring and WDT feed (if bootloader started it)
+    uint32_t loop_ticks = 0;
     while (1) {
-        k_sleep(K_SECONDS(60));
-        loop_count++;
+        k_sleep(K_SECONDS(1));
+        loop_ticks++;
         
-        // Print memory stats every 10 minutes
-        if (loop_count % 10 == 0) {
-            printk("=== Runtime Status (uptime: %u min) ===\n", loop_count);
+        // Print memory stats every 10 minutes (600 seconds)
+        if (loop_ticks % 600 == 0) {
+            printk("=== Runtime Status (uptime: %u min) ===\n", loop_ticks / 60);
             print_memory_stats();
             print_stack_info();
         }
     }
     return 0;
+}
+
+/* Global fatal handler to log fault cause and reboot instead of silent hang */
+void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
+{
+    printk("FATAL: reason=%u\n", reason);
+#ifdef CONFIG_ARM
+    if (esf) {
+        printk("  PC=0x%08lx LR=0x%08lx\n",
+               (unsigned long)esf->basic.pc,
+               (unsigned long)esf->basic.lr);
+    } else {
+        printk("  no ESF available\n");
+    }
+#endif
+    /* Give UART time to flush before reboot */
+    k_sleep(K_MSEC(500));
+    sys_reboot(SYS_REBOOT_COLD);
 }
