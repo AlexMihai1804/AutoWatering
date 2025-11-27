@@ -124,7 +124,7 @@ int bme280_configure(bme280_device_t *dev, const bme280_config_t *config)
 static int fetch_sample(const bme280_device_t *dev)
 {
     int ret = pm_device_runtime_get(dev->sensor_dev);
-    if (ret < 0) {
+    if (ret < 0 && ret != -ENOSYS && ret != -ENOTSUP) {
         LOG_ERR("Failed to resume BME280 device for fetch (%d)", ret);
         return ret;
     }
@@ -135,7 +135,7 @@ static int fetch_sample(const bme280_device_t *dev)
     }
 
     int put_ret = pm_device_runtime_put(dev->sensor_dev);
-    if (put_ret < 0) {
+    if (put_ret < 0 && put_ret != -ENOSYS && put_ret != -ENOTSUP) {
         LOG_WRN("Failed to release BME280 runtime PM handle (%d)", put_ret);
         if (ret >= 0) {
             ret = put_ret;

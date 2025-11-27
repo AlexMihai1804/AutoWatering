@@ -1349,6 +1349,7 @@ static ssize_t read_environmental_data(struct bt_conn *conn, const struct bt_gat
     }
 
     struct environmental_data_ble out = {0};
+    bool data_available = false;
 
     /* Get current processed environmental data */
     bme280_environmental_data_t proc;
@@ -1367,8 +1368,31 @@ static ssize_t read_environmental_data(struct bt_conn *conn, const struct bt_gat
         } else {
             out.data_quality = 0;
         }
-    } else {
-        /* Provide sane defaults if unavailable */
+        data_available = true;
+    }
+
+    /* Fallback to direct BME280 read if processed data unavailable */
+    if (!data_available) {
+        bme280_reading_t reading;
+        if (bme280_system_read_data(&reading) == 0 && reading.valid) {
+            out.temperature = reading.temperature;
+            out.humidity = reading.humidity;
+            out.pressure = reading.pressure;
+            out.timestamp = reading.timestamp;
+            out.sensor_status = 1; /* Active */
+
+            env_data_validation_t validation;
+            if (env_data_validate_reading(&reading, NULL, &validation) == 0) {
+                out.data_quality = env_data_calculate_quality_score(&reading, &validation);
+            } else {
+                out.data_quality = 50; /* Moderate quality for direct reads */
+            }
+            data_available = true;
+        }
+    }
+
+    /* Provide sane defaults if sensor unavailable */
+    if (!data_available) {
         out.temperature = 25.0f;
         out.humidity = 50.0f;
         out.pressure = 1013.25f;

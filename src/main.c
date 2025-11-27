@@ -482,7 +482,9 @@ int main(void) {
         const struct device *i2c_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(i2c0));
         if (i2c_dev && device_is_ready(i2c_dev)) {
             printk("Initializing BME280 environmental sensor...\n");
-            ret = sensor_manager_init_bme280(i2c_dev, 0x77);
+            /* Note: Address 0x76 is common for generic modules. 0x77 is for Adafruit. */
+            /* The driver uses the address from Device Tree, this param is just for logging/compat */
+            ret = sensor_manager_init_bme280(i2c_dev, 0x76);
             if (ret != 0) {
                 printk("Warning: BME280 initialization failed: %d\n", ret);
             } else {

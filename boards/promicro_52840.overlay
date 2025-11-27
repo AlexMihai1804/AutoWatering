@@ -29,7 +29,8 @@
         compatible = "gpio-keys";
         status = "okay";
         rain_key {
-            gpios = <&gpio0 31 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+            /* Moved from P0.31 to P0.03 to avoid conflict with I2C SCL */
+            gpios = <&gpio0 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
             label = "Tipping Bucket Rain Sensor";
         };
     };
