@@ -12,6 +12,7 @@
 #include "rain_integration.h"       /* Rain sensor integration */
 #include "rain_sensor.h"            /* Rain sensor status */
 #include "rain_history.h"           /* Rain history data */
+#include "interval_task_integration.h" /* Interval mode integration */
 
 LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -135,6 +136,9 @@ watering_error_t tasks_init(void) {
     exit_tasks = false;
     rtc_error_count = 0;
     
+    /* Initialize interval task integration */
+    interval_task_integration_init();
+
     return WATERING_SUCCESS;
 }
 
@@ -299,6 +303,13 @@ watering_error_t watering_start_task(watering_task_t *task)
         }
     }
     
+    /* Initialize interval task system for this task */
+    int interval_ret = interval_task_start(task);
+    if (interval_ret != 0) {
+        LOG_WRN("Failed to start interval task: %d", interval_ret);
+        // Continue with standard watering as fallback
+    }
+
     watering_error_t ret = watering_channel_on(channel_id);
     if (ret != WATERING_SUCCESS) {
         LOG_ERROR("Error activating channel for task", ret);
@@ -391,6 +402,9 @@ bool watering_stop_current_task(void) {
         return false;  // No active task
     }
     
+    /* Stop interval task system */
+    interval_task_stop("Task stopped manually or completed");
+
     uint8_t channel_id = watering_task_state.current_active_task->channel - watering_channels;
     watering_channel_off(channel_id);
     
@@ -486,16 +500,58 @@ int watering_check_tasks(void) {
     if (watering_task_state.current_active_task != NULL) {
         watering_channel_t *channel = watering_task_state.current_active_task->channel;
         watering_event_t *event = &channel->watering_event;
+        uint8_t channel_id = channel - watering_channels;
         
         bool task_complete = false;
         uint32_t current_time = k_uptime_get_32();
         uint32_t elapsed_ms = current_time - watering_task_state.watering_start_time;
         
+        /* Update interval task system */
+        uint32_t current_volume = 0;
+        float flow_rate = 0.0f;
+        
+        if (event->watering_mode == WATERING_BY_VOLUME) {
+            uint32_t pulses = get_pulse_count();
+            uint32_t pulses_per_liter;
+            watering_get_flow_calibration(&pulses_per_liter);
+            if (pulses_per_liter > 0) {
+                current_volume = (pulses * 1000) / pulses_per_liter; // ml
+            }
+            // Flow rate calculation would go here if available
+        }
+        
+        interval_task_update(current_volume, flow_rate);
+        
+        /* Check if we need to toggle valve for Cycle & Soak */
+        if (!watering_task_state.task_paused) { // Only if not manually paused
+            bool should_open_valve;
+            interval_task_get_valve_control(&should_open_valve);
+            
+            // Check current valve state (we assume if not paused, it matches our expectation, but let's enforce)
+            // Note: We don't have a direct "is_valve_open" check easily available without reading GPIO, 
+            // but we can track state. For now, just enforce it.
+            if (should_open_valve) {
+                watering_channel_on(channel_id);
+            } else {
+                watering_channel_off(channel_id);
+            }
+        }
+
+        /* Check completion via interval system */
+        bool interval_complete = false;
+        interval_task_is_complete(&interval_complete);
+        
+        if (interval_complete) {
+            task_complete = true;
+            printk("Task completed (Interval/Standard logic)\n");
+        }
+        
+        /* Fallback / Safety checks */
         if (event->watering_mode == WATERING_BY_DURATION) {
             uint32_t duration_ms = event->watering.by_duration.duration_minutes * 60000;
-            if (elapsed_ms >= duration_ms) {
+            if (elapsed_ms >= duration_ms && !task_complete) {
                 task_complete = true;
-                printk("Duration task complete after %u ms\n", elapsed_ms);
+                printk("Duration task complete after %u ms (Fallback)\n", elapsed_ms);
             }
         } else if (event->watering_mode == WATERING_BY_VOLUME) {
             uint32_t pulses = get_pulse_count();
@@ -505,9 +561,9 @@ int watering_check_tasks(void) {
             uint32_t target_volume_ml = event->watering.by_volume.volume_liters * 1000;
             uint32_t pulses_target = (target_volume_ml * pulses_per_liter) / 1000;
             
-            if (pulses >= pulses_target) {
+            if (pulses >= pulses_target && !task_complete) {
                 task_complete = true;
-                printk("Volume task complete: %u pulses\n", pulses);
+                printk("Volume task complete: %u pulses (Fallback)\n", pulses);
             }
             
             if (elapsed_ms > 30 * 60000) {
@@ -520,6 +576,9 @@ int watering_check_tasks(void) {
             uint8_t channel_id = watering_task_state.current_active_task->channel - watering_channels;
             watering_channel_off(channel_id);
             
+            /* Stop interval task system */
+            interval_task_stop("Task completed");
+
             // Save completed task information for BLE reporting
             last_completed_task.task = watering_task_state.current_active_task;
             last_completed_task.start_time = watering_task_state.watering_start_time;
@@ -1387,7 +1446,7 @@ watering_error_t watering_pause_all_tasks(void) {
 /**
  * @brief Pause the currently running task
  * 
- * @return true if a task was paused, false if no task was running or task cannot be paused
+ * @return true if a task was paused, false if no task is running or task cannot be paused
  */
 bool watering_pause_current_task(void) {
     // Use timeout instead of K_FOREVER to prevent system freeze

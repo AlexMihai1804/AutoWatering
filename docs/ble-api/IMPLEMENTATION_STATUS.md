@@ -30,20 +30,17 @@ Legend: R=Read, W=Write, N=Notify, F=Custom fragmentation (4B header), H=Unified
 | 22 | Reset Control | reset_control_data | R/W/N | 16 B | - | Controlled resets |
 | 23 | Environmental Data | environmental_data_ble | R/N | 24 B | - | Snapshot (3B notify frag header only if MTU small) |
 | 24 | Environmental History | (history header + payload) | R/W/N | Var. | H | Fragmented historical data |
-| 25 | Compensation Status | compensation_status_data | R/W/N | 40 B | - | Optional 1B channel select write (future) |
+| 25 | Compensation Status | compensation_status_data | R/W/N | 40 B | - | Optional 1B channel select write |
 | 26 | Rain Integration Status | rain_integration_status_ble | R/N | 78 B | - | Snapshot |
 
 ## Key Divergences
 1. Original README listed only 17 characteristics - code implements 26.
-2. History Management not implemented - moved to FUTURE.
-3. Several "future" characteristics (History Compensation, Season Adaptivity, etc.) removed (never implemented).
-4. System Configuration uses standard long write (offset), not custom header.
-5. Rain Integration Status implemented; documentation added now.
+2. System Configuration uses standard long write (offset), not custom header.
+3. Rain Integration Status implemented; documentation added now.
 
 ## Recommended Next Actions
 - Keep `24-rain-integration-status.md` maintained as logic evolves.
 - Clarify fragmentation modes inside each fragmented characteristic file (done partially).
-- Update or remove placeholder fields as implementation arrives; sync with FUTURE_FEATURES.md.
 
 ---
 Auto-generated audit - manual review recommended.

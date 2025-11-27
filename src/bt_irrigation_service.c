@@ -3911,20 +3911,15 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
     switch (history_type) {
         case 0: { /* detailed */
             history_event_t events[50];
+            uint32_t timestamps[50];
             uint16_t page_count = 0;
-            ret = watering_history_query_page((channel_id==0xFF)?0:channel_id, entry_index, events, &page_count, NULL);
+            ret = watering_history_query_page((channel_id==0xFF)?0:channel_id, entry_index, events, &page_count, timestamps);
             if (ret == WATERING_SUCCESS && page_count > 0) {
                 uint16_t to_copy = (page_count < count) ? page_count : count;
-                /* Reconstruct timestamps backwards using dt_delta (approx): accumulate deltas */
-                uint32_t base_now = timezone_get_unix_utc();
-                uint32_t rolling_time = base_now;
                 for (uint16_t i = 0; i < to_copy; i++) {
                     history_event_t *src = &events[i];
-                    if (src->dt_delta != 0 && src->dt_delta < 864000) { /* <10 zile */
-                        rolling_time -= src->dt_delta;
-                    }
                     uint8_t *e = &packed[write_offset];
-                    sys_put_le32(rolling_time, e); /* timestamp */
+                    sys_put_le32(timestamps[i], e); /* timestamp */
                     e[4] = (channel_id==0xFF)?0:channel_id;
                     e[5] = (src->flags.err == 0) ? 1 : 3; /* COMPLETE or ERROR */
                     e[6] = src->flags.mode;

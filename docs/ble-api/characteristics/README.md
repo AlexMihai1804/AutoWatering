@@ -1,6 +1,6 @@
 # BLE Characteristics Reference
 
-Updated to reflect the 26 characteristics implemented in firmware (`bt_irrigation_service.c`). Items not implemented have been moved to `../FUTURE_FEATURES.md`.
+Updated to reflect the 26 characteristics implemented in firmware (`bt_irrigation_service.c`).
 
 See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fragmentation types, long write semantics). A concise cross-characteristic summary of fragmentation/long-write schemes is available in [`_fragmentation-reference.md`](_fragmentation-reference.md).
 
@@ -36,7 +36,7 @@ See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fr
 |---|----------------|------|------|------------|---------|
 | 10 | **[Alarm Status](10-alarm-status.md)** | defa | 7B | R/W/N | Alarm snapshot & clear |
 | 11 | **[Calibration Management](11-calibration-management.md)** | defb | 13B | R/W/N | Flow sensor calibration |
-| 12 | **(History Management)** | defc | - | - | Moved to FUTURE (not implemented) |
+| 12 | **[History Management](12-history-management.md)** | defc | 12B+ | R/W/N | Historical data access |
 | 13 | **[Diagnostics](13-diagnostics.md)** | defd | 12B | R/N | System health metrics |
 
 ### Advanced Feature Characteristics
@@ -98,7 +98,7 @@ For hands-off irrigation:
 To track system performance:
 
 1. **[Statistics](08-statistics.md)** - View water usage and system metrics
-2. History Management (not implemented) - Placeholder only
+2. **[History Management](12-history-management.md)** - Access historical data
 3. **[Diagnostics](13-diagnostics.md)** - Monitor system health
 4. **[Alarm Status](10-alarm-status.md)** - Check for system alerts
 5. **[Environmental Data](23-environmental-data.md)** - Monitor real-time environmental conditions
@@ -112,7 +112,7 @@ For system optimization:
 1. **[Calibration Management](11-calibration-management.md)** - Calibrate flow sensor for accurate measurements
 2. **[System Configuration](06-system-configuration.md)** - Adjust system parameters
 3. **[Growing Environment](14-growing-environment.md)** - Fine-tune plant-specific settings
-4. History Management (not implemented)
+4. **[History Management](12-history-management.md)** - Review past operations
 
 ## Technical Categories
 
@@ -124,8 +124,6 @@ For system optimization:
 - Rain / Environmental History (unified 8B header for notifications / responses)
 - Rain History Control (commands + fragmented response)
 - System Configuration (long write offset accumulation; no custom header)
-
-History Management (12) not implemented (see FUTURE).
 
 ### Read-Only (From business logic perspective)
 
@@ -213,4 +211,4 @@ Each characteristic document includes:
 
 ## Verification Progress Summary
 
-Full audit - see `../IMPLEMENTATION_STATUS.md`. Characteristic 12 moved to FUTURE. Rain Integration Status documented.
+Full audit - see `../IMPLEMENTATION_STATUS.md`. Rain Integration Status documented.
