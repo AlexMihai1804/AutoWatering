@@ -10,12 +10,6 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.
 - Clarified master valve feature scope (pre/post delays, overlap grace, negative delays supported; no pressure sensing or predictive optimization yet).
 ### Removed
 - Internal progress/audit markdown files (replaced by accurate docs) - final clean-up pending.
-### Deferred (Not Yet Implemented)
-- Predictive / ML watering optimization
-- External weather ingestion
-- Advanced leak detection analytics (current code only counts pulses; no anomaly model)
-- Secure boot / signed updates / encrypted BLE
-- Dual-slot firmware / OTA partitioning
 
 ## [3.0.0] - 2025-07-18
 
@@ -27,9 +21,6 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.
 ### Notes
 - Negative delay semantics and overlap grace are present; there is NO pressure sensing, predictive pressure optimization, or advanced safety analytics beyond basic open/close + timeout scheduling.
 - System configuration characteristic growth beyond original size should be treated as experimental; clients must read length dynamically.
-### Deferred / Not Implemented in this release (previously claimed)
-- Pressure / flow adaptive optimization for master valve.
-- Advanced fail-safe diagnostics beyond simple state tracking.
 
 ## [2.2.0] - 2025-07-12
 
@@ -294,7 +285,7 @@ This major release represents a complete overhaul of the BLE notification system
 - **Compilation Warnings**: Fixed all 12 compiler warnings across the entire codebase
 - **Memory Allocation**: Resolved BLE buffer allocation failures
 - **Float Conversions**: Fixed implicit float-to-double conversion warnings
-- **Unused Functions**: Properly marked all unused functions for future implementation
+- **Unused Functions**: Properly marked all unused functions.
 - **Thread Safety**: Corrected mutex usage and resource management
 - **Memory Leaks**: Eliminated all memory leaks through proper cleanup
 

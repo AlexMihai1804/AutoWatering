@@ -144,13 +144,13 @@ If no data:
 
   - Native simulation: `west build -b native_sim --pristine -- -DEXTRA_DTC_OVERLAY_FILE=boards/native_sim.overlay`.### 9. When to Ignore Earlier Docs
 
-  - Flash: `west flash` (optionally `--runner jlink`).If any guide references: configuration scores, automatic Eco/ETo based scaling, compensation adjustments, advanced history analytics-these are deferred. Operate manually.
+  - Flash: `west flash` (optionally `--runner jlink`).
 
 - If a build fails unexpectedly, run a pristine rebuild (`west build -p always ...`).
 
 ## Minimal Diagnostic Steps
 
-## Minimal Diagnostic Routine1. Read System Status & Alarm Status.
+1. Read System Status & Alarm Status.
 
 2. Read Current Task Status while watering.
 
@@ -174,9 +174,7 @@ If no data:
 
 - Record Zephyr logs (USB CDC or RTT) while reproducing the issue.Error: System status indicates fault conditions
 
-- Capture BLE interaction traces (nRF Connect, Ellisys, etc.) when debugging characteristic writes or notifications.```
-
-- If the question involves new functionality (weather ingestion, OTA, analytics), those remain deferred-see the Deferred list in `docs/FEATURES_FULL.md`.
+- Capture BLE interaction traces (nRF Connect, Ellisys, etc.) when debugging characteristic writes or notifications.
 
 **Symptoms:**
 - System status shows FAULT, RTC_ERROR, or LOW_POWER
@@ -1159,10 +1157,6 @@ sudo udevadm control --reload-rules
 
 # Restart WSL
 exit
-```
-
-```powershell
-wsl --terminate Ubuntu-22.04
 ```
 
 ### Issue: Native Tests Fail
