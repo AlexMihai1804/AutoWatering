@@ -4,14 +4,20 @@ Focused, externally facing list. All items map to existing modules or confirmed 
 
 ### Core Control
 - 8 independent irrigation channels (`WATERING_CHANNELS_COUNT`).
-- Manual tasks: by duration (minutes) or by volume (liters via pulse flow sensor).
-- Automatic modes: Quality (100%) & Eco (70% volume reduction applied in FAO-56 calculators).
+- Four watering modes:
+  - **TIME** (`WATERING_BY_DURATION`): Fixed duration in minutes.
+  - **VOLUME** (`WATERING_BY_VOLUME`): Fixed volume in liters.
+  - **Quality** (`WATERING_AUTOMATIC_QUALITY`): FAO-56 based, 100% of calculated requirement.
+  - **Eco** (`WATERING_AUTOMATIC_ECO`): FAO-56 based, 70% of calculated requirement.
+- Quality and Eco modes are **exclusively FAO-56 based** (require plant/soil/method configuration).
 - Single active watering task at a time (message queue dispatch).
 
 ### Scheduling & Automation
 - Daily (bitmask) or periodic (every N days) scheduling per channel.
 - On-demand FAO-56 based irrigation requirement calculation (`watering_run_automatic_calculations()` + `fao56_calc.*`).
 - Rain integration: skip / reduction logic (channel-specific) using recent rainfall history.
+  - ⚠️ Rain Skip and Temperature Compensation apply **only to TIME and VOLUME modes**.
+  - FAO-56 modes (Quality/Eco) already incorporate rain and temperature in ET₀ calculations.
 
 ### Sensing & Monitoring
 - Flow pulse counting with calibration (default pulses/liter; adjustable via API/BLE).

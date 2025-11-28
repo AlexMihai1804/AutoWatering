@@ -88,3 +88,8 @@ Removed prior example parsing a different 24B layout with multiple domain bitfie
 - Rain & temperature factors originate from per-channel last compensation results; rainfall & temperature raw values not yet populated (0.0).
 - Only rain skip & reduction percentage plus temp factor & adjusted requirement are surfaced.
 - Logging occurs in core watering logic; this characteristic is read-only snapshot.
+
+### ⚠️ Compensation Mode Restrictions
+- **Rain Skip and Temperature Compensation apply ONLY to TIME and VOLUME watering modes.**
+- **FAO-56 modes (Quality/Eco) do NOT use compensation** because they already incorporate rain and temperature in their ET₀ calculations via Penman-Monteith or Hargreaves-Samani equations.
+- For FAO-56 channels, the compensation fields will show inactive status (`*_active = 0`) even if compensation is configured.

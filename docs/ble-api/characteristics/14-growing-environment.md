@@ -31,7 +31,7 @@ Growing Environment stores the per-channel agronomic configuration used by autom
 | 5 | `use_area_based` | `uint8_t` | 1 | RW | 1 = use `coverage.area_m2`, 0 = use `coverage.plant_count` |
 | 6 | `coverage.area_m2` | `float` | 4 | RW | Used when `use_area_based` = 1; must be > 0 |
 | 6 | `coverage.plant_count` | `uint16_t` | 2 (of 4) | RW | Used when `use_area_based` = 0; must be > 0 |
-| 10 | `auto_mode` | `uint8_t` | 1 | RW | `0`=manual, `1`=quality, `2`=eco |
+| 10 | `auto_mode` | `uint8_t` | 1 | RW | `0`=manual (TIME/VOLUME), `1`=quality (FAO-56 100%), `2`=eco (FAO-56 70%) |
 | 11 | `max_volume_limit_l` | `float` | 4 | RW | Maximum irrigation volume; must be > 0 |
 | 15 | `enable_cycle_soak` | `uint8_t` | 1 | RW | Non-zero enables cycle-and-soak |
 | 16 | `planting_date_unix` | `uint32_t` | 4 | RW | Unix timestamp (UTC) |
@@ -106,6 +106,17 @@ Little-endian encoding is used for all multi-byte fields. The union at offset 6 
 - Do not interleave fragmented updates with other writes. Start a new fragmentation session only after the previous one succeeds or times out (5 s).
 - Legacy scalar fields (`plant_type`, `soil_type`, `irrigation_method`, `sun_percentage`, `specific_plant`) are currently ignored on write and reported as zeros on read. Rely on enhanced database indices instead.
 - After a successful write, expect a single notification carrying the new struct. Issuing an immediate read is still recommended to confirm the persisted values.
+
+### ⚠️ auto_mode and Compensation Behaviour
+The `auto_mode` field determines how the channel calculates water requirements and whether external compensation is applied:
+
+| auto_mode | Name | Type | Rain Skip | Temp Comp | Description |
+|-----------|------|------|-----------|-----------|-------------|
+| `0` | Manual | TIME/VOLUME | ✅ Applied | ✅ Applied | Fixed duration or volume, uses compensation |
+| `1` | Quality | FAO-56 | ❌ Not applied | ❌ Not applied | Calculates 100% of ET₀-based requirement |
+| `2` | Eco | FAO-56 | ❌ Not applied | ❌ Not applied | Calculates 70% of ET₀-based requirement |
+
+**Why no compensation for FAO-56 modes?** Quality and Eco modes use Penman-Monteith or Hargreaves-Samani equations which already incorporate temperature and rainfall in ET₀ calculations. Applying additional compensation would double-count these environmental factors.
 
 ## Troubleshooting
 | Symptom | Likely Cause | Mitigation |

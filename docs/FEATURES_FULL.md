@@ -42,7 +42,7 @@ This document inventories every capability exposed by the current firmware. It i
 - Derived telemetry and compensation
   - Rain integration – Combines recent rainfall (up to `lookback_hours`), soil infiltration (`effective_rain_factor`), and channel sensitivity to produce `rain_irrigation_impact_t` (recent rainfall, effective rainfall, reduction percentage, skip boolean, confidence score). The Module caches the last result per channel and emits diagnostics (success/failure counts, calculation success rate).
   - Rain compensation engine – `rain_compensation_config_t` adds higher-level policies (algorithm selection via `rain_compensation_set_algorithm()`, reduction factors, skip thresholds, lookback hours). Each calculation fills `rain_compensation_calculation_t` (effective rainfall, adjusted requirement, reduction percent, skip, confidence, status).
-  - Temperature compensation – Channel-local configuration (`temperature_compensation_config_t`) defines base temperature, sensitivity, and min/max factors. Runtime helpers (`temp_compensation_calculate()`, `temp_comp_apply_to_fao56()`) adjust FAO-56 outputs or interval calculations. Results are stored in `last_temp_compensation` for BLE telemetry.
+  - Temperature compensation – Channel-local configuration (`temperature_compensation_config_t`) defines base temperature, sensitivity, and min/max factors. Runtime helpers (`temp_compensation_calculate()`, `temp_comp_should_apply()`) adjust watering calculations. **Temperature compensation applies only to TIME and VOLUME modes**. FAO-56 modes (Quality/Eco) already incorporate temperature in ET₀ calculations via Penman-Monteith or Hargreaves-Samani equations. Results are stored in `last_temp_compensation` for BLE telemetry.
   - Enhanced system status – `enhanced_system_status_info_t` aggregates active interval phases, compensation state, sensor health, configuration completeness, channel bitmaps, and timestamps. BLE diagnostics use this struct to present consolidated system health.
 
 ## Watering Modes and Execution Lifecycle
@@ -65,7 +65,9 @@ This document inventories every capability exposed by the current firmware. It i
   - `interval_controller_t` orchestrates watering/pause phases, counts cycles, calculates remaining phase time, and surfaces progress through the enhanced BLE task characteristic. Manual pause/resume/stop commands interact with the controller and keep the master valve in sync.
 
 - Rain-aware execution
-  - Before a task starts, `rain_integration_calculate_impact()` recomputes the skip flag and percentage reduction using the latest rainfall data. Skipped tasks restore their snapshots and log a rain-skip history entry. Partial reductions adjust duration or volume but never below 1 minute or 1 litre.
+  - Before a task starts, `rain_integration_calculate_impact()` recomputes the skip flag and percentage reduction using the latest rainfall data.
+  - **Rain Skip and Reduction apply ONLY to TIME and VOLUME modes**. FAO-56 modes (Quality/Eco) skip this step because rain is already incorporated in ET₀ calculations.
+  - Skipped tasks restore their snapshots and log a rain-skip history entry. Partial reductions adjust duration or volume but never below 1 minute or 1 litre.
 
 - Task completion
   - On completion (success or error), the system logs actual duration/volume, raises BLE notifications, restores the original event configuration, and frees the queue slot. Master-valve logic either closes immediately or after the configured delay, depending on whether another task is pending within the overlap window.
@@ -88,7 +90,9 @@ This document inventories every capability exposed by the current firmware. It i
    - Volume conversion – Convert mm of irrigation into litres using either area coverage (`area_m2`) or implicit per-plant area (default 0.5 m2). Apply Eco reductions (70 percent) and enforce `max_volume_limit_l`. Cycle-and-soak flag is tracked for use in scheduling strategies.
    - Record `last_calculation_time` and update channel water balance caches for diagnostics.
 5. Task materialisation - The controller snapshots the existing event, converts the FAO-56 recommendation into a temporary `WATERING_BY_VOLUME` task (minimum 1 litre), and enqueues it. If the queue is full the snapshot is restored and an error is logged.
-6. Optional adjustments - Rain and temperature compensation helpers (`rain_compensation_*`, `temp_comp_apply_to_*`) are available for clients who want to tweak the computed job further.
+6. Compensation behaviour by mode:
+   - **TIME/VOLUME modes**: Rain Skip, Rain Reduction, and Temperature Compensation are applied (per-channel thresholds).
+   - **Quality/Eco modes (FAO-56)**: Compensation is **NOT applied** - FAO-56 already incorporates rain and temperature in ET₀ calculations. Applying additional compensation would double-count these factors.
 7. Notifications - When at least one channel schedules successfully, `bt_irrigation_auto_calc_status_notify()` informs connected BLE clients so interfaces can refresh proactively.
 
 ## Data Persistence and Storage Layout
@@ -118,7 +122,7 @@ This document inventories every capability exposed by the current firmware. It i
 - Maintenance hooks - Daily, weekly, and monthly routines keep histories compact, validate stored data, and write fresh snapshots to NVS. Rain sensor and integration watchdogs attempt recovery automatically, and storage monitors trigger clean-ups when utilisation crosses thresholds.
 
 ## Limitations and Behaviour Notes
-- Compensation engines - Rain and temperature compensation APIs are available for integrators to adjust FAO-56 suggestions. Integrators who need those adjustments should call the relevant helpers after retrieving the FAO-56 suggestion.
+- Compensation engines - Rain and temperature compensation APIs are available for TIME and VOLUME watering modes only. **FAO-56 modes (Quality/Eco) do NOT use external compensation** because they already incorporate rain and temperature in their ET₀ calculations. Applying compensation on top of FAO-56 would result in double-counting.
 - Interval mode job creation - Interval profiles only control execution cadence; they do not schedule jobs on their own. Users must still create duration or volume tasks.
 - Master valve manual mode - When automatic master valve management is disabled, clients must open and close the master valve explicitly. Manual toggles are rejected while auto-management is enabled.
 - Watering history rotation - Automatic removal of very old watering history entries is scaffolded. Extremely full NVS partitions might require manual clean-up.
