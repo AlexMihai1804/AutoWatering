@@ -151,16 +151,12 @@ int temp_comp_apply_to_quality_mode(uint8_t channel_id,
         return -EINVAL;
     }
 
-    // Check if this is an automatic quality mode
-    bool should_apply;
-    int ret = temp_comp_should_apply(channel_id, WATERING_AUTOMATIC_QUALITY, &should_apply);
-    if (ret != 0 || !should_apply) {
-        *compensated_result = *base_result;
-        return ret;
-    }
-
-    // Apply temperature compensation to the quality mode calculation
-    return temp_comp_apply_to_fao56(channel_id, env, base_result, compensated_result);
+    /* FAO-56 Quality mode already incorporates temperature in ET0 calculations.
+     * Do NOT apply additional temperature compensation - just copy the base result.
+     */
+    LOG_DBG("Quality mode (FAO-56): skipping temp compensation - already in ET0 calc");
+    *compensated_result = *base_result;
+    return 0;
 }
 
 int temp_comp_apply_to_eco_mode(uint8_t channel_id,
@@ -173,16 +169,12 @@ int temp_comp_apply_to_eco_mode(uint8_t channel_id,
         return -EINVAL;
     }
 
-    // Check if this is an automatic eco mode
-    bool should_apply;
-    int ret = temp_comp_should_apply(channel_id, WATERING_AUTOMATIC_ECO, &should_apply);
-    if (ret != 0 || !should_apply) {
-        *compensated_result = *base_result;
-        return ret;
-    }
-
-    // Apply temperature compensation to the eco mode calculation
-    return temp_comp_apply_to_fao56(channel_id, env, base_result, compensated_result);
+    /* FAO-56 Eco mode already incorporates temperature in ET0 calculations.
+     * Do NOT apply additional temperature compensation - just copy the base result.
+     */
+    LOG_DBG("Eco mode (FAO-56): skipping temp compensation - already in ET0 calc");
+    *compensated_result = *base_result;
+    return 0;
 }
 
 int temp_comp_get_channel_status(uint8_t channel_id,
@@ -246,9 +238,13 @@ int temp_comp_should_apply(uint8_t channel_id,
 
     watering_channel_t *channel = &watering_channels[channel_id];
     
-    // Temperature compensation only applies to automatic modes
+    /* Temperature compensation only applies to TIME and VOLUME modes.
+     * FAO-56 automatic modes (QUALITY/ECO) already incorporate temperature
+     * in their ET0 calculations via Penman-Monteith or Hargreaves-Samani.
+     * Applying additional compensation would double-count temperature impact.
+     */
     *should_apply = channel->temp_compensation.enabled &&
-                   (mode == WATERING_AUTOMATIC_QUALITY || mode == WATERING_AUTOMATIC_ECO);
+                   (mode == WATERING_BY_DURATION || mode == WATERING_BY_VOLUME);
 
     LOG_DBG("Temperature compensation for channel %u, mode %d: %s",
             channel_id, (int)mode, *should_apply ? "apply" : "skip");

@@ -7,11 +7,14 @@
 
 /**
  * @file temperature_compensation_integration.h
- * @brief Integration of temperature compensation with growing environment mode
+ * @brief Integration of temperature compensation with watering modes
  * 
- * This module integrates temperature compensation calculations with the
- * FAO-56 based automatic watering modes, adjusting water requirements
- * based on current temperature conditions.
+ * This module integrates temperature compensation calculations with watering.
+ * 
+ * IMPORTANT: Temperature compensation only applies to TIME and VOLUME modes.
+ * FAO-56 automatic modes (QUALITY/ECO) already incorporate temperature in 
+ * their ET0 calculations via Penman-Monteith or Hargreaves-Samani equations.
+ * Applying additional compensation to FAO-56 would double-count temperature.
  */
 
 /**
@@ -88,9 +91,14 @@ int temp_comp_update_channel_config(uint8_t channel_id,
 
 /**
  * @brief Check if temperature compensation should be applied
+ * 
+ * Temperature compensation is ONLY applied to TIME and VOLUME watering modes.
+ * FAO-56 automatic modes (QUALITY/ECO) already incorporate temperature in
+ * their ET0 calculations - applying compensation would double-count.
+ * 
  * @param channel_id Channel ID
  * @param mode Watering mode
- * @param should_apply Pointer to store result
+ * @param should_apply Pointer to store result (true for TIME/VOLUME only)
  * @return 0 on success, negative error code on failure
  */
 int temp_comp_should_apply(uint8_t channel_id,

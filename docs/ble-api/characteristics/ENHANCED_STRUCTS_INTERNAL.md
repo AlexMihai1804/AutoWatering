@@ -24,6 +24,11 @@ The `rain_compensation.skip_threshold_mm` is a **per-channel setting** that over
 
 **Important:** Skip logic only applies to channels using **TIME or VOLUME watering modes**. For FAO-56 automatic modes (`AUTO_QUALITY`, `AUTO_ECO`), the skip flag is never set because FAO-56 already incorporates rainfall data into its ET0-based calculations. Applying skip on top of FAO-56 would double-count rain impact.
 
+### ⚠️ Temperature Compensation Behaviour Notes
+The `temp_compensation` settings (base_temperature, sensitivity, min/max factors) are **per-channel settings**.
+
+**Important:** Temperature compensation only applies to channels using **TIME or VOLUME watering modes**. For FAO-56 automatic modes (`AUTO_QUALITY`, `AUTO_ECO`), temperature compensation is never applied because FAO-56 already incorporates temperature in its ET₀ calculations via Penman-Monteith or Hargreaves-Samani equations. Applying compensation on top of FAO-56 would double-count temperature impact.
+
 Rationale for keeping internal:
 - Exposes many fields not intended for initial mobile client versions
 - Avoids versioning churn while advanced features stabilize

@@ -64,7 +64,7 @@ Each channel can override the global system defaults for weather compensation.
 | :--- | :--- |
 | **Rain Sensitivity** | `0.0 - 1.0`. Multiplier for rain data.<br>• `1.0`: Full trust. 10mm rain reduces watering by 10mm.<br>• `0.0`: Ignore rain.<br>• *Use Case*: A zone under a tree canopy might only receive 50% of actual rainfall (`0.5`). |
 | **Rain Skip Threshold** | `mm`. If rain in the lookback period exceeds this, watering is skipped entirely.<br>⚠️ **Only applies to TIME and VOLUME watering modes**. For FAO-56 automatic modes (Quality/Eco), skip is never applied because FAO-56 already incorporates rainfall data into its calculations - applying skip would double-count the rain impact. |
-| **Temp Sensitivity** | Factor to adjust duration based on heat.<br>• *Positive*: Hotter = More Water.<br>• *Negative*: Hotter = Less Water (rare). |
+| **Temp Sensitivity** | Factor to adjust duration based on heat.<br>• *Positive*: Hotter = More Water.<br>• *Negative*: Hotter = Less Water (rare).<br>⚠️ **Only applies to TIME and VOLUME watering modes**. FAO-56 automatic modes already incorporate temperature in ET₀ calculations. |
 | **Lookback Hours** | Time window to analyze past weather (e.g., `24h`, `48h`). |
 
 ---
