@@ -117,17 +117,37 @@ Configures the physical tipping bucket or optical rain sensor.
 
 ## 4. Automation & Lifecycle
 
-### 4.1 Auto-Watering Strategies
-When a channel is in `Auto Mode`, it calculates a "Water Deficit" ($D = ET_c - Rain_{effective}$).
+### 4.1 Watering Modes
+The system supports four watering modes:
+
+| Mode | Code | Type | Description |
+| :--- | :--- | :--- | :--- |
+| **Duration (TIME)** | `0` | Manual | Waters for a fixed time (e.g., 10 minutes). |
+| **Volume** | `1` | Manual | Waters until a specific volume is reached (e.g., 5 liters). |
+| **Quality** | `2` | FAO-56 Auto | Calculates water need using ET₀, replenishes **100%** of deficit. |
+| **Eco** | `3` | FAO-56 Auto | Calculates water need using ET₀, replenishes **~70%** of deficit. |
+
+> ⚠️ **Important:** Quality and Eco modes are **exclusively FAO-56 based**. They require plant/soil/method configuration and use scientific evapotranspiration calculations.
+
+### 4.2 Compensation Behaviour by Mode
+
+| Feature | TIME/VOLUME | QUALITY/ECO (FAO-56) |
+| :--- | :--- | :--- |
+| **Rain Skip** | ✅ Applied (per-channel threshold) | ❌ Not applied (rain in ET₀) |
+| **Rain Reduction** | ✅ Applied | ❌ Not applied (rain in ET₀) |
+| **Temp Compensation** | ✅ Applied | ❌ Not applied (temp in ET₀) |
+| **Scientific Calculation** | ❌ No | ✅ Yes (Penman-Monteith/Hargreaves) |
+
+### 4.3 Auto-Watering Strategies (FAO-56 Modes Only)
+When a channel uses Quality or Eco mode, it calculates a "Water Deficit" ($D = ET_c - Rain_{effective}$).
 
 | Strategy | Logic |
 | :--- | :--- |
-| **Manual** | Ignores deficit. Runs fixed schedules only. |
 | **Quality** | **Replenish 100%**. Adds exactly what was lost. Maximizes growth. |
 | **Eco** | **Replenish ~70%**. Allows "Managed Stress". Saves water, trains deeper roots. |
 | **Max Volume Limit** | **Hard Cap**. Regardless of calculation, never dispense more than $X$ Liters in one session. Safety against leaks or calculation errors. |
 
-### 4.2 Plant Lifecycle Tracking
+### 4.4 Plant Lifecycle Tracking
 Water needs change as plants grow.
 *   **Planting Date**: Unix timestamp of when the crop was planted.
 *   **Days After Planting**: Calculated automatically.
