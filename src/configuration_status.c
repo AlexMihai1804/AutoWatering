@@ -166,16 +166,22 @@ int config_status_assess_channel(uint8_t channel_id, const enhanced_watering_cha
         status->reset_count = 0;
     }
 
-    // Save status to NVS
-    int result = config_status_save_to_nvs(channel_id, status);
-    if (result != 0) {
-        LOG_WRN("Failed to save configuration status to NVS: %d", result);
-    }
+    /* NOTE: Removed automatic NVS save on every assessment to prevent
+     * excessive writes during BLE reads. Use config_status_save_to_nvs()
+     * explicitly when configuration actually changes. */
 
-    LOG_INF("Channel %d configuration status: basic=%d, env=%d, comp=%d, soil=%d, interval=%d, score=%d%%",
-            channel_id, status->basic_configured, status->growing_env_configured,
-            status->compensation_configured, status->custom_soil_configured,
-            status->interval_configured, status->configuration_score);
+    /* Reduced logging frequency to avoid spamming during BLE operations */
+    static uint32_t last_log_time = 0;
+    static uint8_t last_logged_channel = 0xFF;
+    uint32_t now = k_uptime_get_32();
+    if (now - last_log_time > 5000 || last_logged_channel != channel_id) {
+        LOG_DBG("Channel %d config status: basic=%d, env=%d, comp=%d, soil=%d, interval=%d, score=%d%%",
+                channel_id, status->basic_configured, status->growing_env_configured,
+                status->compensation_configured, status->custom_soil_configured,
+                status->interval_configured, status->configuration_score);
+        last_log_time = now;
+        last_logged_channel = channel_id;
+    }
 
     return 0;
 }

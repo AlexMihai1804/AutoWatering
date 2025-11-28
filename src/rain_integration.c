@@ -3,6 +3,7 @@
 #include "rain_sensor.h"
 #include "rain_config.h"
 #include "nvs_config.h"
+#include "watering.h"
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
@@ -153,19 +154,41 @@ rain_irrigation_impact_t rain_integration_calculate_impact(uint8_t channel_id)
     
     k_mutex_lock(&rain_integration_state.mutex, K_FOREVER);
     
-    /* Get recent rainfall data */
-    float recent_rainfall = rain_history_get_recent_total(rain_integration_state.config.lookback_hours);
+    /* Get channel-specific rain compensation settings */
+    watering_channel_t *channel = NULL;
+    float channel_skip_threshold = rain_integration_state.config.skip_threshold_mm; /* fallback to global */
+    float channel_sensitivity = rain_integration_state.config.rain_sensitivity_pct;
+    uint16_t channel_lookback = rain_integration_state.config.lookback_hours;
+    watering_mode_t watering_mode = WATERING_BY_DURATION; /* default */
+    
+    if (watering_get_channel(channel_id, &channel) == WATERING_SUCCESS && channel != NULL) {
+        /* Use per-channel settings if rain compensation is enabled */
+        if (channel->rain_compensation.enabled) {
+            channel_skip_threshold = channel->rain_compensation.skip_threshold_mm;
+            channel_sensitivity = channel->rain_compensation.sensitivity * 100.0f; /* convert 0-1 to % */
+            channel_lookback = channel->rain_compensation.lookback_hours;
+        }
+        watering_mode = channel->watering_event.watering_mode;
+    }
+    
+    /* Get recent rainfall data using channel-specific lookback */
+    float recent_rainfall = rain_history_get_recent_total(channel_lookback);
     
     /* Calculate effective rainfall based on soil infiltration */
     float soil_factor = get_soil_infiltration_factor(channel_id);
     float effective_rainfall = recent_rainfall * soil_factor;
     
-    /* Calculate irrigation reduction percentage */
-    float reduction_pct = calculate_reduction_curve(effective_rainfall, 
-                                                   rain_integration_state.config.rain_sensitivity_pct);
+    /* Calculate irrigation reduction percentage using channel sensitivity */
+    float reduction_pct = calculate_reduction_curve(effective_rainfall, channel_sensitivity);
     
-    /* Determine if irrigation should be skipped completely */
-    bool skip_irrigation = (recent_rainfall >= rain_integration_state.config.skip_threshold_mm);
+    /* Determine if irrigation should be skipped completely:
+     * Skip is ONLY applicable for TIME and VOLUME modes, NOT for FAO-56/AUTO modes.
+     * FAO-56 modes handle rain compensation through their own calculations. */
+    bool skip_irrigation = false;
+    if (watering_mode == WATERING_BY_DURATION || watering_mode == WATERING_BY_VOLUME) {
+        skip_irrigation = (recent_rainfall >= channel_skip_threshold);
+    }
+    /* For WATERING_AUTOMATIC_QUALITY and WATERING_AUTOMATIC_ECO: no skip, FAO-56 handles it */
     
     /* Calculate confidence level */
     uint32_t current_time = k_uptime_get_32() / 1000;

@@ -340,9 +340,11 @@ bool enhanced_system_has_incomplete_config(uint8_t *incomplete_channels_bitmap)
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
         channel_config_status_t config_status;
         if (channel_get_config_status(i, &config_status) == WATERING_SUCCESS) {
-            const enhanced_watering_channel_t *enhanced_channel =
-                (const enhanced_watering_channel_t *)&watering_channels[i];
-            bool can_water = can_channel_perform_automatic_watering(i, enhanced_channel);
+            /* Use cached config_status instead of calling can_channel_perform_automatic_watering
+             * which would re-assess the channel and cause duplicate NVS writes */
+            const watering_channel_t *channel = &watering_channels[i];
+            bool can_water = config_status.basic_configured && 
+                             channel->watering_event.auto_enabled;
             if (!can_water) {
                 *incomplete_channels_bitmap |= (1 << i);
                 any_incomplete = true;
