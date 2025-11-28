@@ -35,6 +35,11 @@ Provides remote access to the tipping-bucket calibration and the rain-integratio
 - Sensor and integration enable flags are independent to support logging without automation.
 - Reserved bytes are not used; zero-fill for forward compatibility.
 
+### ⚠️ Important: Skip Threshold Behaviour
+The `skip_threshold_mm` field in this characteristic is a **global default** value. However, actual skip decisions use **per-channel thresholds** configured in each channel's Growing Environment settings (`14-growing-environment.md`).
+
+**Skip logic only applies to TIME and VOLUME watering modes.** For FAO-56 automatic modes (`AUTO_QUALITY`, `AUTO_ECO`), skip is never applied because the FAO-56 algorithm already incorporates rainfall data into its ET0-based calculations. Applying skip on top of that would result in double-counting rain impact.
+
 ## Behaviour
 
 ### Read (`read_rain_config`)

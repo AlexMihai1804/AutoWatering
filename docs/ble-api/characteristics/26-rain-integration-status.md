@@ -41,6 +41,15 @@ Structure size is exactly 78 bytes (build asserted in firmware). Floats follow I
 - If the integration layer cannot pull a status, the firmware zeros the entire struct before responding.
 - Calibration and sensitivity fields mirror configuration exposed in characteristic #18 so clients can display a consistent configuration view alongside live impact metrics.
 
+### ⚠️ Per-Channel Skip Thresholds
+The `skip_threshold_mm` field in this struct reflects the **global default** from characteristic #18. However, **actual skip decisions are made per-channel** using each channel's own `rain_compensation.skip_threshold_mm` configured via Growing Environment (#14).
+
+### ⚠️ Skip Only for TIME/VOLUME Modes
+The `channel_skip_irrigation[]` flags **only apply to channels using TIME or VOLUME watering modes**. Channels configured for FAO-56 automatic modes (`AUTO_QUALITY` or `AUTO_ECO`) will never have their skip flag set because:
+1. FAO-56 already incorporates rainfall data into its ET0-based water requirement calculations
+2. Applying skip on top of FAO-56 would double-count the rain impact
+3. The reduction percentage (`channel_reduction_pct[]`) may still be non-zero for informational purposes
+
 ## Client Guidance
 - Treat zeroed rainfall totals with `sensor_active = 0` as "sensor offline" rather than "no rain".
 - After receiving a 9-byte delta packet, issue a read if you need the full snapshot; firmware does not currently queue both shapes for the same event.

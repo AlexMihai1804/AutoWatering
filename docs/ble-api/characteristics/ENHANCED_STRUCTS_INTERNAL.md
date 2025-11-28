@@ -12,12 +12,17 @@ Key Groups:
 - Identity & basic: channel_id, name[64], auto_enabled
 - Plant/growing: plant_type, soil_type, irrigation_method, coverage_type + (area_m2 | plant_count), sun_percentage
 - Custom soil (guarded by use_custom_soil): custom_soil_name[32], field_capacity, wilting_point, infiltration_rate, bulk_density, organic_matter
-- Rain compensation: enabled flag + sensitivity / lookback / thresholds
+- Rain compensation: enabled flag + sensitivity / lookback / skip_threshold_mm (per-channel)
 - Temperature compensation: enable + base + sensitivity + min/max factors
 - Interval mode parameters (watering/pause durations in min+sec)
 - Configuration progress flags + composite score
 - Timestamps: last_config_update, custom_soil_created, custom_soil_modified
 - Reserved[8] for forward compatibility
+
+### ⚠️ Rain Skip Behaviour Notes
+The `rain_compensation.skip_threshold_mm` is a **per-channel setting** that overrides the global default from Rain Sensor Config (#18). 
+
+**Important:** Skip logic only applies to channels using **TIME or VOLUME watering modes**. For FAO-56 automatic modes (`AUTO_QUALITY`, `AUTO_ECO`), the skip flag is never set because FAO-56 already incorporates rainfall data into its ET0-based calculations. Applying skip on top of FAO-56 would double-count rain impact.
 
 Rationale for keeping internal:
 - Exposes many fields not intended for initial mobile client versions
