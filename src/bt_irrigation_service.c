@@ -6519,6 +6519,9 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
                 channel->custom_plant.water_need_factor = env_data->water_need_factor;
                 channel->custom_plant.irrigation_freq = env_data->irrigation_freq_days;
                 channel->custom_plant.prefer_area_based = (env_data->prefer_area_based != 0);
+                
+                /* Update onboarding flag - water need factor has been set for custom plant */
+                onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
             }
             
             /* Update global buffer for notifications */
@@ -6640,6 +6643,9 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         channel->custom_plant.water_need_factor = env_data->water_need_factor;
         channel->custom_plant.irrigation_freq = env_data->irrigation_freq_days;
         channel->custom_plant.prefer_area_based = (env_data->prefer_area_based != 0);
+        
+        /* Update onboarding flag - water need factor has been set for custom plant */
+        onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
     }
     
     /* Update global buffer for notifications */

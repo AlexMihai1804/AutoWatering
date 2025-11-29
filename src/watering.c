@@ -757,6 +757,9 @@ watering_error_t watering_set_custom_plant(uint8_t channel_id, const custom_plan
     // Save configuration changes
     watering_save_config();
     
+    // Update onboarding flag - water need factor has been set
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
+    
     printk("Channel %d custom plant configured: %s (factor: %.1f)\n", 
            channel_id, custom_config->custom_name, (double)custom_config->water_need_factor);
     return WATERING_SUCCESS;
