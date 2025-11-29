@@ -29,8 +29,9 @@ int rain_config_save(const rain_nvs_config_t *config)
         return ret;
     }
     
-    ret = nvs_config_write(NVS_RAIN_CONFIG_ID, config, sizeof(rain_nvs_config_t));
-    if (ret != 0) {
+    /* Use nvs_save_rain_config which also sets the onboarding flag */
+    ret = nvs_save_rain_config(config);
+    if (ret < 0) {
         LOG_ERR("Failed to save rain config to NVS: %d", ret);
         return ret;
     }
