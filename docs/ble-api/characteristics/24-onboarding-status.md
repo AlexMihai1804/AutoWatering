@@ -39,9 +39,41 @@ Snapshot of onboarding progress used by clients to drive setup workflows. Firmwa
 Little-endian packing is required for all multibyte fields.
 
 ### Flag Bitmaps
-- Channel flags (`uint64_t`): 8 bits per channel, in channel order `[0...7]` and bit order `CHANNEL_FLAG_*` (plant type, soil type, irrigation method, coverage, sun exposure, name, water factor, enabled).
-- System flags (`uint32_t`): `SYSTEM_FLAG_*` (timezone placeholder, flow calibration, master valve, RTC, rain sensor, power mode, location, initial setup).
-- Schedule flags (`uint8_t`): bit `n` indicates channel `n` has at least one schedule.
+
+#### Channel Flags (`uint64_t` - 8 bits per channel)
+Each channel (0-7) has 8 flag bits. Bit position = `channel_id * 8 + flag_bit`.
+
+| Bit | Flag | Set When |
+|-----|------|----------|
+| 0 | `CHANNEL_FLAG_PLANT_TYPE_SET` | User configures plant type |
+| 1 | `CHANNEL_FLAG_SOIL_TYPE_SET` | User configures soil type |
+| 2 | `CHANNEL_FLAG_IRRIGATION_METHOD_SET` | User configures irrigation method |
+| 3 | `CHANNEL_FLAG_COVERAGE_SET` | User configures area/plant count |
+| 4 | `CHANNEL_FLAG_SUN_EXPOSURE_SET` | User configures sun exposure |
+| 5 | `CHANNEL_FLAG_NAME_SET` | User sets channel name |
+| 6 | `CHANNEL_FLAG_WATER_FACTOR_SET` | User sets water need factor |
+| 7 | `CHANNEL_FLAG_ENABLED` | Channel is enabled |
+
+#### System Flags (`uint32_t`)
+| Bit | Flag | Set When |
+|-----|------|----------|
+| 0 | `SYSTEM_FLAG_TIMEZONE_SET` | User saves timezone configuration |
+| 1 | `SYSTEM_FLAG_FLOW_CALIBRATED` | User saves flow sensor calibration |
+| 2 | `SYSTEM_FLAG_MASTER_VALVE_SET` | User configures master valve |
+| 3 | `SYSTEM_FLAG_RTC_CONFIGURED` | User sets date/time via BLE |
+| 4 | `SYSTEM_FLAG_RAIN_SENSOR_SET` | User saves rain sensor configuration |
+| 5 | `SYSTEM_FLAG_POWER_MODE_SET` | User changes power mode |
+| 6 | `SYSTEM_FLAG_LOCATION_SET` | User sets latitude (≠ 0) |
+| 7 | `SYSTEM_FLAG_INITIAL_SETUP_DONE` | Auto-set when: 1 channel configured + RTC + timezone |
+
+#### Schedule Flags (`uint8_t`)
+Bit `n` indicates channel `n` has a schedule configured with `auto_enabled = true`.
+
+### Flag Behavior
+- **Onboarding flags**: Once set to `true`, they remain `true` until factory reset
+- **Purpose**: Track whether user has completed configuration for each feature
+- **Reset**: All flags reset to `false` only on factory reset
+- **Auto-set**: `SYSTEM_FLAG_INITIAL_SETUP_DONE` is automatically set when minimum requirements are met
 
 ## Notification Format
 Notifications always include the unified 8-byte header so clients can reuse the existing history reassembly logic:
@@ -162,6 +194,88 @@ function parseOnboardingSingleFragment(dataView) {
 - **No notifications**: Confirm CCC is set to `Notify` and that another connection is not holding the low-priority queue saturated.
 - **Percentages frozen**: Ensure onboarding state updates (`onboarding_update_*`) are invoked; the characteristic is read-only and mirrors persisted flags.
 - **Fragmentation surprises**: Even with larger MTUs, the header is always present. Verify client reassembly handles the 8-byte prefix.
+
+## Mobile App Integration Guide
+
+### Deciding Between Onboarding UI vs Normal UI
+
+```javascript
+// System flag constants
+const SYSTEM_FLAG_TIMEZONE_SET       = (1 << 0);
+const SYSTEM_FLAG_FLOW_CALIBRATED    = (1 << 1);
+const SYSTEM_FLAG_MASTER_VALVE_SET   = (1 << 2);
+const SYSTEM_FLAG_RTC_CONFIGURED     = (1 << 3);
+const SYSTEM_FLAG_RAIN_SENSOR_SET    = (1 << 4);
+const SYSTEM_FLAG_POWER_MODE_SET     = (1 << 5);
+const SYSTEM_FLAG_LOCATION_SET       = (1 << 6);
+const SYSTEM_FLAG_INITIAL_SETUP_DONE = (1 << 7);
+
+function decideUIMode(status) {
+  // Case 1: Brand new device - show full onboarding wizard
+  if (status.overall === 0) {
+    return { mode: 'FULL_ONBOARDING', screen: 'welcome' };
+  }
+  
+  // Case 2: Initial setup complete - show normal dashboard
+  if (status.systemFlags & SYSTEM_FLAG_INITIAL_SETUP_DONE) {
+    return { mode: 'NORMAL_UI', screen: 'dashboard' };
+  }
+  
+  // Case 3: Partially configured - show resume setup prompt
+  return { 
+    mode: 'RESUME_SETUP',
+    missingSteps: getMissingSteps(status)
+  };
+}
+
+function getMissingSteps(status) {
+  const missing = [];
+  
+  // Critical requirements for INITIAL_SETUP_DONE
+  if (!(status.systemFlags & SYSTEM_FLAG_RTC_CONFIGURED)) {
+    missing.push({ step: 'SET_TIME', priority: 'critical' });
+  }
+  if (!(status.systemFlags & SYSTEM_FLAG_TIMEZONE_SET)) {
+    missing.push({ step: 'SET_TIMEZONE', priority: 'critical' });
+  }
+  
+  // Check if at least one channel is fully configured
+  const hasConfiguredChannel = checkChannelConfiguration(status.channelFlags);
+  if (!hasConfiguredChannel) {
+    missing.push({ step: 'CONFIGURE_CHANNEL', priority: 'critical' });
+  }
+  
+  // Optional but recommended
+  if (!(status.systemFlags & SYSTEM_FLAG_FLOW_CALIBRATED)) {
+    missing.push({ step: 'CALIBRATE_FLOW', priority: 'recommended' });
+  }
+  if (!(status.systemFlags & SYSTEM_FLAG_LOCATION_SET)) {
+    missing.push({ step: 'SET_LOCATION', priority: 'recommended' });
+  }
+  
+  return missing;
+}
+
+function checkChannelConfiguration(channelFlags) {
+  // Check if any channel has minimum required flags (bits 0-3)
+  const REQUIRED_FLAGS = 0x0F; // plant + soil + irrigation + coverage
+  
+  for (let ch = 0; ch < 8; ch++) {
+    const flags = Number((channelFlags >> BigInt(ch * 8)) & 0xFFn);
+    if ((flags & REQUIRED_FLAGS) === REQUIRED_FLAGS) {
+      return true; // At least one channel is configured
+    }
+  }
+  return false;
+}
+```
+
+### Best Practices
+1. **Subscribe to notifications** before making configuration changes
+2. **Cache the status** locally to avoid repeated BLE reads
+3. **Show progress indicator** using `overall_completion_pct`
+4. **Guide users** through missing steps based on flag analysis
+5. **Don't block normal UI** if only optional features are missing
 
 ## Related Modules
 - `src/onboarding_state.c` - flag bookkeeping, NVS integration, completion math.

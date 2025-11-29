@@ -2491,6 +2491,9 @@ static ssize_t write_schedule(struct bt_conn *conn, const struct bt_gatt_attr *a
         /* Invalidate cache since configuration changed */
         invalidate_channel_cache();
         
+        /* Update onboarding flag - this channel now has a schedule configured */
+        onboarding_update_schedule_flag(value->channel_id, value->auto_enabled);
+        
         /* Send notification to confirm schedule update per BLE API Documentation */
         /* Schedule Config (ef5): Schedule updates | On change (throttled 500ms) | Schedule confirmations */
         if (notification_state.schedule_notifications_enabled) {
@@ -2737,6 +2740,9 @@ static ssize_t write_system_config(struct bt_conn *conn, const struct bt_gatt_at
             }
         }
         
+        /* Update onboarding flag - power mode is now configured */
+        onboarding_update_system_flag(SYSTEM_FLAG_POWER_MODE_SET, true);
+        
         LOG_INF("Power mode updated: %u (%s)", config->power_mode,
                 (config->power_mode == 0) ? "Normal" :
                 (config->power_mode == 1) ? "Energy-Saving" : 
@@ -2763,6 +2769,9 @@ static ssize_t write_system_config(struct bt_conn *conn, const struct bt_gatt_at
             LOG_ERR("Failed to set master valve config: %d", mv_err);
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
         }
+        
+        /* Update onboarding flag - master valve is now configured */
+        onboarding_update_system_flag(SYSTEM_FLAG_MASTER_VALVE_SET, true);
         
         LOG_INF("Master Valve config updated: enabled=%u, pre_delay=%d, post_delay=%d, overlap=%u, auto=%u",
                 config->master_valve_enabled, config->master_valve_pre_delay,
@@ -5594,6 +5603,9 @@ static ssize_t write_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 
     LOG_INF("RTC updated successfully (stored as UTC)");
 
+    /* Update onboarding flag - RTC is now configured */
+    onboarding_update_system_flag(SYSTEM_FLAG_RTC_CONFIGURED, true);
+
     /* Send notification to confirm RTC update per BLE API Documentation */
     /* RTC (ef9): Time synchronization events | On change | Manual time updates via BLE */
     if (notification_state.rtc_notifications_enabled) {
@@ -5694,6 +5706,9 @@ static ssize_t write_timezone(struct bt_conn *conn, const struct bt_gatt_attr *a
         LOG_ERR("Failed to set timezone config: %d", ret);
         return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
     }
+    
+    /* Update onboarding flag - timezone is now configured */
+    onboarding_update_system_flag(SYSTEM_FLAG_TIMEZONE_SET, true);
     
     /* Update local copy */
     *value = new_config;
@@ -6512,6 +6527,11 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
             /* Save with priority (250ms throttle) */
             watering_save_config_priority(true);
             
+            /* Update onboarding flag if location (latitude) is set to a valid value */
+            if (env_data->latitude_deg != 0.0f) {
+                onboarding_update_system_flag(SYSTEM_FLAG_LOCATION_SET, true);
+            }
+            
             printk("✅ BLE: Growing environment updated for channel %u via fragmentation\n", 
                     env_data->channel_id);
             
@@ -6627,6 +6647,11 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
     
     /* Save with priority (250ms throttle) */
     watering_save_config_priority(true);
+    
+    /* Update onboarding flag if location (latitude) is set to a valid value */
+    if (env_data->latitude_deg != 0.0f) {
+        onboarding_update_system_flag(SYSTEM_FLAG_LOCATION_SET, true);
+    }
     
     printk("✅ BLE: Growing environment updated for channel %u\n", env_data->channel_id);
     

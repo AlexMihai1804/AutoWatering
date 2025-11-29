@@ -399,6 +399,8 @@ static int reset_controller_reset_system_config(void) {
     onboarding_update_system_flag(SYSTEM_FLAG_POWER_MODE_SET, false);
     onboarding_update_system_flag(SYSTEM_FLAG_LOCATION_SET, false);
     onboarding_update_system_flag(SYSTEM_FLAG_INITIAL_SETUP_DONE, false);
+    onboarding_update_system_flag(SYSTEM_FLAG_TIMEZONE_SET, false);
+    onboarding_update_system_flag(SYSTEM_FLAG_RAIN_SENSOR_SET, false);
     
     printk("System configuration reset to defaults\n");
     return 0;

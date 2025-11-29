@@ -132,8 +132,9 @@ int nvs_save_flow_calibration(uint32_t cal)
 {
     int ret = nvs_config_write(ID_FLOW_CALIB, &cal, sizeof(cal));
     if (ret >= 0) {
-        /* Update onboarding flag for flow calibration */
-        onboarding_update_system_flag(SYSTEM_FLAG_FLOW_CALIBRATED, cal != 750); /* 750 is default */
+        /* Update onboarding flag - any explicit calibration save means flow is configured */
+        /* Even 750 pulses/L is valid if user confirmed it */
+        onboarding_update_system_flag(SYSTEM_FLAG_FLOW_CALIBRATED, true);
     }
     return ret;
 }
@@ -706,7 +707,8 @@ int nvs_save_rain_config(const rain_nvs_config_t *config)
     
     int ret = nvs_config_write(ID_RAIN_CONFIG, config, sizeof(*config));
     if (ret >= 0) {
-        /* Update onboarding flag for rain sensor configuration */
+        /* Update onboarding flag - user has configured rain sensor settings */
+        /* Once configured, flag stays true (onboarding complete for this feature) */
         onboarding_update_system_flag(SYSTEM_FLAG_RAIN_SENSOR_SET, true);
     }
     

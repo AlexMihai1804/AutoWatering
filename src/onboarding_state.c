@@ -113,6 +113,46 @@ int onboarding_get_state(onboarding_state_t *state) {
     return 0;
 }
 
+/* Helper function to check and auto-set SYSTEM_FLAG_INITIAL_SETUP_DONE
+ * Call this AFTER updating flags but BEFORE releasing mutex
+ * Returns true if the flag was just set for the first time
+ */
+static bool check_and_set_initial_setup_done(void) {
+    /* Skip if already marked as done */
+    if (current_state.system_config_flags & SYSTEM_FLAG_INITIAL_SETUP_DONE) {
+        return false;
+    }
+    
+    /* Check if at least one channel has minimum required configuration */
+    bool has_configured_channel = false;
+    for (int ch = 0; ch < 8; ch++) {
+        uint8_t shift = ch * 8;
+        uint8_t channel_flags = (current_state.channel_config_flags >> shift) & 0xFF;
+        uint8_t required_flags = CHANNEL_FLAG_PLANT_TYPE_SET | 
+                                CHANNEL_FLAG_SOIL_TYPE_SET | 
+                                CHANNEL_FLAG_IRRIGATION_METHOD_SET |
+                                CHANNEL_FLAG_COVERAGE_SET;
+        
+        if ((channel_flags & required_flags) == required_flags) {
+            has_configured_channel = true;
+            break;
+        }
+    }
+    
+    /* Check essential system settings (RTC and timezone) */
+    uint32_t required_system_flags = SYSTEM_FLAG_RTC_CONFIGURED | SYSTEM_FLAG_TIMEZONE_SET;
+    bool has_essential_system = (current_state.system_config_flags & required_system_flags) == required_system_flags;
+    
+    /* Auto-set initial setup done when minimum requirements are met */
+    if (has_configured_channel && has_essential_system) {
+        current_state.system_config_flags |= SYSTEM_FLAG_INITIAL_SETUP_DONE;
+        printk("Onboarding: INITIAL_SETUP_DONE auto-set (channel + RTC + timezone configured)\n");
+        return true;
+    }
+    
+    return false;
+}
+
 int onboarding_update_channel_flag(uint8_t channel_id, uint8_t flag, bool set) {
     if (channel_id >= 8) {
         return -EINVAL;
@@ -138,6 +178,9 @@ int onboarding_update_channel_flag(uint8_t channel_id, uint8_t flag, bool set) {
     } else {
         current_state.channel_config_flags &= ~flag_mask;
     }
+    
+    /* Check if initial setup should be auto-marked as done */
+    check_and_set_initial_setup_done();
     
     /* Update timestamp and recalculate completion */
     current_state.last_update_time = get_current_timestamp();
@@ -170,6 +213,9 @@ int onboarding_update_system_flag(uint32_t flag, bool set) {
     } else {
         current_state.system_config_flags &= ~flag;
     }
+    
+    /* Check if initial setup should be auto-marked as done */
+    check_and_set_initial_setup_done();
     
     /* Update timestamp and recalculate completion */
     current_state.last_update_time = get_current_timestamp();
