@@ -29,12 +29,14 @@ Snapshot of onboarding progress used by clients to drive setup workflows. Firmwa
 | 1 | `channels_completion_pct` | `uint8_t` | (# set channel flag bits / 64) x 100 |
 | 2 | `system_completion_pct` | `uint8_t` | (# set system flag bits / 8) x 100 |
 | 3 | `schedules_completion_pct` | `uint8_t` | (# set schedule bits / 8) x 100 |
-| 4 | `channel_config_flags` | `uint64_t` | 8 bits per channel (see below) |
+| 4 | `channel_config_flags` | `uint64_t` | 8 bits per channel - basic flags (see below) |
 | 12 | `system_config_flags` | `uint32_t` | Eight defined bits |
 | 16 | `schedule_config_flags` | `uint8_t` | One bit per channel |
 | 17 | `onboarding_start_time` | `uint32_t` | Unix timestamp (s) |
 | 21 | `last_update_time` | `uint32_t` | Unix timestamp (s) |
-| 25 | `reserved[4]` | `uint8_t[4]` | Must be 0 |
+| 25 | `channel_extended_flags` | `uint64_t` | 8 bits per channel - extended flags (see below) |
+
+**Total size: 33 bytes** (was 25 bytes before extended flags were added)
 
 Little-endian packing is required for all multibyte fields.
 
@@ -53,6 +55,27 @@ Each channel (0-7) has 8 flag bits. Bit position = `channel_id * 8 + flag_bit`.
 | 5 | `CHANNEL_FLAG_NAME_SET` | User sets channel name |
 | 6 | `CHANNEL_FLAG_WATER_FACTOR_SET` | User sets water need factor |
 | 7 | `CHANNEL_FLAG_ENABLED` | Channel is enabled |
+
+#### Channel Extended Flags (`uint64_t` - 8 bits per channel)
+Advanced configuration flags. Bit position = `channel_id * 8 + flag_bit`.
+
+| Bit | Flag | Set When |
+|-----|------|----------|
+| 0 | `CHANNEL_EXT_FLAG_FAO56_READY` | Auto-set when all FAO-56 requirements met |
+| 1 | `CHANNEL_EXT_FLAG_RAIN_COMP_SET` | Rain compensation enabled for channel |
+| 2 | `CHANNEL_EXT_FLAG_TEMP_COMP_SET` | Temperature compensation enabled for channel |
+| 3 | `CHANNEL_EXT_FLAG_SCHEDULE_SET` | Schedule configured for channel |
+| 4 | `CHANNEL_EXT_FLAG_LATITUDE_SET` | Latitude set for channel (≠ 0) |
+| 5 | `CHANNEL_EXT_FLAG_AUTO_MODE_SET` | Auto mode explicitly configured |
+| 6 | `CHANNEL_EXT_FLAG_INTERVAL_MODE_SET` | Interval mode configured |
+| 7 | Reserved | Reserved for future use |
+
+**FAO-56 Requirements**: For `CHANNEL_EXT_FLAG_FAO56_READY` to be set:
+- `CHANNEL_FLAG_PLANT_TYPE_SET` ✓
+- `CHANNEL_FLAG_SOIL_TYPE_SET` ✓
+- `CHANNEL_FLAG_IRRIGATION_METHOD_SET` ✓
+- `CHANNEL_FLAG_COVERAGE_SET` ✓
+- `CHANNEL_EXT_FLAG_LATITUDE_SET` ✓
 
 #### System Flags (`uint32_t`)
 | Bit | Flag | Set When |

@@ -7,6 +7,7 @@
 #include "custom_soil_db.h"
 #include "watering.h"
 #include "configuration_status.h"
+#include "onboarding_state.h"
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
@@ -710,6 +711,20 @@ watering_error_t bt_convert_from_enhanced_ble_config(const struct enhanced_chann
     if (result != WATERING_SUCCESS) {
         LOG_WRN("Failed to persist enhanced BLE config for channel %u: %d", channel_id, result);
     }
+    
+    /* Update extended onboarding flags for advanced configurations */
+    if (channel->rain_compensation.enabled) {
+        onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_RAIN_COMP_SET, true);
+    }
+    if (channel->temp_compensation.enabled) {
+        onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_TEMP_COMP_SET, true);
+    }
+    if (channel->interval_config.configured) {
+        onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_INTERVAL_MODE_SET, true);
+    }
+    
+    /* Check if FAO-56 is now ready after this configuration */
+    onboarding_check_fao56_ready(channel_id);
     
     return result;
 }

@@ -76,9 +76,12 @@ typedef struct {
     // Timestamps
     uint32_t last_update_time;         /**< Last state update */
     uint32_t onboarding_start_time;    /**< When onboarding began */
+    
+    // Extended channel configuration flags (8 channels × 8 bits each)
+    uint64_t channel_extended_flags;   /**< Extended bitfield for advanced channel settings */
 } __attribute__((packed)) onboarding_state_t;
 
-// Channel configuration flag bits
+// Channel configuration flag bits (basic - bits 0-7)
 #define CHANNEL_FLAG_PLANT_TYPE_SET     (1 << 0)
 #define CHANNEL_FLAG_SOIL_TYPE_SET      (1 << 1)
 #define CHANNEL_FLAG_IRRIGATION_METHOD_SET (1 << 2)
@@ -87,6 +90,16 @@ typedef struct {
 #define CHANNEL_FLAG_NAME_SET           (1 << 5)
 #define CHANNEL_FLAG_WATER_FACTOR_SET   (1 << 6)
 #define CHANNEL_FLAG_ENABLED            (1 << 7)
+
+// Extended channel configuration flag bits (advanced - bits 0-7 in extended field)
+#define CHANNEL_EXT_FLAG_FAO56_READY         (1 << 0)  /* All FAO-56 requirements met (plant+soil+method+coverage+location) */
+#define CHANNEL_EXT_FLAG_RAIN_COMP_SET       (1 << 1)  /* Rain compensation configured */
+#define CHANNEL_EXT_FLAG_TEMP_COMP_SET       (1 << 2)  /* Temperature compensation configured */
+#define CHANNEL_EXT_FLAG_SCHEDULE_SET        (1 << 3)  /* Schedule configured for this channel */
+#define CHANNEL_EXT_FLAG_LATITUDE_SET        (1 << 4)  /* Latitude set for this channel */
+#define CHANNEL_EXT_FLAG_AUTO_MODE_SET       (1 << 5)  /* Auto mode explicitly configured */
+#define CHANNEL_EXT_FLAG_INTERVAL_MODE_SET   (1 << 6)  /* Interval mode configured */
+#define CHANNEL_EXT_FLAG_RESERVED            (1 << 7)  /* Reserved for future use */
 
 // System configuration flag bits
 #define SYSTEM_FLAG_TIMEZONE_SET        (1 << 0) /* Timezone/DST configuration persisted */
@@ -122,7 +135,8 @@ typedef struct {
     .schedule_config_flags = 0,       /* No schedules configured */ \
     .onboarding_completion_pct = 0,   /* 0% complete */ \
     .last_update_time = 0,            /* Never updated */ \
-    .onboarding_start_time = 0        /* Not started */ \
+    .onboarding_start_time = 0,       /* Not started */ \
+    .channel_extended_flags = 0       /* No extended flags set */ \
 }
 
 /* ——— Enhanced Growing Environment Configuration ————————— */

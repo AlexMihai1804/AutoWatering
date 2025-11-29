@@ -348,14 +348,13 @@ struct onboarding_status_data {
     uint8_t system_completion_pct;      /* 0-100% system config completion */
     uint8_t schedules_completion_pct;   /* 0-100% schedule completion */
     
-    uint64_t channel_config_flags;      /* Channel configuration flags */
+    uint64_t channel_config_flags;      /* Channel configuration flags (basic) */
+    uint64_t channel_extended_flags;    /* Channel extended flags (FAO56, rain/temp comp) */
     uint32_t system_config_flags;       /* System configuration flags */
     uint8_t schedule_config_flags;      /* Schedule configuration flags */
     
     uint32_t onboarding_start_time;     /* When onboarding began */
     uint32_t last_update_time;          /* Last state update */
-    
-    uint8_t reserved[4];                /* Reserved for future use */
 } __packed;
 
 /* Reset control structure */
@@ -394,7 +393,7 @@ BUILD_ASSERT(sizeof(history_fragment_header_t) == 8, "history_fragment_header_t 
 BUILD_ASSERT(sizeof(struct rain_integration_status_ble) == 78, "rain_integration_status_ble must be 78 bytes");
 BUILD_ASSERT(sizeof(struct growing_env_data) == 71, "growing_env_data must be 71 bytes");
 BUILD_ASSERT(sizeof(struct auto_calc_status_data) == 64, "auto_calc_status_data must be 64 bytes");
-BUILD_ASSERT(sizeof(struct onboarding_status_data) == 29, "onboarding_status_data must be 29 bytes");
+BUILD_ASSERT(sizeof(struct onboarding_status_data) == 33, "onboarding_status_data must be 33 bytes");
 /* Newly audited: ensure reset control struct stays at 16 bytes */
 BUILD_ASSERT(sizeof(struct reset_control_data) == 16, "reset_control_data must be 16 bytes");
 

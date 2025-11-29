@@ -93,6 +93,38 @@ uint8_t onboarding_get_schedule_flags(void);
 int onboarding_update_schedule_flag(uint8_t channel_id, bool has_schedule);
 
 /**
+ * @brief Update an extended channel configuration flag
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param flag Extended flag bit to update (CHANNEL_EXT_FLAG_*)
+ * @param set True to set the flag, false to clear it
+ * @return 0 on success, negative error code on failure
+ */
+int onboarding_update_channel_extended_flag(uint8_t channel_id, uint8_t flag, bool set);
+
+/**
+ * @brief Get extended channel configuration flags for a specific channel
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @return Extended channel configuration flags (8-bit value)
+ */
+uint8_t onboarding_get_channel_extended_flags(uint8_t channel_id);
+
+/**
+ * @brief Check and update FAO-56 readiness flag for a channel
+ * 
+ * Automatically checks if all FAO-56 requirements are met:
+ * - Plant type set
+ * - Soil type set  
+ * - Irrigation method set
+ * - Coverage (area) set
+ * - Location (latitude) set
+ * 
+ * @param channel_id Channel ID (0-7)
+ */
+void onboarding_check_fao56_ready(uint8_t channel_id);
+
+/**
  * @brief Reset all onboarding state to defaults
  * 
  * @return 0 on success, negative error code on failure

@@ -1887,6 +1887,7 @@ static ssize_t read_onboarding_status(struct bt_conn *conn, const struct bt_gatt
     
     /* Copy state flags */
     status_data.channel_config_flags = state.channel_config_flags;
+    status_data.channel_extended_flags = state.channel_extended_flags;
     status_data.system_config_flags = state.system_config_flags;
     status_data.schedule_config_flags = state.schedule_config_flags;
     status_data.onboarding_start_time = state.onboarding_start_time;
@@ -6530,9 +6531,12 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
             /* Save with priority (250ms throttle) */
             watering_save_config_priority(true);
             
-            /* Update onboarding flag if location (latitude) is set to a valid value */
+            /* Update onboarding flags if location (latitude) is set to a valid value */
             if (env_data->latitude_deg != 0.0f) {
                 onboarding_update_system_flag(SYSTEM_FLAG_LOCATION_SET, true);
+                onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_LATITUDE_SET, true);
+                /* Check if FAO-56 requirements are now met */
+                onboarding_check_fao56_ready(env_data->channel_id);
             }
             
             printk("✅ BLE: Growing environment updated for channel %u via fragmentation\n", 
@@ -6654,9 +6658,12 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
     /* Save with priority (250ms throttle) */
     watering_save_config_priority(true);
     
-    /* Update onboarding flag if location (latitude) is set to a valid value */
+    /* Update onboarding flags if location (latitude) is set to a valid value */
     if (env_data->latitude_deg != 0.0f) {
         onboarding_update_system_flag(SYSTEM_FLAG_LOCATION_SET, true);
+        onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_LATITUDE_SET, true);
+        /* Check if FAO-56 requirements are now met */
+        onboarding_check_fao56_ready(env_data->channel_id);
     }
     
     printk("✅ BLE: Growing environment updated for channel %u\n", env_data->channel_id);
@@ -7243,6 +7250,7 @@ int bt_irrigation_onboarding_status_notify(void) {
 
     /* Copy state flags */
     status_data.channel_config_flags = state.channel_config_flags;
+    status_data.channel_extended_flags = state.channel_extended_flags;
     status_data.system_config_flags = state.system_config_flags;
     status_data.schedule_config_flags = state.schedule_config_flags;
     status_data.onboarding_start_time = state.onboarding_start_time;

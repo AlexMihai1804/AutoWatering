@@ -198,6 +198,15 @@ int onboarding_update_channel_flag(uint8_t channel_id, uint8_t flag, bool set) {
     bt_irrigation_onboarding_status_notify();
     
     printk("Channel %u flag %u %s\n", channel_id, flag, set ? "set" : "cleared");
+    
+    /* Check FAO-56 readiness if a relevant flag was set */
+    if (set && (flag == CHANNEL_FLAG_PLANT_TYPE_SET || 
+                flag == CHANNEL_FLAG_SOIL_TYPE_SET ||
+                flag == CHANNEL_FLAG_IRRIGATION_METHOD_SET ||
+                flag == CHANNEL_FLAG_COVERAGE_SET)) {
+        onboarding_check_fao56_ready(channel_id);
+    }
+    
     return ret;
 }
 
@@ -391,4 +400,80 @@ int onboarding_reset_state(void) {
     
     printk("Onboarding state reset to defaults\n");
     return ret;
+}
+
+int onboarding_update_channel_extended_flag(uint8_t channel_id, uint8_t flag, bool set) {
+    if (!state_initialized) {
+        return -ENODEV;
+    }
+    
+    if (channel_id >= 8) {
+        return -EINVAL;
+    }
+    
+    k_mutex_lock(&onboarding_mutex, K_FOREVER);
+    
+    /* Calculate bit position: 8 bits per channel */
+    uint8_t bit_offset = channel_id * 8;
+    uint64_t flag_mask = (uint64_t)flag << bit_offset;
+    
+    if (set) {
+        current_state.channel_extended_flags |= flag_mask;
+    } else {
+        current_state.channel_extended_flags &= ~flag_mask;
+    }
+    
+    /* Update timestamp */
+    current_state.last_update_time = get_current_timestamp();
+    
+    /* Save to NVS */
+    int ret = nvs_save_onboarding_state(&current_state);
+    if (ret < 0) {
+        printk("Failed to save onboarding state: %d\n", ret);
+    }
+    
+    k_mutex_unlock(&onboarding_mutex);
+    
+    /* Send BLE notification for onboarding progress update */
+    bt_irrigation_onboarding_status_notify();
+    
+    printk("Channel %u extended flag 0x%x %s\n", channel_id, flag, set ? "set" : "cleared");
+    return ret;
+}
+
+uint8_t onboarding_get_channel_extended_flags(uint8_t channel_id) {
+    if (!state_initialized || channel_id >= 8) {
+        return 0;
+    }
+    
+    uint8_t bit_offset = channel_id * 8;
+    return (uint8_t)((current_state.channel_extended_flags >> bit_offset) & 0xFF);
+}
+
+void onboarding_check_fao56_ready(uint8_t channel_id) {
+    if (!state_initialized || channel_id >= 8) {
+        return;
+    }
+    
+    /* Get basic channel flags */
+    uint8_t basic_flags = onboarding_get_channel_flags(channel_id);
+    uint8_t extended_flags = onboarding_get_channel_extended_flags(channel_id);
+    
+    /* FAO-56 requires: plant type, soil type, irrigation method, coverage, and latitude */
+    uint8_t required_basic = CHANNEL_FLAG_PLANT_TYPE_SET | 
+                             CHANNEL_FLAG_SOIL_TYPE_SET | 
+                             CHANNEL_FLAG_IRRIGATION_METHOD_SET |
+                             CHANNEL_FLAG_COVERAGE_SET;
+    
+    bool basic_ok = (basic_flags & required_basic) == required_basic;
+    bool latitude_ok = (extended_flags & CHANNEL_EXT_FLAG_LATITUDE_SET) != 0;
+    
+    bool fao56_ready = basic_ok && latitude_ok;
+    
+    /* Update FAO-56 ready flag if state changed */
+    bool current_fao56 = (extended_flags & CHANNEL_EXT_FLAG_FAO56_READY) != 0;
+    if (fao56_ready != current_fao56) {
+        onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_FAO56_READY, fao56_ready);
+        printk("Channel %u FAO-56 ready: %s\n", channel_id, fao56_ready ? "YES" : "NO");
+    }
 }
