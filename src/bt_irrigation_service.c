@@ -2588,22 +2588,13 @@ static ssize_t read_system_config(struct bt_conn *conn, const struct bt_gatt_att
         enhanced_config.bme280_sensor_status = 0;
     }
     
-    /* Get global compensation settings */
-    rain_integration_config_t rain_cfg;
-    if (rain_integration_get_config(&rain_cfg) == WATERING_SUCCESS) {
-        enhanced_config.global_rain_compensation_enabled = rain_cfg.integration_enabled ? 1 : 0;
-        /* Store sensitivity as 0.0-1.0 for BLE */
-        enhanced_config.global_rain_sensitivity = rain_cfg.rain_sensitivity_pct / 100.0f;
-        enhanced_config.global_rain_lookback_hours =
-            (uint16_t)MIN(rain_cfg.lookback_hours, UINT16_MAX);
-        enhanced_config.global_rain_skip_threshold = rain_cfg.skip_threshold_mm;
-    } else {
-        enhanced_config.global_rain_compensation_enabled = 0;
-        enhanced_config.global_rain_sensitivity = 0.0f;
-        enhanced_config.global_rain_lookback_hours = 0;
-        enhanced_config.global_rain_skip_threshold = 0.0f;
-    }
+    /* Rain compensation is now per-channel only - set deprecated fields to 0 */
+    enhanced_config._reserved_rain_enabled = 0;
+    enhanced_config._reserved_rain_sensitivity = 0.0f;
+    enhanced_config._reserved_rain_lookback = 0;
+    enhanced_config._reserved_rain_threshold = 0.0f;
 
+    /* Get global temperature compensation settings (averaged from channels) */
     uint8_t temp_enabled_channels = 0;
     float temp_sensitivity_accum = 0.0f;
     float temp_base_accum = 0.0f;
@@ -2662,12 +2653,6 @@ static ssize_t read_system_config(struct bt_conn *conn, const struct bt_gatt_att
         enhanced_config.environmental_data_quality = 0; /* No data available */
         enhanced_config.last_sensor_reading = timezone_get_unix_utc();
     }
-
-    if (enhanced_config.global_rain_sensitivity < 0.0f) {
-        enhanced_config.global_rain_sensitivity = 0.0f;
-    } else if (enhanced_config.global_rain_sensitivity > 1.0f) {
-        enhanced_config.global_rain_sensitivity = 1.0f;
-    }
     
     /* Set timestamps */
     enhanced_config.last_config_update = timezone_get_unix_utc();
@@ -2684,8 +2669,7 @@ static ssize_t read_system_config(struct bt_conn *conn, const struct bt_gatt_att
         LOG_DBG("BME280: enabled=%u, interval=%u, status=%u",
                 enhanced_config.bme280_enabled, enhanced_config.bme280_measurement_interval,
                 enhanced_config.bme280_sensor_status);
-        LOG_DBG("Compensation: rain_global=%u, temp_global=%u, active_channels=0x%02x",
-                enhanced_config.global_rain_compensation_enabled,
+        LOG_DBG("Compensation: temp_global=%u, active_channels=0x%02x (rain is per-channel only)",
                 enhanced_config.global_temp_compensation_enabled,
                 enhanced_config.compensation_active_channels);
         last_read_time = now;
@@ -2806,33 +2790,8 @@ static ssize_t write_system_config(struct bt_conn *conn, const struct bt_gatt_at
             }
         }
 
-        /* Apply global rain compensation settings */
-        rain_integration_config_t rain_cfg_current;
-        if (rain_integration_get_config(&rain_cfg_current) == WATERING_SUCCESS) {
-            float rain_sensitivity = config->global_rain_sensitivity;
-            if (rain_sensitivity < 0.0f) {
-                rain_sensitivity = 0.0f;
-            } else if (rain_sensitivity > 1.0f) {
-                rain_sensitivity = 1.0f;
-            }
-
-            rain_cfg_current.integration_enabled = (config->global_rain_compensation_enabled != 0);
-            rain_cfg_current.rain_sensitivity_pct = rain_sensitivity * 100.0f;
-            rain_cfg_current.skip_threshold_mm = config->global_rain_skip_threshold;
-            rain_cfg_current.lookback_hours = config->global_rain_lookback_hours;
-
-            watering_error_t rain_err = rain_integration_set_config(&rain_cfg_current);
-            if (rain_err != WATERING_SUCCESS) {
-                LOG_WRN("Failed to apply rain integration config: %d", rain_err);
-            } else {
-                rain_integration_save_config();
-                LOG_INF("Global rain integration updated: enabled=%u, sensitivity=%.1f%%, lookback=%u h, skip=%.1f mm",
-                        config->global_rain_compensation_enabled,
-                        (double)(rain_cfg_current.rain_sensitivity_pct),
-                        rain_cfg_current.lookback_hours,
-                        (double)rain_cfg_current.skip_threshold_mm);
-            }
-        }
+        /* Rain compensation is now per-channel only - global fields are ignored */
+        /* Configure rain compensation via Channel Configuration characteristic instead */
 
         /* Apply global temperature compensation defaults */
         float temp_sensitivity = config->global_temp_sensitivity;

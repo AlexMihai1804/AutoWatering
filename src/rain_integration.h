@@ -27,18 +27,25 @@ typedef struct {
 } rain_irrigation_impact_t;
 
 /**
- * @brief Rain integration configuration
+ * @brief Rain integration configuration (DEPRECATED)
+ * 
+ * This structure is kept for API compatibility only.
+ * Rain compensation settings are now configured per-channel via
+ * watering_channel_t.rain_compensation structure.
+ * 
+ * @deprecated Use per-channel rain_compensation settings instead.
  */
 typedef struct {
-    float rain_sensitivity_pct;    /**< Rain sensitivity (0-100%) */
-    float skip_threshold_mm;       /**< mm threshold to skip irrigation */
-    float effective_rain_factor;   /**< Soil infiltration efficiency (0.0-1.0) */
-    uint32_t lookback_hours;       /**< Hours to look back for rain data */
-    bool integration_enabled;      /**< Enable/disable integration */
+    float rain_sensitivity_pct;    /**< Rain sensitivity (0-100%) - DEPRECATED */
+    float skip_threshold_mm;       /**< mm threshold to skip irrigation - DEPRECATED */
+    float effective_rain_factor;   /**< Soil infiltration efficiency (0.0-1.0) - DEPRECATED */
+    uint32_t lookback_hours;       /**< Hours to look back for rain data - DEPRECATED */
+    bool integration_enabled;      /**< Enable/disable integration - DEPRECATED */
 } rain_integration_config_t;
 
 /**
- * @brief Default rain integration configuration
+ * @brief Default rain integration configuration (DEPRECATED)
+ * @deprecated Use per-channel rain_compensation settings instead.
  */
 #define DEFAULT_RAIN_INTEGRATION_CONFIG { \
     .rain_sensitivity_pct = 75.0f,     /* 75% sensitivity */ \
@@ -97,93 +104,117 @@ bool rain_integration_should_skip_irrigation(uint8_t channel_id);
 float rain_integration_get_reduction_percentage(uint8_t channel_id);
 
 /**
- * @brief Set rain integration configuration
+ * @brief Set rain integration configuration (DEPRECATED)
  * 
- * @param config New configuration
- * @return WATERING_SUCCESS on success, error code on failure
+ * @deprecated Rain compensation is now per-channel only. This function does nothing.
+ * Configure rain compensation via watering_channel_t.rain_compensation instead.
+ * 
+ * @param config New configuration (ignored)
+ * @return WATERING_SUCCESS always
  */
 watering_error_t rain_integration_set_config(const rain_integration_config_t *config);
 
 /**
- * @brief Get current rain integration configuration
+ * @brief Get current rain integration configuration (DEPRECATED)
  * 
- * @param config Buffer to store current configuration
+ * @deprecated Rain compensation is now per-channel only. Returns default values.
+ * Read rain compensation via watering_channel_t.rain_compensation instead.
+ * 
+ * @param config Buffer to store default configuration values
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t rain_integration_get_config(rain_integration_config_t *config);
 
 /**
- * @brief Set rain sensitivity percentage
+ * @brief Set rain sensitivity percentage (DEPRECATED)
  * 
- * @param sensitivity_pct Sensitivity percentage (0-100%)
- * @return WATERING_SUCCESS on success, error code on failure
+ * @deprecated Use per-channel watering_channel_t.rain_compensation.sensitivity instead.
+ * 
+ * @param sensitivity_pct Sensitivity percentage (ignored)
+ * @return WATERING_SUCCESS always
  */
 watering_error_t rain_integration_set_sensitivity(float sensitivity_pct);
 
 /**
- * @brief Get current rain sensitivity percentage
+ * @brief Get current rain sensitivity percentage (DEPRECATED)
  * 
- * @return Current sensitivity percentage
+ * @deprecated Use per-channel watering_channel_t.rain_compensation.sensitivity instead.
+ * 
+ * @return Default sensitivity percentage (75.0)
  */
 float rain_integration_get_sensitivity(void);
 
 /**
- * @brief Set skip threshold for irrigation
+ * @brief Set skip threshold for irrigation (DEPRECATED)
  * 
- * @param threshold_mm Rainfall threshold in mm to skip irrigation
- * @return WATERING_SUCCESS on success, error code on failure
+ * @deprecated Use per-channel watering_channel_t.rain_compensation.skip_threshold_mm instead.
+ * 
+ * @param threshold_mm Rainfall threshold (ignored)
+ * @return WATERING_SUCCESS always
  */
 watering_error_t rain_integration_set_skip_threshold(float threshold_mm);
 
 /**
- * @brief Get current skip threshold
+ * @brief Get current skip threshold (DEPRECATED)
  * 
- * @return Current skip threshold in mm
+ * @deprecated Use per-channel watering_channel_t.rain_compensation.skip_threshold_mm instead.
+ * 
+ * @return Default skip threshold (5.0 mm)
  */
 float rain_integration_get_skip_threshold(void);
 
 /**
- * @brief Set effective rain factor (soil infiltration efficiency)
+ * @brief Set effective rain factor (soil infiltration efficiency) (DEPRECATED)
  * 
- * @param factor Infiltration efficiency (0.0-1.0)
- * @return WATERING_SUCCESS on success, error code on failure
+ * @deprecated Use per-channel watering_channel_t.rain_compensation.reduction_factor instead.
+ * 
+ * @param factor Infiltration efficiency (ignored)
+ * @return WATERING_SUCCESS always
  */
 watering_error_t rain_integration_set_effective_rain_factor(float factor);
 
 /**
- * @brief Get current effective rain factor
+ * @brief Get current effective rain factor (DEPRECATED)
  * 
- * @return Current effective rain factor
+ * @deprecated Use per-channel watering_channel_t.rain_compensation.reduction_factor instead.
+ * 
+ * @return Default effective rain factor (0.8)
  */
 float rain_integration_get_effective_rain_factor(void);
 
 /**
- * @brief Set lookback period for rain analysis
+ * @brief Set lookback period for rain analysis (DEPRECATED)
  * 
- * @param hours Number of hours to look back
- * @return WATERING_SUCCESS on success, error code on failure
+ * @deprecated Use per-channel watering_channel_t.rain_compensation.lookback_hours instead.
+ * 
+ * @param hours Number of hours (ignored)
+ * @return WATERING_SUCCESS always
  */
 watering_error_t rain_integration_set_lookback_hours(uint32_t hours);
 
 /**
- * @brief Get current lookback period
+ * @brief Get current lookback period (DEPRECATED)
  * 
- * @return Current lookback period in hours
+ * @deprecated Use per-channel watering_channel_t.rain_compensation.lookback_hours instead.
+ * 
+ * @return Default lookback period (48 hours)
  */
 uint32_t rain_integration_get_lookback_hours(void);
 
 /**
- * @brief Enable or disable rain integration
+ * @brief Enable or disable rain integration (DEPRECATED)
  * 
- * @param enabled true to enable, false to disable
- * @return WATERING_SUCCESS on success, error code on failure
+ * @deprecated Use per-channel watering_channel_t.rain_compensation.enabled instead.
+ * 
+ * @param enabled Enable flag (ignored)
+ * @return WATERING_SUCCESS always
  */
 watering_error_t rain_integration_set_enabled(bool enabled);
 
 /**
  * @brief Check if rain integration is enabled
  * 
- * @return true if enabled, false if disabled
+ * @return true if any channel has rain compensation enabled, false otherwise
  */
 bool rain_integration_is_enabled(void);
 
@@ -206,16 +237,20 @@ float rain_integration_calculate_effective_rainfall(float rainfall_mm, uint8_t c
 watering_error_t rain_integration_get_rainfall_summary(char *summary, uint16_t buffer_size);
 
 /**
- * @brief Save rain integration configuration to NVS
+ * @brief Save rain integration configuration to NVS (DEPRECATED)
  * 
- * @return WATERING_SUCCESS on success, error code on failure
+ * @deprecated Rain compensation settings are saved per-channel as part of watering config.
+ * 
+ * @return WATERING_SUCCESS always (no-op)
  */
 watering_error_t rain_integration_save_config(void);
 
 /**
- * @brief Load rain integration configuration from NVS
+ * @brief Load rain integration configuration from NVS (DEPRECATED)
  * 
- * @return WATERING_SUCCESS on success, error code on failure
+ * @deprecated Rain compensation settings are loaded per-channel as part of watering config.
+ * 
+ * @return WATERING_SUCCESS always (no-op)
  */
 watering_error_t rain_integration_load_config(void);
 
@@ -228,9 +263,11 @@ watering_error_t rain_integration_load_config(void);
 watering_error_t rain_integration_validate_config(const rain_integration_config_t *config);
 
 /**
- * @brief Reset rain integration configuration to defaults
+ * @brief Reset rain integration configuration to defaults (DEPRECATED)
  * 
- * @return WATERING_SUCCESS on success, error code on failure
+ * @deprecated Rain compensation settings are per-channel. Reset individual channels instead.
+ * 
+ * @return WATERING_SUCCESS always (no-op)
  */
 watering_error_t rain_integration_reset_config(void);
 

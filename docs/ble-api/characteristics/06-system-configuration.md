@@ -1,6 +1,8 @@
 ## System Configuration Characteristic
 
-The System Configuration characteristic delivers and accepts the canonical 56-byte `struct enhanced_system_config_data` snapshot that drives every system-wide behaviour: controller power modes, flow calibration, master valve orchestration, BME280 environmental sampling, and the global rain/temperature compensation baselines that are pushed into each irrigation channel. This document spells out all semantics exactly as implemented inside `src/bt_irrigation_service.c` (functions `read_system_config`, `write_system_config`, and `system_config_ccc_changed`) and `include/bt_gatt_structs_enhanced.h`. Nothing is left implicit-if a field is ignored, clamped, or persisted elsewhere, it is documented below.
+The System Configuration characteristic delivers and accepts the canonical 56-byte `struct enhanced_system_config_data` snapshot that drives every system-wide behaviour: controller power modes, flow calibration, master valve orchestration, BME280 environmental sampling, and the global temperature compensation baselines that are pushed into each irrigation channel.
+
+> **Note:** As of v2.x, rain compensation is configured **per-channel only** via the Channel Configuration characteristic. The rain-related fields in this struct are now reserved for backward compatibility but are ignored on write and return zero on read. This document spells out all semantics exactly as implemented inside `src/bt_irrigation_service.c` (functions `read_system_config`, `write_system_config`, and `system_config_ccc_changed`) and `include/bt_gatt_structs_enhanced.h`. Nothing is left implicit-if a field is ignored, clamped, or persisted elsewhere, it is documented below.
 
 ### Characteristic Metadata
 | Item | Value |
@@ -34,12 +36,12 @@ All integers are little-endian. Floats are IEEE-754 single precision.
 | 16 | `bme280_enabled` | `uint8_t` | 1 | R/W | 0/1 | `bme280_system_get_config()` fallback defaults | Forwarded into `sensor_manager_configure_bme280()` (best-effort) |
 | 17 | `bme280_measurement_interval` | `uint16_t` | 2 | R/W | Seconds | Same as above | Non-zero updates the interval immediately; `0` leaves the previously configured interval in place |
 | 19 | `bme280_sensor_status` | `uint8_t` | 1 | R | 0=missing,1=ok,2=error,3=disabled | `sensor_manager` status | Ignored on write |
-| 20 | `global_rain_compensation_enabled` | `uint8_t` | 1 | R/W | 0/1 | `rain_integration_get_config()` | Applied via `rain_integration_set_config()` (+ save) |
+| 20 | `_reserved_rain_enabled` | `uint8_t` | 1 | R | **RESERVED** (always 0) | Hard-coded `0` | **IGNORED** - Rain compensation is per-channel only |
 | 21 | `global_temp_compensation_enabled` | `uint8_t` | 1 | R/W | 0/1 | Derived from channels with temp comp enabled | Propagated to every channel struct |
-| 22 | `global_rain_sensitivity` | `float` | 4 | R/W | 0.0-1.0 (fraction) | Rain integration (converted from % -> fraction) | Clamped 0.0-1.0; stored as fraction, converted back to % for subsystem |
+| 22 | `_reserved_rain_sensitivity` | `float` | 4 | R | **RESERVED** (always 0.0) | Hard-coded `0.0` | **IGNORED** - Rain compensation is per-channel only |
 | 26 | `global_temp_sensitivity` | `float` | 4 | R/W | Factor (see `TEMP_COMP_MIN/MAX_SENSITIVITY`) | Averaged from enabled channels or defaults | Clamped to [`TEMP_COMP_MIN_SENSITIVITY`, `TEMP_COMP_MAX_SENSITIVITY`] and pushed to channels |
-| 30 | `global_rain_lookback_hours` | `uint16_t` | 2 | R/W | Hours | Rain integration config | Applied directly |
-| 32 | `global_rain_skip_threshold` | `float` | 4 | R/W | Millimetres | Rain integration config | Applied directly |
+| 30 | `_reserved_rain_lookback_hours` | `uint16_t` | 2 | R | **RESERVED** (always 0) | Hard-coded `0` | **IGNORED** - Rain compensation is per-channel only |
+| 32 | `_reserved_rain_skip_threshold` | `float` | 4 | R | **RESERVED** (always 0.0) | Hard-coded `0.0` | **IGNORED** - Rain compensation is per-channel only |
 | 36 | `global_temp_base_temperature` | `float` | 4 | R/W | deg C | Averaged or defaults | Clamped to [`TEMP_COMP_MIN_TEMP_C`, `TEMP_COMP_MAX_TEMP_C`] and pushed to channels |
 | 40 | `interval_mode_active_channels` | `uint8_t` | 1 | R | Bitmask, bit n <-> channel n | `enhanced_system_is_interval_mode_active()` | Ignored on write |
 | 41 | `compensation_active_channels` | `uint8_t` | 1 | R | Bitmask | Computed from per-channel rain/temp enable flags | Ignored on write |
@@ -47,15 +49,14 @@ All integers are little-endian. Floats are IEEE-754 single precision.
 | 43 | `environmental_data_quality` | `uint8_t` | 1 | R | 0-100 | Derived from environmental validation score (temperature/humidity/pressure) | Ignored on write |
 | 44 | `last_config_update` | `uint32_t` | 4 | R | Unix UTC seconds | `timezone_get_unix_utc()` at read time | Ignored on write |
 | 48 | `last_sensor_reading` | `uint32_t` | 4 | R | Unix UTC seconds | Latest environmental sample or fallback to now | Ignored on write |
-| 52 | `reserved` | `uint8_t[4]` | 4 | R/W | Must be zero | Persisted sentinel | Must write zeros |
-| 59 | `reserved[8]` | `uint8_t[8]` | 8 | R/W | Must be zero | Preserved | Caller must write zeros |
+| 52 | `reserved` | `uint8_t[4]` | 4 | R/W | Must be zero | Reserved for future use | Must write zeros |
 
 ### Read Flow (step-by-step)
 1. `bt_gatt_attr_read()` requests the snapshot; firmware fills a local `enhanced_system_config_data enhanced_config` structure.
 2. Core fields come from watering engine helpers (`watering_get_power_mode`, `get_flow_calibration`).
 3. Master valve parameters and `master_valve_current_state` mirror the most recent `master_valve_config_t`.
 4. The BME block is initialised using `bme280_system_get_config()` when the sensor manager is active; otherwise safe defaults (disabled, 60 s interval, status 0) are used.
-5. Rain defaults are loaded via `rain_integration_get_config()` and normalised to fractional sensitivity (0.0-1.0) before storage.
+5. Rain fields are set to zero (reserved). Rain compensation is configured per-channel only via the Channel Configuration characteristic.
 6. Temperature defaults are computed by averaging the live channel configurations: if any channel has temperature compensation enabled we average `sensitivity` and `base_temperature`; otherwise we fall back to `TEMP_COMP_DEFAULT_*` and flag the compensation disabled.
 7. Bitmaps are built using helper utilities (`enhanced_system_is_interval_mode_active`, `enhanced_system_has_incomplete_config`, plus a manual iteration that ORs any channel with rain or temp compensation enabled).
 8. Environmental quality queries `environmental_data_get_current()`. When valid, the reading is re-validated and scored (0-100) via `env_data_calculate_quality_score()` using temperature, humidity, and pressure. The accompanying timestamp becomes `last_sensor_reading`; if no reading is available the timestamp collapses to the current Unix time.
@@ -75,7 +76,7 @@ All integers are little-endian. Floats are IEEE-754 single precision.
    2. Flow calibration via `set_flow_calibration()` (which persists internally).
    3. Master valve config using `master_valve_set_config()` (invalid combinations propagate `BT_ATT_ERR_VALUE_NOT_ALLOWED`).
    4. BME280 config: the previous config is fetched, interval/value sanitised, and forwarded to `sensor_manager_configure_bme280()`. Non-zero return values are logged as warnings but do not cancel the write.
-   5. Rain integration: fractional sensitivity is clamped to `[0.0, 1.0]`, converted back to percent (x100), pushed into `rain_integration_set_config()`, and persisted with `rain_integration_save_config()`.
+   5. Rain fields: **IGNORED** - rain compensation is per-channel only (configure via Channel Configuration characteristic).
    6. Temperature defaults: sensitivity is clamped to [`TEMP_COMP_MIN_SENSITIVITY`, `TEMP_COMP_MAX_SENSITIVITY`], base temperature to [`TEMP_COMP_MIN_TEMP_C`, `TEMP_COMP_MAX_TEMP_C`]. Each channel retrieved via `watering_get_channel()` has its temperature block overwritten (enable flag, base, sensitivity, min/max factors reset to `TEMP_COMP_DEFAULT_MIN/MAX_FACTOR`).
    7. `watering_save_config_priority(true)` asks NVS to persist the broader watering configuration (ensures master valve + temp defaults survive resets).
 5. If notifications are enabled (`notification_state.system_config_notifications_enabled`), the firmware rewrites read-only fields (`version`, `max_active_valves`, `num_channels`) in-place before calling `safe_notify()` with the complete 56-byte buffer.
@@ -96,8 +97,7 @@ All integers are little-endian. Floats are IEEE-754 single precision.
 | `power_mode` | 0 <= value <= 2 | Enum `power_mode_t`; enforced in `watering_set_power_mode()` | `BT_ATT_ERR_VALUE_NOT_ALLOWED` (invalid) or `BT_ATT_ERR_UNLIKELY` (busy) |
 | `flow_calibration` | 100 <= value <= 10000 pulses/L | Limits inline | `BT_ATT_ERR_VALUE_NOT_ALLOWED` |
 | BME measurement interval | 0 = keep prior interval; >0 applied | Passed to sensor manager without additional validation | None (zero is a no-op) |
-| Rain sensitivity | Clamped to 0.0-1.0 | Hard clamp inside handler | No hard failure; out-of-range is snapped |
-| Rain lookback / skip | Any `uint16_t` / float accepted | `rain_integration_set_config()` further checks hardware limits | Warnings logged on subsystem failure |
+| Rain fields | **RESERVED** - all rain fields are ignored | N/A | Values silently ignored; configure rain per-channel |
 | Temperature sensitivity | Clamped to [`TEMP_COMP_MIN_SENSITIVITY` (0.01), `TEMP_COMP_MAX_SENSITIVITY` (0.20)] | See `temperature_compensation.h` | Clamp only |
 | Base temperature | Clamped to [`TEMP_COMP_MIN_TEMP_C` (-10 deg C), `TEMP_COMP_MAX_TEMP_C` (50 deg C)] | See `temperature_compensation.h` | Clamp only |
 | Offset / length | 0 <= offset <= 56 and no overflow | Inline checks | `BT_ATT_ERR_INVALID_OFFSET` |
@@ -107,7 +107,7 @@ All integers are little-endian. Floats are IEEE-754 single precision.
 - `set_flow_calibration()` / `get_flow_calibration()` - flow sensor pulses-to-litres scaling (persists itself).
 - `master_valve_set_config()` / `master_valve_get_config()` - controls upstream valve sequencing.
 - `sensor_manager_configure_bme280()` / `bme280_system_get_config()` - environmental sensor runtime configuration.
-- `rain_integration_set_config()`, `rain_integration_save_config()`, `rain_integration_get_config()` - global rain compensation.
+- Rain compensation is configured per-channel only (see Channel Configuration characteristic).
 - `watering_get_channel()` loop - pushes temperature defaults into every channel struct.
 - `watering_save_config_priority(true)` - persists master valve + watering state to NVS.
 - `environmental_data_get_current()` - supplies data quality and sensor timestamp.
@@ -151,13 +151,15 @@ function buildEnhancedSystemConfig(config) {
   view.setUint8(o + 2, 0); // sensor_status placeholder
   o += 3;
 
+  // Rain compensation fields are RESERVED (always write zeros)
+  // Rain compensation is configured per-channel only via Channel Configuration
+  view.setUint8(o++, 0);  // _reserved_rain_enabled
   const comp = config.compensation ?? {};
-  view.setUint8(o++, comp.rainEnabled ? 1 : 0);
   view.setUint8(o++, comp.tempEnabled ? 1 : 0);
-  view.setFloat32(o, comp.rainSensitivity ?? 0.50, true);
+  view.setFloat32(o, 0.0, true);  // _reserved_rain_sensitivity
   view.setFloat32(o + 4, comp.tempSensitivity ?? 0.05, true);
-  view.setUint16(o + 8, comp.rainLookbackHours ?? 24, true);
-  view.setFloat32(o + 10, comp.rainSkipThreshold ?? 5.0, true);
+  view.setUint16(o + 8, 0, true);  // _reserved_rain_lookback_hours
+  view.setFloat32(o + 10, 0.0, true);  // _reserved_rain_skip_threshold
   view.setFloat32(o + 14, comp.tempBaseTemperature ?? 20.0, true);
   o += 18;
 
@@ -211,12 +213,12 @@ def decode_system_config(payload: bytes) -> dict:
 
   comp_offset = 20
   cfg['compensation'] = {
-    'rain_enabled': view[comp_offset] == 1,
+    '_reserved_rain_enabled': view[comp_offset],  # RESERVED - always 0, rain is per-channel only
     'temp_enabled': view[comp_offset + 1] == 1,
-    'rain_sensitivity': struct.unpack_from('<f', view, comp_offset + 2)[0],
+    '_reserved_rain_sensitivity': struct.unpack_from('<f', view, comp_offset + 2)[0],  # RESERVED
     'temp_sensitivity': struct.unpack_from('<f', view, comp_offset + 6)[0],
-    'rain_lookback_hours': struct.unpack_from('<H', view, comp_offset + 10)[0],
-    'rain_skip_threshold': struct.unpack_from('<f', view, comp_offset + 12)[0],
+    '_reserved_rain_lookback_hours': struct.unpack_from('<H', view, comp_offset + 10)[0],  # RESERVED
+    '_reserved_rain_skip_threshold': struct.unpack_from('<f', view, comp_offset + 12)[0],  # RESERVED
     'temp_base_temperature': struct.unpack_from('<f', view, comp_offset + 16)[0],
   }
 
@@ -259,7 +261,7 @@ def validate_payload(cfg: dict) -> None:
 | `BT_ATT_ERR_VALUE_NOT_ALLOWED` on first fragment | Payload passed validation but master valve or calibration check failed | Early exit with log | Audit ranges: power mode 0-2, flow 100-10000, OSR <=5, ensure master valve overlaps make sense |
 | `BT_ATT_ERR_UNLIKELY` | `watering_set_power_mode()` returned `WATERING_ERROR_BUSY` | No subsystems updated | Retry after scheduler settles; typically within 1-2 seconds |
 | Notification absent | CCC disabled or throttle delaying dispatch | No BLE packet issued | Enable notifications, allow for adaptive delay, or poll with read |
-| Rain sensitivity not applied | Value outside 0-1 or subsystem rejected | Value is clamped, warning logged | Clamp client-side; confirm via readback; inspect logs for rain subsystem errors |
+| Rain sensitivity not applied | Rain fields are RESERVED | Values ignored, field returns 0 | Configure rain compensation per-channel via Channel Configuration characteristic |
 | Temp compensation seemingly unchanged | Channel overrides applied afterwards | Global write rewrites every channel temperature block | Reapply per-channel overrides as needed |
 | BME280 settings unchanged | `sensor_manager_configure_bme280()` returned non-zero | Handler logs warning, continues with previous interval/enable state | Inspect sensor wiring/config; resend once underlying issue resolved |
 | Environmental data quality zero | No valid BME280 sample | Last sensor read timestamp mirrors config update time | Inspect `docs/ble-api/characteristics/23-environmental-data.md`; ensure sensor enabled and connected |

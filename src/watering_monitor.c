@@ -608,13 +608,7 @@ watering_error_t check_rain_sensor_health(void)
         rain_history_clear_all();
     }
     
-    /* Check rain integration configuration */
-    rain_integration_config_t config;
-    ret = rain_integration_get_config(&config);
-    if (ret != WATERING_SUCCESS) {
-        printk("Rain integration config check failed: %d - resetting to defaults\n", ret);
-        rain_integration_reset_config();
-    }
+    /* Rain integration config is now per-channel - no global config to check */
     
     return WATERING_SUCCESS;
 }
@@ -645,16 +639,13 @@ watering_error_t get_rain_sensor_status(char *status_buffer, uint16_t buffer_siz
                            "Rain sensor: Inactive/Error\n");
     }
     
-    /* Rain integration status */
+    /* Rain integration status - now per-channel */
     if (rain_integration_is_enabled()) {
-    float sensitivity = rain_integration_get_sensitivity();
-    float threshold = rain_integration_get_skip_threshold();
         written += snprintf(status_buffer + written, buffer_size - written,
-               "Rain integration: Enabled (%.1f%% sensitivity, %.1fmm threshold)\n",
-               (double)sensitivity, (double)threshold);
+               "Rain integration: Enabled on some channels (per-channel config)\n");
     } else {
         written += snprintf(status_buffer + written, buffer_size - written,
-                           "Rain integration: Disabled\n");
+                           "Rain integration: No channels have rain compensation enabled\n");
     }
     
     /* Recent rainfall data */

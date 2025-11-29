@@ -12,18 +12,13 @@
 
 LOG_MODULE_REGISTER(rain_integration, LOG_LEVEL_INF);
 
-/* NVS storage ID for rain integration config */
-#define NVS_RAIN_INTEGRATION_CONFIG_ID  0x0184
-
-/* Internal state structure */
+/* Internal state structure - no global config, uses per-channel settings only */
 static struct {
-    rain_integration_config_t config;
     bool initialized;
     struct k_mutex mutex;
     uint32_t last_calculation_time;
     rain_irrigation_impact_t last_impact[WATERING_CHANNELS_COUNT];
 } rain_integration_state = {
-    .config = DEFAULT_RAIN_INTEGRATION_CONFIG,
     .initialized = false,
     .last_calculation_time = 0
 };
@@ -60,9 +55,15 @@ static float calculate_reduction_curve(float rainfall_mm, float sensitivity_pct)
  */
 static float get_soil_infiltration_factor(uint8_t channel_id)
 {
-    /* For now, use the global effective rain factor */
-    /* In full implementation, this would look up soil type from channel config */
-    return rain_integration_state.config.effective_rain_factor;
+    /* Use per-channel reduction_factor if available, otherwise default */
+    watering_channel_t *channel = NULL;
+    if (watering_get_channel(channel_id, &channel) == WATERING_SUCCESS && channel != NULL) {
+        if (channel->rain_compensation.enabled && channel->rain_compensation.reduction_factor > 0.0f) {
+            return channel->rain_compensation.reduction_factor;
+        }
+    }
+    /* Default infiltration efficiency */
+    return 0.8f;
 }
 
 /**
@@ -98,27 +99,17 @@ watering_error_t rain_integration_init(void)
         return WATERING_SUCCESS;
     }
     
-    LOG_INF("Initializing rain integration system");
+    LOG_INF("Initializing rain integration system (per-channel config only)");
     
     /* Initialize mutex */
     k_mutex_init(&rain_integration_state.mutex);
-    
-    /* Load configuration from NVS */
-    watering_error_t ret = rain_integration_load_config();
-    if (ret != WATERING_SUCCESS) {
-        LOG_WRN("Failed to load rain integration config, using defaults");
-    }
     
     /* Initialize impact cache */
     memset(rain_integration_state.last_impact, 0, sizeof(rain_integration_state.last_impact));
     
     rain_integration_state.initialized = true;
     
-    LOG_INF("Rain integration system initialized");
-    LOG_INF("Sensitivity: %.1f%%, Skip threshold: %.1f mm, Lookback: %u hours",
-            (double)rain_integration_state.config.rain_sensitivity_pct,
-            (double)rain_integration_state.config.skip_threshold_mm,
-            rain_integration_state.config.lookback_hours);
+    LOG_INF("Rain integration system initialized - using per-channel settings");
     
     return WATERING_SUCCESS;
 }
@@ -128,9 +119,6 @@ watering_error_t rain_integration_deinit(void)
     if (!rain_integration_state.initialized) {
         return WATERING_SUCCESS;
     }
-    
-    /* Save configuration to NVS */
-    rain_integration_save_config();
     
     rain_integration_state.initialized = false;
     
@@ -147,29 +135,30 @@ rain_irrigation_impact_t rain_integration_calculate_impact(uint8_t channel_id)
         return impact;
     }
     
-    if (!rain_integration_state.config.integration_enabled) {
-        impact.confidence_level = 100;
-        return impact;
-    }
-    
     k_mutex_lock(&rain_integration_state.mutex, K_FOREVER);
     
     /* Get channel-specific rain compensation settings */
     watering_channel_t *channel = NULL;
-    float channel_skip_threshold = rain_integration_state.config.skip_threshold_mm; /* fallback to global */
-    float channel_sensitivity = rain_integration_state.config.rain_sensitivity_pct;
-    uint16_t channel_lookback = rain_integration_state.config.lookback_hours;
     watering_mode_t watering_mode = WATERING_BY_DURATION; /* default */
     
-    if (watering_get_channel(channel_id, &channel) == WATERING_SUCCESS && channel != NULL) {
-        /* Use per-channel settings if rain compensation is enabled */
-        if (channel->rain_compensation.enabled) {
-            channel_skip_threshold = channel->rain_compensation.skip_threshold_mm;
-            channel_sensitivity = channel->rain_compensation.sensitivity * 100.0f; /* convert 0-1 to % */
-            channel_lookback = channel->rain_compensation.lookback_hours;
-        }
-        watering_mode = channel->watering_event.watering_mode;
+    if (watering_get_channel(channel_id, &channel) != WATERING_SUCCESS || channel == NULL) {
+        k_mutex_unlock(&rain_integration_state.mutex);
+        impact.confidence_level = 0;
+        return impact;
     }
+    
+    /* Check if rain compensation is enabled for this channel */
+    if (!channel->rain_compensation.enabled) {
+        k_mutex_unlock(&rain_integration_state.mutex);
+        impact.confidence_level = 100;
+        return impact;
+    }
+    
+    /* Use per-channel settings */
+    float channel_skip_threshold = channel->rain_compensation.skip_threshold_mm;
+    float channel_sensitivity = channel->rain_compensation.sensitivity * 100.0f; /* convert 0-1 to % */
+    uint16_t channel_lookback = channel->rain_compensation.lookback_hours;
+    watering_mode = channel->watering_event.watering_mode;
     
     /* Get recent rainfall data using channel-specific lookback */
     float recent_rainfall = rain_history_get_recent_total(channel_lookback);
@@ -222,8 +211,14 @@ watering_error_t rain_integration_adjust_task(uint8_t channel_id, watering_task_
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    if (!rain_integration_state.config.integration_enabled) {
-        return WATERING_SUCCESS; /* No adjustment needed */
+    /* Check if channel has rain compensation enabled */
+    watering_channel_t *channel = NULL;
+    if (watering_get_channel(channel_id, &channel) != WATERING_SUCCESS || channel == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (!channel->rain_compensation.enabled) {
+        return WATERING_SUCCESS; /* No adjustment needed - compensation disabled for this channel */
     }
     
     /* Calculate rain impact */
@@ -264,7 +259,13 @@ bool rain_integration_should_skip_irrigation(uint8_t channel_id)
         return false;
     }
     
-    if (!rain_integration_state.config.integration_enabled) {
+    /* Check if channel has rain compensation enabled */
+    watering_channel_t *channel = NULL;
+    if (watering_get_channel(channel_id, &channel) != WATERING_SUCCESS || channel == NULL) {
+        return false;
+    }
+    
+    if (!channel->rain_compensation.enabled) {
         return false;
     }
     
@@ -278,7 +279,13 @@ float rain_integration_get_reduction_percentage(uint8_t channel_id)
         return 0.0f;
     }
     
-    if (!rain_integration_state.config.integration_enabled) {
+    /* Check if channel has rain compensation enabled */
+    watering_channel_t *channel = NULL;
+    if (watering_get_channel(channel_id, &channel) != WATERING_SUCCESS || channel == NULL) {
+        return 0.0f;
+    }
+    
+    if (!channel->rain_compensation.enabled) {
         return 0.0f;
     }
     
@@ -286,103 +293,65 @@ float rain_integration_get_reduction_percentage(uint8_t channel_id)
     return impact.irrigation_reduction_pct;
 }
 
+/* ========== DEPRECATED GLOBAL CONFIG FUNCTIONS ========== */
+/* These functions are kept for API compatibility but do nothing.
+ * Rain compensation settings are now per-channel only.
+ * Use watering_channel_t.rain_compensation instead. */
+
 watering_error_t rain_integration_set_config(const rain_integration_config_t *config)
 {
-    if (!rain_integration_state.initialized || !config) {
-        return WATERING_ERROR_INVALID_PARAM;
-    }
-    
-    watering_error_t ret = rain_integration_validate_config(config);
-    if (ret != WATERING_SUCCESS) {
-        return ret;
-    }
-    
-    k_mutex_lock(&rain_integration_state.mutex, K_FOREVER);
-    memcpy(&rain_integration_state.config, config, sizeof(rain_integration_config_t));
-    k_mutex_unlock(&rain_integration_state.mutex);
-    
-    LOG_INF("Rain integration configuration updated");
+    (void)config;
+    LOG_WRN("rain_integration_set_config() is deprecated - use per-channel settings");
     return WATERING_SUCCESS;
 }
 
 watering_error_t rain_integration_get_config(rain_integration_config_t *config)
 {
-    if (!rain_integration_state.initialized || !config) {
+    if (!config) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&rain_integration_state.mutex, K_FOREVER);
-    memcpy(config, &rain_integration_state.config, sizeof(rain_integration_config_t));
-    k_mutex_unlock(&rain_integration_state.mutex);
+    /* Return default values for backwards compatibility */
+    config->rain_sensitivity_pct = 75.0f;
+    config->skip_threshold_mm = 5.0f;
+    config->effective_rain_factor = 0.8f;
+    config->lookback_hours = 48;
+    config->integration_enabled = true; /* Always "enabled" - actual enable is per-channel */
     
+    LOG_WRN("rain_integration_get_config() is deprecated - use per-channel settings");
     return WATERING_SUCCESS;
 }
 
 watering_error_t rain_integration_set_sensitivity(float sensitivity_pct)
 {
-    if (!rain_integration_state.initialized) {
-        return WATERING_ERROR_NOT_INITIALIZED;
-    }
-    
-    if (sensitivity_pct < 0.0f || sensitivity_pct > 100.0f) {
-        return WATERING_ERROR_INVALID_PARAM;
-    }
-    
-    k_mutex_lock(&rain_integration_state.mutex, K_FOREVER);
-    rain_integration_state.config.rain_sensitivity_pct = sensitivity_pct;
-    k_mutex_unlock(&rain_integration_state.mutex);
-    
-    LOG_INF("Rain sensitivity set to %.1f%%", (double)sensitivity_pct);
+    (void)sensitivity_pct;
+    LOG_WRN("rain_integration_set_sensitivity() is deprecated - use per-channel settings");
     return WATERING_SUCCESS;
 }
 
 float rain_integration_get_sensitivity(void)
 {
-    if (!rain_integration_state.initialized) {
-        return 0.0f;
-    }
-    
-    return rain_integration_state.config.rain_sensitivity_pct;
+    LOG_WRN("rain_integration_get_sensitivity() is deprecated - use per-channel settings");
+    return 75.0f; /* Default value */
 }
 
 watering_error_t rain_integration_set_skip_threshold(float threshold_mm)
 {
-    if (!rain_integration_state.initialized) {
-        return WATERING_ERROR_NOT_INITIALIZED;
-    }
-    
-    if (threshold_mm < 0.0f || threshold_mm > 100.0f) {
-        return WATERING_ERROR_INVALID_PARAM;
-    }
-    
-    k_mutex_lock(&rain_integration_state.mutex, K_FOREVER);
-    rain_integration_state.config.skip_threshold_mm = threshold_mm;
-    k_mutex_unlock(&rain_integration_state.mutex);
-    
-    LOG_INF("Rain skip threshold set to %.1f mm", (double)threshold_mm);
+    (void)threshold_mm;
+    LOG_WRN("rain_integration_set_skip_threshold() is deprecated - use per-channel settings");
     return WATERING_SUCCESS;
 }
 
 float rain_integration_get_skip_threshold(void)
 {
-    if (!rain_integration_state.initialized) {
-        return 0.0f;
-    }
-    
-    return rain_integration_state.config.skip_threshold_mm;
+    LOG_WRN("rain_integration_get_skip_threshold() is deprecated - use per-channel settings");
+    return 5.0f; /* Default value */
 }
 
 watering_error_t rain_integration_set_enabled(bool enabled)
 {
-    if (!rain_integration_state.initialized) {
-        return WATERING_ERROR_NOT_INITIALIZED;
-    }
-    
-    k_mutex_lock(&rain_integration_state.mutex, K_FOREVER);
-    rain_integration_state.config.integration_enabled = enabled;
-    k_mutex_unlock(&rain_integration_state.mutex);
-    
-    LOG_INF("Rain integration %s", enabled ? "enabled" : "disabled");
+    (void)enabled;
+    LOG_WRN("rain_integration_set_enabled() is deprecated - use per-channel settings");
     return WATERING_SUCCESS;
 }
 
@@ -392,7 +361,16 @@ bool rain_integration_is_enabled(void)
         return false;
     }
     
-    return rain_integration_state.config.integration_enabled;
+    /* Return true if any channel has rain compensation enabled */
+    for (uint8_t i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+        watering_channel_t *channel = NULL;
+        if (watering_get_channel(i, &channel) == WATERING_SUCCESS && channel != NULL) {
+            if (channel->rain_compensation.enabled) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 float rain_integration_calculate_effective_rainfall(float rainfall_mm, uint8_t channel_id)
@@ -405,48 +383,17 @@ float rain_integration_calculate_effective_rainfall(float rainfall_mm, uint8_t c
     return rainfall_mm * soil_factor;
 }
 
+/* Deprecated - global config no longer used */
 watering_error_t rain_integration_save_config(void)
 {
-    if (!rain_integration_state.initialized) {
-        return WATERING_ERROR_NOT_INITIALIZED;
-    }
-    
-    int ret = nvs_config_write(NVS_RAIN_INTEGRATION_CONFIG_ID, 
-                              &rain_integration_state.config, 
-                              sizeof(rain_integration_config_t));
-    if (ret != 0) {
-        LOG_ERR("Failed to save rain integration config to NVS: %d", ret);
-        return WATERING_ERROR_STORAGE;
-    }
-    
-    LOG_INF("Rain integration configuration saved to NVS");
+    LOG_WRN("rain_integration_save_config() is deprecated - rain config is per-channel only");
     return WATERING_SUCCESS;
 }
 
+/* Deprecated - global config no longer used */
 watering_error_t rain_integration_load_config(void)
 {
-    if (!rain_integration_state.initialized) {
-        return WATERING_ERROR_NOT_INITIALIZED;
-    }
-    
-    int ret = nvs_config_read(NVS_RAIN_INTEGRATION_CONFIG_ID, 
-                             &rain_integration_state.config, 
-                             sizeof(rain_integration_config_t));
-    if (ret != 0) {
-        LOG_WRN("Failed to load rain integration config from NVS: %d, using defaults", ret);
-        rain_integration_state.config = (rain_integration_config_t)DEFAULT_RAIN_INTEGRATION_CONFIG;
-        return WATERING_ERROR_STORAGE;
-    }
-    
-    /* Validate loaded configuration */
-    ret = rain_integration_validate_config(&rain_integration_state.config);
-    if (ret != WATERING_SUCCESS) {
-        LOG_WRN("Loaded rain integration config is invalid, using defaults");
-        rain_integration_state.config = (rain_integration_config_t)DEFAULT_RAIN_INTEGRATION_CONFIG;
-        return ret;
-    }
-    
-    LOG_INF("Rain integration configuration loaded from NVS");
+    LOG_WRN("rain_integration_load_config() is deprecated - rain config is per-channel only");
     return WATERING_SUCCESS;
 }
 
@@ -481,15 +428,7 @@ watering_error_t rain_integration_validate_config(const rain_integration_config_
 
 watering_error_t rain_integration_reset_config(void)
 {
-    if (!rain_integration_state.initialized) {
-        return WATERING_ERROR_NOT_INITIALIZED;
-    }
-    
-    k_mutex_lock(&rain_integration_state.mutex, K_FOREVER);
-    rain_integration_state.config = (rain_integration_config_t)DEFAULT_RAIN_INTEGRATION_CONFIG;
-    k_mutex_unlock(&rain_integration_state.mutex);
-    
-    LOG_INF("Rain integration configuration reset to defaults");
+    LOG_WRN("rain_integration_reset_config() is deprecated - rain config is per-channel only");
     return WATERING_SUCCESS;
 }
 
@@ -500,13 +439,8 @@ void rain_integration_debug_info(void)
         return;
     }
     
-    printk("=== Rain Integration Debug Info ===\n");
+    printk("=== Rain Integration Debug Info (Per-Channel Mode) ===\n");
     printk("Initialized: Yes\n");
-    printk("Integration enabled: %s\n", rain_integration_state.config.integration_enabled ? "Yes" : "No");
-    printk("Rain sensitivity: %.1f%%\n", (double)rain_integration_state.config.rain_sensitivity_pct);
-    printk("Skip threshold: %.1f mm\n", (double)rain_integration_state.config.skip_threshold_mm);
-    printk("Effective rain factor: %.2f\n", (double)rain_integration_state.config.effective_rain_factor);
-    printk("Lookback hours: %u\n", rain_integration_state.config.lookback_hours);
     
     /* Show recent rainfall data */
     float recent_24h = rain_history_get_last_24h();
@@ -514,11 +448,22 @@ void rain_integration_debug_info(void)
     printk("Recent rainfall (24h): %.2f mm\n", (double)recent_24h);
     printk("Recent rainfall (48h): %.2f mm\n", (double)recent_48h);
     
-    /* Show impact for each channel */
+    /* Show per-channel settings and impact */
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
-        rain_irrigation_impact_t impact = rain_integration_calculate_impact(i);
-    printk("Channel %d: %.1f%% reduction, skip=%s\n", 
-           i, (double)impact.irrigation_reduction_pct, impact.skip_irrigation ? "yes" : "no");
+        watering_channel_t *channel = NULL;
+        if (watering_get_channel(i, &channel) == WATERING_SUCCESS && channel != NULL) {
+            if (channel->rain_compensation.enabled) {
+                printk("Channel %d: ENABLED - sensitivity=%.1f, threshold=%.1fmm, lookback=%uh\n",
+                       i, (double)channel->rain_compensation.sensitivity,
+                       (double)channel->rain_compensation.skip_threshold_mm,
+                       channel->rain_compensation.lookback_hours);
+                rain_irrigation_impact_t impact = rain_integration_calculate_impact(i);
+                printk("  -> %.1f%% reduction, skip=%s\n",
+                       (double)impact.irrigation_reduction_pct, impact.skip_irrigation ? "yes" : "no");
+            } else {
+                printk("Channel %d: DISABLED\n", i);
+            }
+        }
     }
     
     printk("===================================\n");
@@ -532,14 +477,25 @@ rain_irrigation_impact_t rain_integration_test_calculation(float rainfall_mm, ui
         return impact;
     }
     
+    /* Get channel-specific settings */
+    watering_channel_t *channel = NULL;
+    float channel_sensitivity = 75.0f; /* default */
+    float channel_skip_threshold = 5.0f; /* default */
+    
+    if (watering_get_channel(channel_id, &channel) == WATERING_SUCCESS && channel != NULL) {
+        if (channel->rain_compensation.enabled) {
+            channel_sensitivity = channel->rain_compensation.sensitivity * 100.0f;
+            channel_skip_threshold = channel->rain_compensation.skip_threshold_mm;
+        }
+    }
+    
     /* Simulate calculation with provided rainfall */
     float soil_factor = get_soil_infiltration_factor(channel_id);
     float effective_rainfall = rainfall_mm * soil_factor;
     
-    float reduction_pct = calculate_reduction_curve(effective_rainfall, 
-                                                   rain_integration_state.config.rain_sensitivity_pct);
+    float reduction_pct = calculate_reduction_curve(effective_rainfall, channel_sensitivity);
     
-    bool skip_irrigation = (rainfall_mm >= rain_integration_state.config.skip_threshold_mm);
+    bool skip_irrigation = (rainfall_mm >= channel_skip_threshold);
     
     impact.recent_rainfall_mm = rainfall_mm;
     impact.effective_rainfall_mm = effective_rainfall;
@@ -650,7 +606,16 @@ rain_irrigation_impact_t rain_integration_calculate_impact_enhanced(uint8_t chan
         return impact;
     }
     
-    if (!rain_integration_state.config.integration_enabled) {
+    /* Get channel-specific settings */
+    watering_channel_t *channel = NULL;
+    if (watering_get_channel(channel_id, &channel) != WATERING_SUCCESS || channel == NULL) {
+        log_integration_error(RAIN_INTEGRATION_ERROR_CONFIG_INVALID, "Channel not found");
+        impact.confidence_level = 0;
+        return impact;
+    }
+    
+    /* Check if rain compensation is enabled for this channel */
+    if (!channel->rain_compensation.enabled) {
         impact.confidence_level = 100;
         integration_diagnostics.successful_calculations++;
         return impact;
@@ -671,8 +636,13 @@ rain_irrigation_impact_t rain_integration_calculate_impact_enhanced(uint8_t chan
     
     k_mutex_lock(&rain_integration_state.mutex, K_FOREVER);
     
+    /* Use per-channel settings */
+    float channel_sensitivity = channel->rain_compensation.sensitivity * 100.0f;
+    float channel_skip_threshold = channel->rain_compensation.skip_threshold_mm;
+    uint16_t channel_lookback = channel->rain_compensation.lookback_hours;
+    
     /* Get recent rainfall data with validation */
-    float recent_rainfall = rain_history_get_recent_total(rain_integration_state.config.lookback_hours);
+    float recent_rainfall = rain_history_get_recent_total(channel_lookback);
     
     /* Validate rainfall data */
     if (recent_rainfall < 0.0f || recent_rainfall > 500.0f) {
@@ -692,8 +662,7 @@ rain_irrigation_impact_t rain_integration_calculate_impact_enhanced(uint8_t chan
     float effective_rainfall = recent_rainfall * soil_factor;
     
     /* Calculate irrigation reduction percentage */
-    float reduction_pct = calculate_reduction_curve(effective_rainfall, 
-                                                   rain_integration_state.config.rain_sensitivity_pct);
+    float reduction_pct = calculate_reduction_curve(effective_rainfall, channel_sensitivity);
     
     /* Validate reduction percentage */
     if (reduction_pct < 0.0f || reduction_pct > 100.0f) {
@@ -704,7 +673,7 @@ rain_irrigation_impact_t rain_integration_calculate_impact_enhanced(uint8_t chan
     }
     
     /* Determine if irrigation should be skipped completely */
-    bool skip_irrigation = (recent_rainfall >= rain_integration_state.config.skip_threshold_mm);
+    bool skip_irrigation = (recent_rainfall >= channel_skip_threshold);
     
     /* Calculate confidence level based on data quality */
     uint32_t current_time = k_uptime_get_32() / 1000;
@@ -760,13 +729,24 @@ int rain_integration_get_diagnostics(char *buffer, uint16_t buffer_size)
     uint32_t current_time = k_uptime_get_32() / 1000;
     
     written += snprintf(buffer + written, buffer_size - written,
-                       "=== Rain Integration Diagnostics ===\n");
+                       "=== Rain Integration Diagnostics (Per-Channel Mode) ===\n");
     
     written += snprintf(buffer + written, buffer_size - written,
                        "Initialized: %s\n", rain_integration_state.initialized ? "Yes" : "No");
     
+    /* Count channels with rain compensation enabled */
+    int enabled_channels = 0;
+    for (uint8_t i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+        watering_channel_t *channel = NULL;
+        if (watering_get_channel(i, &channel) == WATERING_SUCCESS && channel != NULL) {
+            if (channel->rain_compensation.enabled) {
+                enabled_channels++;
+            }
+        }
+    }
+    
     written += snprintf(buffer + written, buffer_size - written,
-                       "Enabled: %s\n", rain_integration_state.config.integration_enabled ? "Yes" : "No");
+                       "Channels with rain compensation: %d/%d\n", enabled_channels, WATERING_CHANNELS_COUNT);
     
     written += snprintf(buffer + written, buffer_size - written,
                        "Last Error: %d (%us ago)\n", integration_diagnostics.last_error,
@@ -781,12 +761,6 @@ int rain_integration_get_diagnostics(char *buffer, uint16_t buffer_size)
                        integration_diagnostics.successful_calculations,
                        integration_diagnostics.failed_calculations,
                        (double)integration_diagnostics.calculation_success_rate);
-    
-    written += snprintf(buffer + written, buffer_size - written,
-                       "Configuration: %.1f%% sensitivity, %.1f mm threshold, %u hours lookback\n",
-                       (double)rain_integration_state.config.rain_sensitivity_pct,
-                       (double)rain_integration_state.config.skip_threshold_mm,
-                       rain_integration_state.config.lookback_hours);
     
     written += snprintf(buffer + written, buffer_size - written,
                        "====================================\n");
@@ -822,13 +796,6 @@ void rain_integration_periodic_health_check(void)
         return;
     }
     
-    /* Validate current configuration */
-    if (!validate_integration_config(&rain_integration_state.config)) {
-        log_integration_error(RAIN_INTEGRATION_ERROR_CONFIG_INVALID, "Configuration validation failed");
-        /* Reset to defaults */
-        rain_integration_reset_config();
-    }
-    
     /* Check calculation success rate */
     if (integration_diagnostics.calculation_success_rate < 80.0f && 
         (integration_diagnostics.successful_calculations + integration_diagnostics.failed_calculations) > 10) {
@@ -836,9 +803,10 @@ void rain_integration_periodic_health_check(void)
         (double)integration_diagnostics.calculation_success_rate);
     }
     
-    /* Check sensor availability */
-    if (rain_integration_state.config.integration_enabled && !rain_sensor_is_active()) {
-        LOG_WRN("Rain integration enabled but sensor not active");
+    /* Check sensor availability if any channel has rain compensation enabled */
+    bool any_enabled = rain_integration_is_enabled();
+    if (any_enabled && !rain_sensor_is_active()) {
+        LOG_WRN("Rain compensation enabled on some channels but sensor not active");
     }
     
     LOG_DBG("Rain integration health check completed - success rate: %.1f%%",

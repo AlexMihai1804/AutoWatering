@@ -302,14 +302,14 @@ struct enhanced_system_config_data {
     uint16_t bme280_measurement_interval; /* Measurement interval in seconds */
     uint8_t bme280_sensor_status;   /* Current sensor status (read-only) */
     
-    /* Global compensation system settings */
-    uint8_t global_rain_compensation_enabled; /* Global rain compensation enable */
+    /* Global temperature compensation system settings (rain is per-channel only) */
+    uint8_t _reserved_rain_enabled; /* DEPRECATED: Was global_rain_compensation_enabled, now unused */
     uint8_t global_temp_compensation_enabled; /* Global temperature compensation enable */
-    float global_rain_sensitivity;  /* Default rain sensitivity (0.0-1.0) */
+    float _reserved_rain_sensitivity;  /* DEPRECATED: Was global_rain_sensitivity, now unused */
     float global_temp_sensitivity;   /* Default temperature sensitivity */
-    uint16_t global_rain_lookback_hours; /* Default rain lookback period */
-    float global_rain_skip_threshold; /* Default rain skip threshold (mm) */
-    float global_temp_base_temperature; /* Default base temperature (ÂdegC) */
+    uint16_t _reserved_rain_lookback; /* DEPRECATED: Was global_rain_lookback_hours, now unused */
+    float _reserved_rain_threshold; /* DEPRECATED: Was global_rain_skip_threshold, now unused */
+    float global_temp_base_temperature; /* Default base temperature (°C) */
     
     /* System status indicators */
     uint8_t interval_mode_active_channels; /* Bitmap of channels using interval mode */
