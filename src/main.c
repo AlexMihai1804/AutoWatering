@@ -349,6 +349,15 @@ int main(void) {
         k_sleep(K_FOREVER);
     }
     printk("NVS initialization successful\n");
+    
+    // Initialize onboarding state EARLY - must be before any nvs_save_* calls
+    // that update onboarding flags (flow, timezone, rain sensor, etc.)
+    printk("Initializing onboarding state system (early)...\n");
+    ret = onboarding_state_init();
+    if (ret != 0) {
+        printk("Warning: Onboarding state system initialization failed: %d\n", ret);
+    }
+    
     k_sleep(K_MSEC(200));
     printk("Starting valve subsystem init...\n");
     ret = valve_init_wrapper();
@@ -429,12 +438,8 @@ int main(void) {
         printk("Warning: Configuration status system initialization failed: %d\n", config_err);
     }
     
-    // Initialize onboarding state management
-    printk("Initializing onboarding state system...\n");
-    ret = onboarding_state_init();
-    if (ret != 0) {
-        printk("Warning: Onboarding state system initialization failed: %d\n", ret);
-    }
+    // NOTE: onboarding_state_init() is called early, right after nvs_config_init()
+    // to ensure flag updates during boot are not lost
     
     // Initialize reset controller
     printk("Initializing reset controller...\n");
