@@ -1,14 +1,14 @@
 # Onboarding Status Characteristic (UUID: 12345678-1234-5678-1234-56789abcde20)
 
 > **⚠️ CRITICAL: Read vs Notify Format Difference**
-> - **Read**: Returns raw 29-byte struct (NO header)
+> - **Read**: Returns raw 33-byte struct (NO header)
 > - **Notify**: Returns 8-byte header + payload (ALWAYS has header, even if single fragment)
 
 > Operation Summary
 | Operation | Payload | Size | Fragmentation | Notes |
 |-----------|---------|------|---------------|-------|
-| Read | `struct onboarding_status_data` | 29 B | None | **Direct data, NO header** |
-| Notify | `history_fragment_header_t` + payload | 8 B + ≤29 B | Always uses unified header | **ALWAYS has 8-byte header prefix** |
+| Read | `struct onboarding_status_data` | 33 B | None | **Direct data, NO header** |
+| Notify | `history_fragment_header_t` + payload | 8 B + ≤33 B | Always uses unified header | **ALWAYS has 8-byte header prefix** |
 | Write | - | - | - | Flags mutate through internal onboarding APIs only |
 
 Snapshot of onboarding progress used by clients to drive setup workflows. Firmware stores the underlying state in NVS and recomputes percentages on each read/notify.
@@ -66,9 +66,9 @@ Advanced configuration flags. Bit position = `channel_id * 8 + flag_bit`.
 | 2 | `CHANNEL_EXT_FLAG_TEMP_COMP_SET` | Temperature compensation enabled for channel |
 | 3 | `CHANNEL_EXT_FLAG_SCHEDULE_SET` | Schedule configured for channel |
 | 4 | `CHANNEL_EXT_FLAG_LATITUDE_SET` | Latitude set for channel (≠ 0) |
-| 5 | `CHANNEL_EXT_FLAG_AUTO_MODE_SET` | Auto mode explicitly configured |
-| 6 | `CHANNEL_EXT_FLAG_INTERVAL_MODE_SET` | Interval mode configured |
-| 7 | Reserved | Reserved for future use |
+| 5 | `CHANNEL_EXT_FLAG_VOLUME_LIMIT_SET` | Max volume limit configured (> 0) |
+| 6 | `CHANNEL_EXT_FLAG_PLANTING_DATE_SET` | Planting date configured (> 0) |
+| 7 | `CHANNEL_EXT_FLAG_CYCLE_SOAK_SET` | Cycle & soak enabled for clay soils |
 
 **FAO-56 Requirements**: For `CHANNEL_EXT_FLAG_FAO56_READY` to be set:
 - `CHANNEL_FLAG_PLANT_TYPE_SET` ✓
@@ -111,7 +111,7 @@ Notifications always include the unified 8-byte header so clients can reuse the 
 | `fragment_size` | Bytes of payload appended to this header |
 | `reserved` | 0 |
 
-The handler computes the negotiated ATT payload (`mtu - 3`). If it exceeds 29 bytes, only one fragment is produced, but the header is still present. For smaller MTUs, the struct is split across multiple packets with a 20 ms delay between sends. Clients should buffer fragments until all (`fragment_index + 1 == total_fragments`) arrive, then parse the 29-byte payload as the structure above.
+The handler computes the negotiated ATT payload (`mtu - 3`). If it exceeds 33 bytes, only one fragment is produced, but the header is still present. For smaller MTUs, the struct is split across multiple packets with a 20 ms delay between sends. Clients should buffer fragments until all (`fragment_index + 1 == total_fragments`) arrive, then parse the 33-byte payload as the structure above.
 
 ## Behaviour
 - **Read path**: Calls `onboarding_get_state()` and mirrors the contents directly into the BLE struct. If state retrieval fails, a `BT_ATT_ERR_UNLIKELY` is returned.
@@ -127,10 +127,10 @@ The handler computes the negotiated ATT payload (`mtu - 3`). If it exceeds 29 by
 ### Parsing Examples (Web Bluetooth)
 
 **IMPORTANT**: Read and Notify return DIFFERENT formats!
-- **Read**: Returns raw 29-byte `onboarding_status_data` structure (no header)
+- **Read**: Returns raw 33-byte `onboarding_status_data` structure (no header)
 - **Notify**: Returns 8-byte `history_fragment_header_t` + payload (may be fragmented)
 
-#### Parsing a Read Response (no header, 29 bytes)
+#### Parsing a Read Response (no header, 33 bytes)
 ```javascript
 function parseOnboardingStatusRead(dataView) {
   // Read response has NO header - starts directly with data
@@ -140,16 +140,16 @@ function parseOnboardingStatusRead(dataView) {
   const readU64 = () => { const v = dataView.getBigUint64(offset, true); offset += 8; return v; };
 
   return {
-    overall: readU8(),           // offset 0
-    channels: readU8(),          // offset 1
-    system: readU8(),            // offset 2
-    schedules: readU8(),         // offset 3
-    channelFlags: readU64(),     // offset 4-11
-    systemFlags: readU32(),      // offset 12-15
-    scheduleFlags: readU8(),     // offset 16
-    onboardingStart: readU32(),  // offset 17-20
-    lastUpdate: readU32()        // offset 21-24
-    // reserved[4] at offset 25-28 (ignored)
+    overall: readU8(),              // offset 0
+    channels: readU8(),             // offset 1
+    system: readU8(),               // offset 2
+    schedules: readU8(),            // offset 3
+    channelFlags: readU64(),        // offset 4-11  (basic flags)
+    systemFlags: readU32(),         // offset 12-15
+    scheduleFlags: readU8(),        // offset 16
+    onboardingStart: readU32(),     // offset 17-20
+    lastUpdate: readU32(),          // offset 21-24
+    channelExtendedFlags: readU64() // offset 25-32 (extended flags)
   };
 }
 ```
@@ -194,7 +194,7 @@ function handleOnboardingNotification(dataView) {
       offset += frag.length;
     }
     
-    // Parse the reassembled 29-byte structure
+    // Parse the reassembled 33-byte structure
     const view = new DataView(complete.buffer);
     return parseOnboardingStatusRead(view);
   }
@@ -203,8 +203,8 @@ function handleOnboardingNotification(dataView) {
 }
 ```
 
-#### Single-Fragment Shortcut (MTU >= 40)
-If your MTU is large enough (≥40 bytes), the entire payload fits in one fragment:
+#### Single-Fragment Shortcut (MTU >= 44)
+If your MTU is large enough (≥44 bytes), the entire payload fits in one fragment:
 ```javascript
 function parseOnboardingSingleFragment(dataView) {
   // Skip 8-byte header, then parse as read response

@@ -97,9 +97,9 @@ typedef struct {
 #define CHANNEL_EXT_FLAG_TEMP_COMP_SET       (1 << 2)  /* Temperature compensation configured */
 #define CHANNEL_EXT_FLAG_SCHEDULE_SET        (1 << 3)  /* Schedule configured for this channel */
 #define CHANNEL_EXT_FLAG_LATITUDE_SET        (1 << 4)  /* Latitude set for this channel */
-#define CHANNEL_EXT_FLAG_AUTO_MODE_SET       (1 << 5)  /* Auto mode explicitly configured */
-#define CHANNEL_EXT_FLAG_INTERVAL_MODE_SET   (1 << 6)  /* Interval mode configured */
-#define CHANNEL_EXT_FLAG_RESERVED            (1 << 7)  /* Reserved for future use */
+#define CHANNEL_EXT_FLAG_VOLUME_LIMIT_SET    (1 << 5)  /* Max volume limit configured */
+#define CHANNEL_EXT_FLAG_PLANTING_DATE_SET   (1 << 6)  /* Planting date configured */
+#define CHANNEL_EXT_FLAG_CYCLE_SOAK_SET      (1 << 7)  /* Cycle & soak enabled for clay soils */
 
 // System configuration flag bits
 #define SYSTEM_FLAG_TIMEZONE_SET        (1 << 0) /* Timezone/DST configuration persisted */

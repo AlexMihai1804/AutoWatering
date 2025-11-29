@@ -6539,6 +6539,17 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
                 onboarding_check_fao56_ready(env_data->channel_id);
             }
             
+            /* Update extended flags for volume limit and planting date */
+            if (env_data->max_volume_limit_l > 0.0f) {
+                onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_VOLUME_LIMIT_SET, true);
+            }
+            if (env_data->planting_date_unix > 0) {
+                onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_PLANTING_DATE_SET, true);
+            }
+            if (env_data->enable_cycle_soak) {
+                onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_CYCLE_SOAK_SET, true);
+            }
+            
             printk("✅ BLE: Growing environment updated for channel %u via fragmentation\n", 
                     env_data->channel_id);
             
@@ -6664,6 +6675,17 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_LATITUDE_SET, true);
         /* Check if FAO-56 requirements are now met */
         onboarding_check_fao56_ready(env_data->channel_id);
+    }
+    
+    /* Update extended flags for volume limit and planting date */
+    if (env_data->max_volume_limit_l > 0.0f) {
+        onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_VOLUME_LIMIT_SET, true);
+    }
+    if (env_data->planting_date_unix > 0) {
+        onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_PLANTING_DATE_SET, true);
+    }
+    if (env_data->enable_cycle_soak) {
+        onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_CYCLE_SOAK_SET, true);
     }
     
     printk("✅ BLE: Growing environment updated for channel %u\n", env_data->channel_id);
