@@ -367,8 +367,8 @@ int set_flow_calibration(uint32_t pulses_per_liter)
     current_flow_calibration = pulses_per_liter;
     printk("Flow calibration updated: %u pulses/L\n", current_flow_calibration);
     
-    /* Save to persistent storage */
-    int nvs_ret = nvs_config_write(NVS_KEY_FLOW_CALIBRATION, &current_flow_calibration, sizeof(current_flow_calibration));
+    /* Save to persistent storage (also updates onboarding flag) */
+    int nvs_ret = nvs_save_flow_calibration(current_flow_calibration);
     if (nvs_ret < 0) {
         LOG_ERR("Failed to save flow calibration to NVS: %d", nvs_ret);
         return nvs_ret;
