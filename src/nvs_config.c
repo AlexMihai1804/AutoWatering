@@ -199,7 +199,12 @@ int nvs_save_timezone_config(const timezone_config_t *config)
     if (!config) {
         return -EINVAL;
     }
-    return nvs_config_write(ID_TIMEZONE_CONFIG, config, sizeof(*config));
+    int ret = nvs_config_write(ID_TIMEZONE_CONFIG, config, sizeof(*config));
+    if (ret >= 0) {
+        /* Update onboarding flag - timezone has been configured */
+        onboarding_update_system_flag(SYSTEM_FLAG_TIMEZONE_SET, true);
+    }
+    return ret;
 }
 
 int nvs_load_timezone_config(timezone_config_t *config)
