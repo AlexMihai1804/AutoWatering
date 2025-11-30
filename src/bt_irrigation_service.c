@@ -2377,6 +2377,9 @@ static ssize_t write_schedule(struct bt_conn *conn, const struct bt_gatt_attr *a
                              const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
     struct schedule_config_data *value = (struct schedule_config_data *)attr->user_data;
 
+    LOG_INF("Schedule write: len=%u, offset=%u, flags=0x%02x, expected_size=%zu", 
+            len, offset, flags, sizeof(*value));
+
     /* Validate basic parameters */
     if (!conn || !attr || !buf) {
         LOG_ERR("Invalid parameters for Schedule write");
@@ -2401,6 +2404,16 @@ static ssize_t write_schedule(struct bt_conn *conn, const struct bt_gatt_attr *a
         return len; /* ACK */
     }
 
+    /* Log raw data for debugging */
+    if (len <= 16) {
+        char hex_buf[50];
+        int pos = 0;
+        for (uint16_t i = 0; i < len && pos < 48; i++) {
+            pos += snprintf(hex_buf + pos, sizeof(hex_buf) - pos, "%02x ", ((const uint8_t*)buf)[i]);
+        }
+        LOG_INF("Schedule raw data: %s", hex_buf);
+    }
+
     /* Standard write handling for complete schedule structure */
     if (offset + len > sizeof(*value)) {
         LOG_ERR("Schedule write: Invalid offset/length (offset=%u, len=%u, max=%zu)", 
@@ -2408,17 +2421,11 @@ static ssize_t write_schedule(struct bt_conn *conn, const struct bt_gatt_attr *a
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
     }
 
-    /* Only accept complete structure writes */
-    if (len != sizeof(*value)) {
-        LOG_ERR("Schedule write: Invalid length (got %u, expected %zu)", 
-                len, sizeof(*value));
-        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
-    }
-
+    /* Accept writes - copy data first */
     memcpy(((uint8_t *)value) + offset, buf, len);
 
-    /* If complete structure received, validate and commit changes */
-    if (offset + len == sizeof(*value)) {
+    /* Only process if we have complete structure (offset 0, length 9) */
+    if (offset == 0 && len == sizeof(*value)) {
         /* Validate channel ID */
         if (value->channel_id >= WATERING_CHANNELS_COUNT) {
             LOG_ERR("Invalid channel ID in schedule: %u (max %u)", 
