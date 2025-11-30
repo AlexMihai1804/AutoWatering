@@ -12,6 +12,7 @@
 
 #include <string.h>    // for strlen
 #include <stdlib.h>    // for abs function
+#include <stdio.h>     // for snprintf
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
 #include <limits.h>
@@ -2447,10 +2448,19 @@ static ssize_t write_schedule(struct bt_conn *conn, const struct bt_gatt_attr *a
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
         }
 
-        /* Validate value (must be > 0 if auto_enabled = 1) */
-        if (value->auto_enabled && value->value == 0) {
-            LOG_ERR("Invalid schedule value: auto_enabled=1 but value=0");
+        /* Validate value (must be > 0 if auto_enabled = 1, UNLESS FAO-56 is enabled) */
+        /* When FAO-56 is enabled, the system calculates duration/volume automatically */
+        uint8_t ext_flags = onboarding_get_channel_extended_flags(value->channel_id);
+        bool fao56_enabled = (ext_flags & CHANNEL_EXT_FLAG_FAO56_READY) != 0;
+        LOG_INF("Schedule validation: ch=%u, ext_flags=0x%02x, FAO56_READY=%d", 
+                value->channel_id, ext_flags, fao56_enabled);
+        if (value->auto_enabled && value->value == 0 && !fao56_enabled) {
+            LOG_ERR("Invalid schedule value: auto_enabled=1 but value=0 (FAO-56 not enabled, ext_flags=0x%02x)", ext_flags);
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+        if (value->auto_enabled && value->value == 0 && fao56_enabled) {
+            LOG_INF("Schedule value=0 accepted: FAO-56 auto-calculation enabled for channel %u", 
+                    value->channel_id);
         }
 
         /* Validate days_mask (must be > 0 if auto_enabled = 1) */
@@ -6547,8 +6557,17 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
             if (env_data->irrigation_method_index != UINT8_MAX) {
                 onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_IRRIGATION_METHOD_SET, true);
             }
+            /* Debug: print coverage values */
+            printk("Growing env coverage: use_area=%d, area_m2=%d.%02d, plant_count=%u\n",
+                   env_data->use_area_based, 
+                   (int)env_data->coverage.area_m2, 
+                   (int)((env_data->coverage.area_m2 - (int)env_data->coverage.area_m2) * 100),
+                   env_data->coverage.plant_count);
             if (env_data->use_area_based ? (env_data->coverage.area_m2 > 0) : (env_data->coverage.plant_count > 0)) {
                 onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_COVERAGE_SET, true);
+            } else {
+                printk("WARNING: Coverage not set - use_area=%d, area=%.2f, count=%u\n",
+                       env_data->use_area_based, (double)env_data->coverage.area_m2, env_data->coverage.plant_count);
             }
             if (env_data->sun_exposure_pct != 75) { /* 75 is default */
                 onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_SUN_EXPOSURE_SET, true);
@@ -6560,12 +6579,21 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
             /* Save with priority (250ms throttle) */
             watering_save_config_priority(true);
             
+            /* Debug: print latitude value */
+            printk("Growing env latitude_deg=%d.%03d for channel %u\n", 
+                   (int)env_data->latitude_deg, 
+                   (int)((env_data->latitude_deg - (int)env_data->latitude_deg) * 1000),
+                   env_data->channel_id);
+            
             /* Update onboarding flags if location (latitude) is set to a valid value */
             if (env_data->latitude_deg != 0.0f) {
                 onboarding_update_system_flag(SYSTEM_FLAG_LOCATION_SET, true);
                 onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_LATITUDE_SET, true);
                 /* Check if FAO-56 requirements are now met */
+                printk("Calling onboarding_check_fao56_ready for channel %u\n", env_data->channel_id);
                 onboarding_check_fao56_ready(env_data->channel_id);
+            } else {
+                printk("Skipping FAO56 check: latitude_deg is 0.0\n");
             }
             
             /* Update extended flags for volume limit and planting date */

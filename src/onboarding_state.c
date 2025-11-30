@@ -188,8 +188,17 @@ int onboarding_update_channel_flag(uint8_t channel_id, uint8_t flag, bool set) {
     
     k_mutex_lock(&onboarding_mutex, K_FOREVER);
     
-    /* Calculate bit position for this channel and flag */
-    uint8_t bit_position = (channel_id * 8) + flag;
+    /* Flag is already a bitmask (e.g., 1<<0, 1<<1, etc.), so we need to find which bit it represents */
+    /* Convert flag value to bit index: flag=1->0, flag=2->1, flag=4->2, flag=8->3, etc. */
+    uint8_t flag_bit_index = 0;
+    uint8_t temp_flag = flag;
+    while (temp_flag > 1 && flag_bit_index < 8) {
+        temp_flag >>= 1;
+        flag_bit_index++;
+    }
+    
+    /* Calculate absolute bit position in the 64-bit field */
+    uint8_t bit_position = (channel_id * 8) + flag_bit_index;
     if (bit_position >= 64) {
         k_mutex_unlock(&onboarding_mutex);
         return -EINVAL;
@@ -493,6 +502,10 @@ void onboarding_check_fao56_ready(uint8_t channel_id) {
     bool latitude_ok = (extended_flags & CHANNEL_EXT_FLAG_LATITUDE_SET) != 0;
     
     bool fao56_ready = basic_ok && latitude_ok;
+    
+    /* Debug logging */
+    printk("FAO56 check ch=%u: basic_flags=0x%02x (need 0x%02x), ext_flags=0x%02x, basic_ok=%d, lat_ok=%d, ready=%d\n",
+           channel_id, basic_flags, required_basic, extended_flags, basic_ok, latitude_ok, fao56_ready);
     
     /* Update FAO-56 ready flag if state changed */
     bool current_fao56 = (extended_flags & CHANNEL_EXT_FLAG_FAO56_READY) != 0;
