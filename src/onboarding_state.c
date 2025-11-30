@@ -27,6 +27,27 @@ static bool state_initialized = false;
 /* Mutex for thread safety */
 K_MUTEX_DEFINE(onboarding_mutex);
 
+/* Debounce mechanism for BLE notifications */
+#define ONBOARDING_NOTIFY_DEBOUNCE_MS 100  /* Wait 100ms before sending notification */
+static bool notify_pending = false;
+
+static void onboarding_notify_work_handler(struct k_work *work);
+K_WORK_DELAYABLE_DEFINE(onboarding_notify_work, onboarding_notify_work_handler);
+
+/* Debounced notification handler - sends single notification after all updates settle */
+static void onboarding_notify_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+    notify_pending = false;
+    bt_irrigation_onboarding_status_notify();
+}
+
+/* Schedule a debounced notification */
+static void schedule_onboarding_notify(void) {
+    /* Cancel any pending notification and reschedule */
+    k_work_reschedule(&onboarding_notify_work, K_MSEC(ONBOARDING_NOTIFY_DEBOUNCE_MS));
+    notify_pending = true;
+}
+
 /* Helper function to get current timestamp */
 static uint32_t get_current_timestamp(void) {
     return k_uptime_get_32() / 1000; /* Convert to seconds */
@@ -194,8 +215,8 @@ int onboarding_update_channel_flag(uint8_t channel_id, uint8_t flag, bool set) {
     
     k_mutex_unlock(&onboarding_mutex);
     
-    /* Send BLE notification for onboarding progress update */
-    bt_irrigation_onboarding_status_notify();
+    /* Schedule debounced BLE notification for onboarding progress update */
+    schedule_onboarding_notify();
     
     printk("Channel %u flag %u %s\n", channel_id, flag, set ? "set" : "cleared");
     
@@ -238,8 +259,8 @@ int onboarding_update_system_flag(uint32_t flag, bool set) {
     
     k_mutex_unlock(&onboarding_mutex);
     
-    /* Send BLE notification for onboarding progress update */
-    bt_irrigation_onboarding_status_notify();
+    /* Schedule debounced BLE notification for onboarding progress update */
+    schedule_onboarding_notify();
     
     printk("System flag 0x%x %s\n", flag, set ? "set" : "cleared");
     return ret;
@@ -370,8 +391,8 @@ int onboarding_update_schedule_flag(uint8_t channel_id, bool has_schedule) {
     
     k_mutex_unlock(&onboarding_mutex);
     
-    /* Send BLE notification for onboarding progress update */
-    bt_irrigation_onboarding_status_notify();
+    /* Schedule debounced BLE notification for onboarding progress update */
+    schedule_onboarding_notify();
     
     printk("Channel %u schedule flag %s\n", channel_id, has_schedule ? "set" : "cleared");
     return ret;
@@ -434,8 +455,8 @@ int onboarding_update_channel_extended_flag(uint8_t channel_id, uint8_t flag, bo
     
     k_mutex_unlock(&onboarding_mutex);
     
-    /* Send BLE notification for onboarding progress update */
-    bt_irrigation_onboarding_status_notify();
+    /* Schedule debounced BLE notification for onboarding progress update */
+    schedule_onboarding_notify();
     
     printk("Channel %u extended flag 0x%x %s\n", channel_id, flag, set ? "set" : "cleared");
     return ret;
