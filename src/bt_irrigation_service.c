@@ -2704,86 +2704,87 @@ static ssize_t write_system_config(struct bt_conn *conn, const struct bt_gatt_at
     memcpy(((uint8_t *)config) + offset, buf, len);
     system_config_bytes_received = offset + len;
     
-    /* If complete structure received, validate and apply changes */
-    if (offset + len == sizeof(*config)) {
-        /* Validate power_mode */
-        if (config->power_mode > 2) {
-            LOG_ERR("Invalid power_mode: %u (must be 0-2)", config->power_mode);
-            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
-        }
-        
-        /* Validate flow_calibration (reasonable range) */
-        if (config->flow_calibration < 100 || config->flow_calibration > 10000) {
-            LOG_ERR("Invalid flow_calibration: %u (range 100-10000)", config->flow_calibration);
-            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
-        }
-        
-        /* Validate BME280 measurement interval */
-        if (config->bme280_enabled &&
-            config->bme280_measurement_interval == 0) {
-            LOG_ERR("Invalid BME280 measurement interval: 0");
-            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
-        }
-
-        LOG_INF("System Config (enhanced) update: power_mode=%u, flow_cal=%u, bme280_enabled=%u",
-                config->power_mode, config->flow_calibration, config->bme280_enabled);
-        
-        /* Apply writable settings */
-        
-        /* Update power mode */
-        watering_error_t pm_err = watering_set_power_mode((power_mode_t)config->power_mode);
-        if (pm_err != WATERING_SUCCESS) {
-            LOG_ERR("Failed to set power mode: %d", pm_err);
-            if (pm_err == WATERING_ERROR_BUSY) {
-                return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY); /* System busy, try again later */
+    LOG_INF("System Config write: offset=%u, len=%u, total_received=%u, expected=%zu", 
+            offset, len, system_config_bytes_received, sizeof(*config));
+    
+    /* Process fields as they are received - check which fields were written in this chunk */
+    uint16_t write_start = offset;
+    uint16_t write_end = offset + len;
+    
+    /* Field offsets in enhanced_system_config_data:
+     * power_mode: offset 1, size 1
+     * flow_calibration: offset 2, size 4
+     * master_valve_enabled: offset 8, size 1
+     */
+    
+    /* Check if power_mode field was written (offset 1, size 1) */
+    if (write_start <= 1 && write_end >= 2) {
+        if (config->power_mode <= 2) {
+            watering_error_t pm_err = watering_set_power_mode((power_mode_t)config->power_mode);
+            if (pm_err == WATERING_SUCCESS) {
+                onboarding_update_system_flag(SYSTEM_FLAG_POWER_MODE_SET, true);
+                LOG_INF("Power mode updated: %u", config->power_mode);
             } else {
-                return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED); /* Invalid power mode */
+                LOG_ERR("Failed to set power mode: %d", pm_err);
             }
         }
-        
-        /* Update onboarding flag - power mode is now configured */
-        onboarding_update_system_flag(SYSTEM_FLAG_POWER_MODE_SET, true);
-        
-        LOG_INF("Power mode updated: %u (%s)", config->power_mode,
-                (config->power_mode == 0) ? "Normal" :
-                (config->power_mode == 1) ? "Energy-Saving" : 
-                (config->power_mode == 2) ? "Ultra-Low" : "Unknown");
-        
-        /* Update flow calibration */
-        int cal_err = set_flow_calibration(config->flow_calibration);
-        if (cal_err != 0) {
-            LOG_ERR("Failed to set flow calibration: %d", cal_err);
-            return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
+    
+    /* Check if flow_calibration field was written (offset 2, size 4) */
+    if (write_start <= 2 && write_end >= 6) {
+        if (config->flow_calibration >= 100 && config->flow_calibration <= 10000) {
+            int cal_err = set_flow_calibration(config->flow_calibration);
+            if (cal_err == 0) {
+                /* Flag is set inside set_flow_calibration -> nvs_save_flow_calibration */
+                LOG_INF("Flow calibration updated: %u", config->flow_calibration);
+            } else {
+                LOG_ERR("Failed to set flow calibration: %d", cal_err);
+            }
         }
-        
-        /* Update master valve configuration */
+    }
+    
+    /* Check if master_valve_enabled field was written (offset 8+) */
+    if (write_start <= 8 && write_end >= 9) {
+        /* Master valve config starts at offset 8 */
         master_valve_config_t master_config;
         master_config.enabled = (config->master_valve_enabled != 0);
         master_config.pre_start_delay_sec = config->master_valve_pre_delay;
         master_config.post_stop_delay_sec = config->master_valve_post_delay;
         master_config.overlap_grace_sec = config->master_valve_overlap_grace;
         master_config.auto_management = (config->master_valve_auto_mgmt != 0);
-        /* Note: is_active is read-only and managed by the system */
         
         watering_error_t mv_err = master_valve_set_config(&master_config);
-        if (mv_err != WATERING_SUCCESS) {
+        if (mv_err == WATERING_SUCCESS) {
+            onboarding_update_system_flag(SYSTEM_FLAG_MASTER_VALVE_SET, true);
+            LOG_INF("Master valve config updated: enabled=%u", config->master_valve_enabled);
+        } else {
             LOG_ERR("Failed to set master valve config: %d", mv_err);
+        }
+    }
+    
+    /* If complete structure received, do full validation and apply remaining settings */
+    if (system_config_bytes_received >= sizeof(*config)) {
+        /* Final validation of all fields */
+        if (config->power_mode > 2) {
+            LOG_ERR("Invalid power_mode: %u (must be 0-2)", config->power_mode);
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
         }
         
-        /* Update onboarding flag - master valve is now configured */
-        onboarding_update_system_flag(SYSTEM_FLAG_MASTER_VALVE_SET, true);
+        if (config->flow_calibration < 100 || config->flow_calibration > 10000) {
+            LOG_ERR("Invalid flow_calibration: %u (range 100-10000)", config->flow_calibration);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
         
-        LOG_INF("Master Valve config updated: enabled=%u, pre_delay=%d, post_delay=%d, overlap=%u, auto=%u",
-                config->master_valve_enabled, config->master_valve_pre_delay,
-                config->master_valve_post_delay, config->master_valve_overlap_grace,
-                config->master_valve_auto_mgmt);
+        if (config->bme280_enabled && config->bme280_measurement_interval == 0) {
+            LOG_ERR("Invalid BME280 measurement interval: 0");
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+
+        LOG_INF("System Config complete: power_mode=%u, flow_cal=%u, bme280=%u",
+                config->power_mode, config->flow_calibration, config->bme280_enabled);
         
         /* Read-only fields are ignored during write */
         /* version, max_active_valves, num_channels, master_valve_current_state cannot be changed */
-        
-        /* Save configuration to persistent storage if needed */
-        /* Note: Flow calibration is saved automatically by set_flow_calibration() */
         
         /* Best-effort apply BME280 settings if API available */
         bme280_config_t bme_cfg;
