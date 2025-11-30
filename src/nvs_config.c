@@ -475,6 +475,11 @@ int nvs_load_complete_channel_config(uint8_t ch, watering_channel_t *channel)
         channel->latitude_deg = enhanced_config.latitude_deg;
         channel->sun_exposure_pct = enhanced_config.sun_exposure_pct;
         channel->last_calculation_time = enhanced_config.last_calculation_time;
+
+        /* Restore latitude flag if a non-zero latitude is persisted */
+        if (channel->latitude_deg != 0.0f) {
+            onboarding_update_channel_extended_flag(ch, CHANNEL_EXT_FLAG_LATITUDE_SET, true);
+        }
     }
     
     /* Load water balance configuration if available */
