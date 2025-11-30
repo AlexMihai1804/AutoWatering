@@ -109,7 +109,10 @@ int onboarding_state_init(void) {
         
         printk("Onboarding state initialized with defaults\n");
     } else {
-        printk("Onboarding state loaded from NVS\n");
+        printk("Onboarding state loaded from NVS: system_flags=0x%08x, channel_flags=0x%016llx, completion=%u%%\n",
+               current_state.system_config_flags,
+               (unsigned long long)current_state.channel_config_flags,
+               current_state.onboarding_completion_pct);
     }
     
     state_initialized = true;
