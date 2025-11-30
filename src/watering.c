@@ -1693,6 +1693,9 @@ watering_error_t watering_set_latitude(uint8_t channel_id, float latitude_deg)
     
     // Save configuration
     watering_save_config();
+
+    /* Mark latitude flag for onboarding */
+    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_LATITUDE_SET, true);
     
     LOG_INF("Channel %d latitude set to %.2f degrees", channel_id, (double)latitude_deg);
     return WATERING_SUCCESS;

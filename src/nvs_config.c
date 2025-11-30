@@ -403,15 +403,12 @@ int nvs_save_complete_channel_config(uint8_t ch, const watering_channel_t *chann
     if (ret < 0) {
         return ret;
     }
-    
-    /* Update additional onboarding flags based on channel configuration */
-    onboarding_update_channel_flag(ch, CHANNEL_FLAG_COVERAGE_SET, 
-                                 channel->use_area_based ? 
-                                 (channel->coverage.area_m2 > 0) : 
-                                 (channel->coverage.plant_count > 0));
-    onboarding_update_channel_flag(ch, CHANNEL_FLAG_ENABLED, 
-                                 channel->config_status.basic_configured);
-    
+
+    /* Backfill latitude flag only for configured channels with explicit latitude */
+    if (channel->config_status.growing_env_configured && channel->latitude_deg != 0.0f) {
+        onboarding_update_channel_extended_flag(ch, CHANNEL_EXT_FLAG_LATITUDE_SET, true);
+    }
+
     /* Save water balance state if available */
     if (channel->water_balance) {
         water_balance_config_t balance_config = {
