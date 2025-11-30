@@ -2719,14 +2719,18 @@ static ssize_t write_system_config(struct bt_conn *conn, const struct bt_gatt_at
     
     /* Check if power_mode field was written (offset 1, size 1) */
     if (write_start <= 1 && write_end >= 2) {
+        LOG_INF("Power mode field received: value=%u (0=Normal, 1=EnergySaving, 2=UltraLow)", 
+                config->power_mode);
         if (config->power_mode <= 2) {
             watering_error_t pm_err = watering_set_power_mode((power_mode_t)config->power_mode);
             if (pm_err == WATERING_SUCCESS) {
                 onboarding_update_system_flag(SYSTEM_FLAG_POWER_MODE_SET, true);
-                LOG_INF("Power mode updated: %u", config->power_mode);
+                LOG_INF("✅ Power mode set to %u, flag updated", config->power_mode);
             } else {
                 LOG_ERR("Failed to set power mode: %d", pm_err);
             }
+        } else {
+            LOG_ERR("Invalid power_mode value: %u", config->power_mode);
         }
     }
     
