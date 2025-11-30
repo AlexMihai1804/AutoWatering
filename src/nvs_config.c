@@ -237,14 +237,15 @@ int nvs_save_enhanced_channel_config(uint8_t ch, const enhanced_channel_config_t
     int ret = nvs_config_write(ID_ENHANCED_CHANNEL_CFG_BASE + ch, config, sizeof(*config));
     if (ret >= 0) {
         /* Update onboarding flags based on configuration */
+        /* Use UINT16_MAX/UINT8_MAX as "not set" sentinel values (0 is a valid index!) */
         onboarding_update_channel_flag(ch, CHANNEL_FLAG_PLANT_TYPE_SET, 
-                                     config->plant_db_index != 0);
+                                     config->plant_db_index != UINT16_MAX);
         onboarding_update_channel_flag(ch, CHANNEL_FLAG_SOIL_TYPE_SET, 
-                                     config->soil_db_index != 0);
+                                     config->soil_db_index != UINT8_MAX);
         onboarding_update_channel_flag(ch, CHANNEL_FLAG_IRRIGATION_METHOD_SET, 
-                                     config->irrigation_method_index != 0);
+                                     config->irrigation_method_index != UINT8_MAX);
         onboarding_update_channel_flag(ch, CHANNEL_FLAG_SUN_EXPOSURE_SET, 
-                                     config->sun_exposure_pct != 50); /* 50% is default */
+                                     config->sun_exposure_pct != 75); /* 75% is default */
     }
     
     return ret;

@@ -6525,6 +6525,23 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
                 onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
             }
             
+            /* Update basic channel config flags based on what was set */
+            if (env_data->plant_db_index != UINT16_MAX) {
+                onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_PLANT_TYPE_SET, true);
+            }
+            if (env_data->soil_db_index != UINT8_MAX) {
+                onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_SOIL_TYPE_SET, true);
+            }
+            if (env_data->irrigation_method_index != UINT8_MAX) {
+                onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_IRRIGATION_METHOD_SET, true);
+            }
+            if (env_data->use_area_based ? (env_data->coverage.area_m2 > 0) : (env_data->coverage.plant_count > 0)) {
+                onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_COVERAGE_SET, true);
+            }
+            if (env_data->sun_exposure_pct != 75) { /* 75 is default */
+                onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_SUN_EXPOSURE_SET, true);
+            }
+            
             /* Update global buffer for notifications */
             memcpy(growing_env_value, env_data, sizeof(struct growing_env_data));
             
@@ -6661,6 +6678,23 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         
         /* Update onboarding flag - water need factor has been set for custom plant */
         onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
+    }
+    
+    /* Update basic channel config flags based on what was set */
+    if (env_data->plant_db_index != UINT16_MAX) {
+        onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_PLANT_TYPE_SET, true);
+    }
+    if (env_data->soil_db_index != UINT8_MAX) {
+        onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_SOIL_TYPE_SET, true);
+    }
+    if (env_data->irrigation_method_index != UINT8_MAX) {
+        onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_IRRIGATION_METHOD_SET, true);
+    }
+    if (env_data->use_area_based ? (env_data->coverage.area_m2 > 0) : (env_data->coverage.plant_count > 0)) {
+        onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_COVERAGE_SET, true);
+    }
+    if (env_data->sun_exposure_pct != 75) { /* 75 is default */
+        onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_SUN_EXPOSURE_SET, true);
     }
     
     /* Update global buffer for notifications */
