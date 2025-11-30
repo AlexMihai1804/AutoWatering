@@ -2511,6 +2511,10 @@ static ssize_t write_schedule(struct bt_conn *conn, const struct bt_gatt_attr *a
         
         /* Update onboarding flag - this channel now has a schedule configured */
         onboarding_update_schedule_flag(value->channel_id, value->auto_enabled);
+        if (value->auto_enabled) {
+            /* Treat an active schedule as enabling the channel */
+            onboarding_update_channel_flag(value->channel_id, CHANNEL_FLAG_ENABLED, true);
+        }
         
         /* Send notification to confirm schedule update per BLE API Documentation */
         /* Schedule Config (ef5): Schedule updates | On change (throttled 500ms) | Schedule confirmations */
@@ -6563,15 +6567,17 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
                    (int)env_data->coverage.area_m2, 
                    (int)((env_data->coverage.area_m2 - (int)env_data->coverage.area_m2) * 100),
                    env_data->coverage.plant_count);
-            if (env_data->use_area_based ? (env_data->coverage.area_m2 > 0) : (env_data->coverage.plant_count > 0)) {
-                onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_COVERAGE_SET, true);
-            } else {
-                printk("WARNING: Coverage not set - use_area=%d, area=%.2f, count=%u\n",
-                       env_data->use_area_based, (double)env_data->coverage.area_m2, env_data->coverage.plant_count);
+    if (env_data->use_area_based ? (env_data->coverage.area_m2 > 0) : (env_data->coverage.plant_count > 0)) {
+        onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_COVERAGE_SET, true);
+    } else {
+        printk("WARNING: Coverage not set - use_area=%d, area=%.2f, count=%u\n",
+               env_data->use_area_based, (double)env_data->coverage.area_m2, env_data->coverage.plant_count);
             }
             if (env_data->sun_exposure_pct != 75) { /* 75 is default */
                 onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_SUN_EXPOSURE_SET, true);
             }
+            /* Water factor exists via DB presets or custom config; mark as set */
+            onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
             
             /* Update global buffer for notifications */
             memcpy(growing_env_value, env_data, sizeof(struct growing_env_data));
@@ -6736,6 +6742,8 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
     if (env_data->sun_exposure_pct != 75) { /* 75 is default */
         onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_SUN_EXPOSURE_SET, true);
     }
+    /* Water factor exists via DB presets or custom config; mark as set */
+    onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
     
     /* Update global buffer for notifications */
     memcpy(growing_env_value, env_data, sizeof(struct growing_env_data));

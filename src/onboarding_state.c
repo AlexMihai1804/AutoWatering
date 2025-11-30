@@ -28,7 +28,7 @@ static bool state_initialized = false;
 K_MUTEX_DEFINE(onboarding_mutex);
 
 /* Debounce mechanism for BLE notifications */
-#define ONBOARDING_NOTIFY_DEBOUNCE_MS 100  /* Wait 100ms before sending notification */
+#define ONBOARDING_NOTIFY_DEBOUNCE_MS 500  /* Wait 500ms before sending notification to batch all flag updates */
 static bool notify_pending = false;
 
 static void onboarding_notify_work_handler(struct k_work *work);
@@ -83,6 +83,88 @@ static int count_set_bits_8(uint8_t value) {
     return count;
 }
 
+/* Calculate completion for an arbitrary onboarding_state_t (no global guard) */
+static int onboarding_calculate_completion_for(const onboarding_state_t *state) {
+    if (!state) {
+        return 0;
+    }
+    
+    const int CHANNEL_WEIGHT = 60;  /* 60% for channel configuration */
+    const int SYSTEM_WEIGHT = 30;   /* 30% for system configuration */
+    const int SCHEDULE_WEIGHT = 10; /* 10% for schedule configuration */
+
+    int total_channel_flags = 8 * 8; /* 8 channels A- 8 flags each */
+    int set_channel_flags = count_set_bits(state->channel_config_flags);
+    int channel_completion = (set_channel_flags * CHANNEL_WEIGHT) / total_channel_flags;
+
+    int total_system_flags = 8; /* 8 system flags defined */
+    int set_system_flags = count_set_bits_32(state->system_config_flags);
+    int system_completion = (set_system_flags * SYSTEM_WEIGHT) / total_system_flags;
+
+    int total_schedule_flags = 8; /* 8 channels can have schedules */
+    int set_schedule_flags = count_set_bits_8(state->schedule_config_flags);
+    int schedule_completion = (set_schedule_flags * SCHEDULE_WEIGHT) / total_schedule_flags;
+
+    int total_completion = channel_completion + system_completion + schedule_completion;
+    if (total_completion > 100) {
+        total_completion = 100;
+    }
+    return total_completion;
+}
+
+/* Determine if a channel should be marked config-complete (auto/manual rules) - mutex must be held */
+static bool channel_config_complete_locked(uint8_t channel_id) {
+    uint8_t shift = channel_id * 8;
+    uint8_t base_flags = (current_state.channel_config_flags >> shift) & 0xFF;
+    uint8_t ext_flags = (current_state.channel_extended_flags >> shift) & 0xFF;
+    bool schedule_set = (current_state.schedule_config_flags & (1u << channel_id)) != 0;
+
+    /* FAO-56 mode: plant + soil + method + coverage + sun + name + water_factor + enabled + latitude + cycle_soak + schedule */
+    const uint8_t fao_base_required = CHANNEL_FLAG_PLANT_TYPE_SET |
+                                      CHANNEL_FLAG_SOIL_TYPE_SET |
+                                      CHANNEL_FLAG_IRRIGATION_METHOD_SET |
+                                      CHANNEL_FLAG_COVERAGE_SET |
+                                      CHANNEL_FLAG_SUN_EXPOSURE_SET |
+                                      CHANNEL_FLAG_NAME_SET |
+                                      CHANNEL_FLAG_WATER_FACTOR_SET |
+                                      CHANNEL_FLAG_ENABLED;
+    bool fao_ready = ((base_flags & fao_base_required) == fao_base_required) &&
+                     (ext_flags & CHANNEL_EXT_FLAG_LATITUDE_SET) &&
+                     (ext_flags & CHANNEL_EXT_FLAG_CYCLE_SOAK_SET) &&
+                     schedule_set;
+
+    /* Manual (duration/volume) mode: name + enabled + rain comp + temp comp + cycle soak + schedule */
+    const uint8_t manual_base_required = CHANNEL_FLAG_NAME_SET | CHANNEL_FLAG_ENABLED;
+    bool manual_ready = ((base_flags & manual_base_required) == manual_base_required) &&
+                        (ext_flags & CHANNEL_EXT_FLAG_RAIN_COMP_SET) &&
+                        (ext_flags & CHANNEL_EXT_FLAG_TEMP_COMP_SET) &&
+                        (ext_flags & CHANNEL_EXT_FLAG_CYCLE_SOAK_SET) &&
+                        schedule_set;
+
+    return fao_ready || manual_ready;
+}
+
+/* Refresh CONFIG_COMPLETE extended flag for one channel - mutex must be held */
+static bool update_channel_complete_flag_locked(uint8_t channel_id) {
+    uint8_t shift = channel_id * 8;
+    uint64_t mask = (uint64_t)CHANNEL_EXT_FLAG_CONFIG_COMPLETE << shift;
+    bool should_set = channel_config_complete_locked(channel_id);
+    bool changed = false;
+
+    if (should_set) {
+        if ((current_state.channel_extended_flags & mask) == 0) {
+            current_state.channel_extended_flags |= mask;
+            changed = true;
+        }
+    } else {
+        if (current_state.channel_extended_flags & mask) {
+            current_state.channel_extended_flags &= ~mask;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 int onboarding_state_init(void) {
     k_mutex_lock(&onboarding_mutex, K_FOREVER);
     
@@ -114,6 +196,21 @@ int onboarding_state_init(void) {
                (unsigned long long)current_state.channel_config_flags,
                current_state.onboarding_completion_pct);
     }
+
+    /* Recompute config-complete flags for all channels after load */
+    bool any_changed = false;
+    for (uint8_t ch = 0; ch < 8; ch++) {
+        if (update_channel_complete_flag_locked(ch)) {
+            any_changed = true;
+        }
+    }
+    if (any_changed) {
+        /* Persist migrated/updated state */
+        nvs_save_onboarding_state(&current_state);
+    }
+
+    /* Recompute completion to keep derived field in sync with loaded flags */
+    current_state.onboarding_completion_pct = onboarding_calculate_completion_for(&current_state);
     
     state_initialized = true;
     k_mutex_unlock(&onboarding_mutex);
@@ -218,6 +315,9 @@ int onboarding_update_channel_flag(uint8_t channel_id, uint8_t flag, bool set) {
     /* Update timestamp and recalculate completion */
     current_state.last_update_time = get_current_timestamp();
     current_state.onboarding_completion_pct = onboarding_calculate_completion();
+
+    /* Update config-complete extended bit for this channel */
+    update_channel_complete_flag_locked(channel_id);
     
     /* Save to NVS */
     int ret = nvs_save_onboarding_state(&current_state);
@@ -283,35 +383,7 @@ int onboarding_calculate_completion(void) {
         return 0;
     }
     
-    /* Define weights for different configuration categories */
-    const int CHANNEL_WEIGHT = 60;  /* 60% for channel configuration */
-    const int SYSTEM_WEIGHT = 30;   /* 30% for system configuration */
-    const int SCHEDULE_WEIGHT = 10; /* 10% for schedule configuration */
-    
-    /* Calculate channel configuration completion */
-    int total_channel_flags = 8 * 8; /* 8 channels × 8 flags each */
-    int set_channel_flags = count_set_bits(current_state.channel_config_flags);
-    int channel_completion = (set_channel_flags * CHANNEL_WEIGHT) / total_channel_flags;
-    
-    /* Calculate system configuration completion */
-    int total_system_flags = 8; /* 8 system flags defined */
-    int set_system_flags = count_set_bits_32(current_state.system_config_flags);
-    int system_completion = (set_system_flags * SYSTEM_WEIGHT) / total_system_flags;
-    
-    /* Calculate schedule configuration completion */
-    int total_schedule_flags = 8; /* 8 channels can have schedules */
-    int set_schedule_flags = count_set_bits_8(current_state.schedule_config_flags);
-    int schedule_completion = (set_schedule_flags * SCHEDULE_WEIGHT) / total_schedule_flags;
-    
-    /* Total completion percentage */
-    int total_completion = channel_completion + system_completion + schedule_completion;
-    
-    /* Ensure we don't exceed 100% */
-    if (total_completion > 100) {
-        total_completion = 100;
-    }
-    
-    return total_completion;
+    return onboarding_calculate_completion_for(&current_state);
 }
 
 bool onboarding_is_complete(void) {
@@ -394,6 +466,9 @@ int onboarding_update_schedule_flag(uint8_t channel_id, bool has_schedule) {
     /* Update timestamp and recalculate completion */
     current_state.last_update_time = get_current_timestamp();
     current_state.onboarding_completion_pct = onboarding_calculate_completion();
+
+    /* Update config-complete extended bit for this channel */
+    update_channel_complete_flag_locked(channel_id);
     
     /* Save to NVS */
     int ret = nvs_save_onboarding_state(&current_state);
@@ -458,6 +533,9 @@ int onboarding_update_channel_extended_flag(uint8_t channel_id, uint8_t flag, bo
     
     /* Update timestamp */
     current_state.last_update_time = get_current_timestamp();
+
+    /* Update config-complete extended bit for this channel */
+    update_channel_complete_flag_locked(channel_id);
     
     /* Save to NVS */
     int ret = nvs_save_onboarding_state(&current_state);

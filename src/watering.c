@@ -131,6 +131,12 @@ watering_error_t watering_init(void) {
     if (onboarding_err != 0) {
         printk("Onboarding state initialization failed: %d - continuing\n", onboarding_err);
     }
+    /* Backfill schedule flags from loaded channel configs (auto_enabled) */
+    for (int ch = 0; ch < WATERING_CHANNELS_COUNT; ch++) {
+        if (watering_channels[ch].watering_event.auto_enabled) {
+            onboarding_update_schedule_flag(ch, true);
+        }
+    }
     
     /* always start flow-monitoring */
     flow_monitor_init();

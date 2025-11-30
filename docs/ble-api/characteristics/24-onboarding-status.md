@@ -1,6 +1,6 @@
 # Onboarding Status Characteristic (UUID: 12345678-1234-5678-1234-56789abcde20)
 
-> **⚠️ CRITICAL: Read vs Notify Format Difference**
+> **CRITICAL: Read vs Notify Format Difference**
 > - **Read**: Returns raw 33-byte struct (NO header)
 > - **Notify**: Returns 8-byte header + payload (ALWAYS has header, even if single fragment)
 
@@ -8,7 +8,7 @@
 | Operation | Payload | Size | Fragmentation | Notes |
 |-----------|---------|------|---------------|-------|
 | Read | `struct onboarding_status_data` | 33 B | None | **Direct data, NO header** |
-| Notify | `history_fragment_header_t` + payload | 8 B + ≤33 B | Always uses unified header | **ALWAYS has 8-byte header prefix** |
+| Notify | `history_fragment_header_t` + payload | 8 B + payload (33 B) | Always uses unified header | **ALWAYS has 8-byte header prefix** |
 | Write | - | - | - | Flags mutate through internal onboarding APIs only |
 
 Snapshot of onboarding progress used by clients to drive setup workflows. Firmware stores the underlying state in NVS and recomputes percentages on each read/notify.
@@ -38,6 +38,8 @@ Snapshot of onboarding progress used by clients to drive setup workflows. Firmwa
 
 **Total size: 33 bytes** (was 25 bytes before extended flags were added)
 
+Note: `channel_extended_flags` intentionally sits at offset 25 (after `last_update_time`) so the first 25 bytes stay backward compatible. Older firmware briefly placed it earlier, which scrambled `system_config_flags` and `schedule_config_flags` on the client side.
+
 Little-endian packing is required for all multibyte fields.
 
 ### Flag Bitmaps
@@ -64,18 +66,22 @@ Advanced configuration flags. Bit position = `channel_id * 8 + flag_bit`.
 | 0 | `CHANNEL_EXT_FLAG_FAO56_READY` | Auto-set when all FAO-56 requirements met |
 | 1 | `CHANNEL_EXT_FLAG_RAIN_COMP_SET` | Rain compensation enabled for channel |
 | 2 | `CHANNEL_EXT_FLAG_TEMP_COMP_SET` | Temperature compensation enabled for channel |
-| 3 | `CHANNEL_EXT_FLAG_SCHEDULE_SET` | Schedule configured for channel |
-| 4 | `CHANNEL_EXT_FLAG_LATITUDE_SET` | Latitude set for channel (≠ 0) |
+| 3 | `CHANNEL_EXT_FLAG_CONFIG_COMPLETE` | Channel considered fully configured (see rules below) |
+| 4 | `CHANNEL_EXT_FLAG_LATITUDE_SET` | Latitude set for channel (non-zero value) |
 | 5 | `CHANNEL_EXT_FLAG_VOLUME_LIMIT_SET` | Max volume limit configured (> 0) |
 | 6 | `CHANNEL_EXT_FLAG_PLANTING_DATE_SET` | Planting date configured (> 0) |
 | 7 | `CHANNEL_EXT_FLAG_CYCLE_SOAK_SET` | Cycle & soak enabled for clay soils |
 
 **FAO-56 Requirements**: For `CHANNEL_EXT_FLAG_FAO56_READY` to be set:
-- `CHANNEL_FLAG_PLANT_TYPE_SET` ✓
-- `CHANNEL_FLAG_SOIL_TYPE_SET` ✓
-- `CHANNEL_FLAG_IRRIGATION_METHOD_SET` ✓
-- `CHANNEL_FLAG_COVERAGE_SET` ✓
-- `CHANNEL_EXT_FLAG_LATITUDE_SET` ✓
+- `CHANNEL_FLAG_PLANT_TYPE_SET`
+- `CHANNEL_FLAG_SOIL_TYPE_SET`
+- `CHANNEL_FLAG_IRRIGATION_METHOD_SET`
+- `CHANNEL_FLAG_COVERAGE_SET`
+- `CHANNEL_EXT_FLAG_LATITUDE_SET`
+
+**Channel Complete Rule (`CHANNEL_EXT_FLAG_CONFIG_COMPLETE`)**:
+- **Auto (FAO-56)**: set when plant + soil + irrigation method + coverage + sun + name + water factor + enabled + latitude + cycle/soak + schedule are all set.
+- **Manual (duration/volume)**: set when name + enabled + rain compensation + temperature compensation + cycle/soak + schedule are all set.
 
 #### System Flags (`uint32_t`)
 | Bit | Flag | Set When |
@@ -86,7 +92,7 @@ Advanced configuration flags. Bit position = `channel_id * 8 + flag_bit`.
 | 3 | `SYSTEM_FLAG_RTC_CONFIGURED` | User sets date/time via BLE |
 | 4 | `SYSTEM_FLAG_RAIN_SENSOR_SET` | User saves rain sensor configuration |
 | 5 | `SYSTEM_FLAG_POWER_MODE_SET` | User changes power mode |
-| 6 | `SYSTEM_FLAG_LOCATION_SET` | User sets latitude (≠ 0) |
+| 6 | `SYSTEM_FLAG_LOCATION_SET` | User sets latitude (non-zero value) |
 | 7 | `SYSTEM_FLAG_INITIAL_SETUP_DONE` | Auto-set when: 1 channel configured + RTC + timezone |
 
 #### Schedule Flags (`uint8_t`)
@@ -204,7 +210,7 @@ function handleOnboardingNotification(dataView) {
 ```
 
 #### Single-Fragment Shortcut (MTU >= 44)
-If your MTU is large enough (≥44 bytes), the entire payload fits in one fragment:
+If your MTU is large enough (>= 44 bytes), the entire payload fits in one fragment:
 ```javascript
 function parseOnboardingSingleFragment(dataView) {
   // Skip 8-byte header, then parse as read response

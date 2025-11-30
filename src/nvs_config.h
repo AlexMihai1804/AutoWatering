@@ -95,7 +95,7 @@ typedef struct {
 #define CHANNEL_EXT_FLAG_FAO56_READY         (1 << 0)  /* All FAO-56 requirements met (plant+soil+method+coverage+location) */
 #define CHANNEL_EXT_FLAG_RAIN_COMP_SET       (1 << 1)  /* Rain compensation configured */
 #define CHANNEL_EXT_FLAG_TEMP_COMP_SET       (1 << 2)  /* Temperature compensation configured */
-#define CHANNEL_EXT_FLAG_SCHEDULE_SET        (1 << 3)  /* Schedule configured for this channel */
+#define CHANNEL_EXT_FLAG_CONFIG_COMPLETE     (1 << 3)  /* Channel fully configured (auto/manual rules) */
 #define CHANNEL_EXT_FLAG_LATITUDE_SET        (1 << 4)  /* Latitude set for this channel */
 #define CHANNEL_EXT_FLAG_VOLUME_LIMIT_SET    (1 << 5)  /* Max volume limit configured */
 #define CHANNEL_EXT_FLAG_PLANTING_DATE_SET   (1 << 6)  /* Planting date configured */

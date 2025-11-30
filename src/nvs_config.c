@@ -1160,7 +1160,8 @@ int nvs_load_onboarding_state(onboarding_state_t *state)
         return -EINVAL;
     }
     
-    int ret = nvs_config_read(ID_ONBOARDING_STATE, state, sizeof(*state));
+    uint8_t raw[sizeof(onboarding_state_t)] = {0};
+    int ret = nvs_config_read(ID_ONBOARDING_STATE, raw, sizeof(raw));
     if (ret < 0) {
         /* Load default state if not found */
         onboarding_state_t default_state = DEFAULT_ONBOARDING_STATE;
@@ -1168,19 +1169,85 @@ int nvs_load_onboarding_state(onboarding_state_t *state)
         
         /* Save default state for future use */
         nvs_save_onboarding_state(state);
-        ret = sizeof(*state);
-    } else if (ret != sizeof(*state)) {
+        return sizeof(*state);
+    }
+    
+    if (ret != sizeof(raw)) {
         printk("Onboarding state size mismatch (got %d, expected %u). Resetting defaults.\n",
-               ret, (unsigned int)sizeof(*state));
+               ret, (unsigned int)sizeof(raw));
         onboarding_state_t default_state = DEFAULT_ONBOARDING_STATE;
         *state = default_state;
         int write_ret = nvs_save_onboarding_state(state);
         if (write_ret < 0) {
             return write_ret;
         }
-        ret = sizeof(*state);
+        return sizeof(*state);
     }
-    return ret;
+
+    /* Current (correct) layout */
+    onboarding_state_t interpreted_new = {0};
+    memcpy(&interpreted_new, raw, sizeof(interpreted_new));
+
+    /* Legacy layout had channel_extended_flags before system/schedule timestamps */
+    struct onboarding_state_legacy {
+        uint64_t channel_config_flags;
+        uint64_t channel_extended_flags; /* misplaced before system flags in legacy layout */
+        uint32_t system_config_flags;
+        uint8_t  schedule_config_flags;
+        uint8_t  onboarding_completion_pct;
+        uint32_t onboarding_start_time;
+        uint32_t last_update_time;
+    } __attribute__((packed));
+
+    struct onboarding_state_legacy interpreted_legacy = {0};
+    memcpy(&interpreted_legacy, raw, sizeof(interpreted_legacy));
+
+    onboarding_state_t reconstructed_legacy = {
+        .channel_config_flags = interpreted_legacy.channel_config_flags,
+        .system_config_flags = interpreted_legacy.system_config_flags,
+        .schedule_config_flags = interpreted_legacy.schedule_config_flags,
+        .onboarding_completion_pct = interpreted_legacy.onboarding_completion_pct,
+        .onboarding_start_time = interpreted_legacy.onboarding_start_time,
+        .last_update_time = interpreted_legacy.last_update_time,
+        .channel_extended_flags = interpreted_legacy.channel_extended_flags
+    };
+
+    /* Heuristics to pick the right interpretation */
+    bool new_sys_garbage = (interpreted_new.system_config_flags & ~0xFFu) != 0;
+    bool legacy_sys_garbage = (reconstructed_legacy.system_config_flags & ~0xFFu) != 0;
+
+    bool new_time_bad = interpreted_new.last_update_time &&
+                        interpreted_new.onboarding_start_time &&
+                        interpreted_new.last_update_time < interpreted_new.onboarding_start_time;
+    bool legacy_time_bad = reconstructed_legacy.last_update_time &&
+                           reconstructed_legacy.onboarding_start_time &&
+                           reconstructed_legacy.last_update_time < reconstructed_legacy.onboarding_start_time;
+
+    bool prefer_legacy = false;
+    if (new_sys_garbage && !legacy_sys_garbage) {
+        prefer_legacy = true;
+    } else if (!new_sys_garbage && legacy_sys_garbage) {
+        prefer_legacy = false;
+    } else if (new_time_bad && !legacy_time_bad) {
+        prefer_legacy = true;
+    } else if (!new_time_bad && legacy_time_bad) {
+        prefer_legacy = false;
+    } else if (interpreted_new.schedule_config_flags == 0 &&
+               reconstructed_legacy.schedule_config_flags != 0) {
+        /* Recover schedule flags that were lost by misordered layout */
+        prefer_legacy = true;
+    }
+
+    if (prefer_legacy) {
+        printk("Onboarding state: detected legacy layout in NVS, migrating to new order\n");
+        *state = reconstructed_legacy;
+        /* Persist migrated layout */
+        nvs_save_onboarding_state(state);
+    } else {
+        *state = interpreted_new;
+    }
+
+    return sizeof(*state);
 }
 
 int nvs_save_channel_flags(uint8_t channel_id, uint8_t flags)

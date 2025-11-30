@@ -341,7 +341,7 @@ struct growing_env_config_data {
     uint8_t enable_cycle_soak;
 } __packed;
 
-/* Onboarding status structure */
+/* Onboarding status structure (layout must match BLE doc offsets; extended flags stay last) */
 struct onboarding_status_data {
     uint8_t overall_completion_pct;     /* 0-100% overall completion */
     uint8_t channels_completion_pct;    /* 0-100% channel config completion */
@@ -349,12 +349,12 @@ struct onboarding_status_data {
     uint8_t schedules_completion_pct;   /* 0-100% schedule completion */
     
     uint64_t channel_config_flags;      /* Channel configuration flags (basic) */
-    uint64_t channel_extended_flags;    /* Channel extended flags (FAO56, rain/temp comp) */
     uint32_t system_config_flags;       /* System configuration flags */
     uint8_t schedule_config_flags;      /* Schedule configuration flags */
     
     uint32_t onboarding_start_time;     /* When onboarding began */
     uint32_t last_update_time;          /* Last state update */
+    uint64_t channel_extended_flags;    /* Channel extended flags (FAO56, rain/temp comp) */
 } __packed;
 
 /* Reset control structure */
