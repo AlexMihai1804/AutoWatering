@@ -325,6 +325,8 @@ static uint16_t get_current_day_of_year(void) {
 #define ATTR_IDX_RESET_CONTROL_VALUE 74
 /* New Rain Integration Status characteristic index; appended to service */
 #define ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE 77
+/* Channel Compensation Config characteristic index (per-channel rain/temp settings) */
+#define ATTR_IDX_CHANNEL_COMP_CONFIG_VALUE 80
 
 /* Simple direct notification function - no queues, no work handlers */
 
@@ -449,6 +451,7 @@ typedef struct {
     bool onboarding_status_notifications_enabled;
     bool reset_control_notifications_enabled;
     bool rain_integration_status_notifications_enabled;
+    bool channel_comp_config_notifications_enabled;
 } notification_state_t;
 
 static notification_state_t notification_state = {0};
@@ -889,6 +892,13 @@ static ssize_t read_rain_integration_status(struct bt_conn *conn, const struct b
                                             void *buf, uint16_t len, uint16_t offset);
 static void    rain_integration_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 
+/* Channel Compensation Config characteristic */
+static ssize_t read_channel_comp_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                        void *buf, uint16_t len, uint16_t offset);
+static ssize_t write_channel_comp_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                         const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
+static void    channel_comp_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+
 /* ------------------------------------------------------------------ */
 
 /* Custom UUIDs for Irrigation Service */
@@ -959,6 +969,9 @@ static void    rain_integration_status_ccc_changed(const struct bt_gatt_attr *at
 /* Rain integration status characteristic UUID (separate from config) */
 #define BT_UUID_IRRIGATION_RAIN_INTEGRATION_STATUS_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde18)
+/* Channel compensation config characteristic UUID (per-channel rain/temp settings) */
+#define BT_UUID_IRRIGATION_CHANNEL_COMP_CONFIG_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde19)
 
 static struct bt_uuid_128 irrigation_service_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_SERVICE_VAL);
 static struct bt_uuid_128 valve_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_VALVE_VAL);
@@ -993,6 +1006,7 @@ static struct bt_uuid_128 environmental_data_char_uuid = BT_UUID_INIT_128(BT_UUI
 static struct bt_uuid_128 environmental_history_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_ENVIRONMENTAL_HISTORY_VAL);
 static struct bt_uuid_128 compensation_status_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_COMPENSATION_STATUS_VAL);
 static struct bt_uuid_128 rain_integration_status_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_RAIN_INTEGRATION_STATUS_VAL);
+static struct bt_uuid_128 channel_comp_config_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_CHANNEL_COMP_CONFIG_VAL);
 
 /* Characteristic value handles - use types from headers */
 static uint8_t valve_value[sizeof(struct valve_control_data)];
@@ -1061,6 +1075,8 @@ static K_WORK_DELAYABLE_DEFINE(history_frag_work, history_frag_work_handler);
 static uint8_t compensation_status_value[sizeof(struct compensation_status_data)];
 /* Rain Integration Status characteristic value buffer */
 static uint8_t rain_integration_status_value[sizeof(struct rain_integration_status_ble)];
+/* Channel Compensation Config characteristic value buffer */
+static uint8_t channel_comp_config_value[sizeof(struct channel_compensation_config_data)];
 
 /* Channel caching for performance */
 static struct {
@@ -2284,7 +2300,14 @@ BT_GATT_SERVICE_DEFINE(irrigation_svc,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
                          BT_GATT_PERM_READ_ENCRYPT,
                          read_rain_integration_status, NULL, rain_integration_status_value),
-    BT_GATT_CCC(rain_integration_status_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT)
+    BT_GATT_CCC(rain_integration_status_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
+
+    // Channel Compensation Config characteristic (per-channel rain/temp settings)
+    BT_GATT_CHARACTERISTIC(&channel_comp_config_char_uuid.uuid,
+                         BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
+                         read_channel_comp_config, write_channel_comp_config, channel_comp_config_value),
+    BT_GATT_CCC(channel_comp_config_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT)
 );
 
 /* ------------------------------------------------------------------ */
@@ -10127,6 +10150,269 @@ static void rain_integration_status_ccc_changed(const struct bt_gatt_attr *attr,
         bt_irrigation_rain_integration_status_notify();
     }
 }
+
+/* ------------------------------------------------------------------ */
+/* Channel Compensation Config characteristic implementation          */
+/* ------------------------------------------------------------------ */
+
+/* Cached channel selection for channel compensation config reads */
+static uint8_t channel_comp_config_selected_channel = 0;
+
+static ssize_t read_channel_comp_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                        void *buf, uint16_t len, uint16_t offset) {
+    if (!conn || !attr || !buf) {
+        return -EINVAL;
+    }
+
+    uint8_t channel_id = channel_comp_config_selected_channel;
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        channel_id = 0;
+    }
+
+    watering_channel_t *channel = NULL;
+    if (watering_get_channel(channel_id, &channel) != WATERING_SUCCESS || !channel) {
+        LOG_ERR("Failed to get channel %u for compensation config read", channel_id);
+        return -EIO;
+    }
+
+    struct channel_compensation_config_data config = {0};
+    config.channel_id = channel_id;
+    
+    /* Rain compensation settings */
+    config.rain_enabled = channel->rain_compensation.enabled ? 1 : 0;
+    config.rain_sensitivity = channel->rain_compensation.sensitivity;
+    config.rain_lookback_hours = channel->rain_compensation.lookback_hours;
+    config.rain_skip_threshold_mm = channel->rain_compensation.skip_threshold_mm;
+    config.rain_reduction_factor = channel->rain_compensation.reduction_factor;
+    
+    /* Temperature compensation settings */
+    config.temp_enabled = channel->temp_compensation.enabled ? 1 : 0;
+    config.temp_base_temperature = channel->temp_compensation.base_temperature;
+    config.temp_sensitivity = channel->temp_compensation.sensitivity;
+    config.temp_min_factor = channel->temp_compensation.min_factor;
+    config.temp_max_factor = channel->temp_compensation.max_factor;
+    
+    /* Status fields - timestamps not available in current watering_channel_t structure */
+    config.last_rain_calc_time = 0;  /* TODO: Add timestamp tracking to watering module */
+    config.last_temp_calc_time = 0;  /* TODO: Add timestamp tracking to watering module */
+
+    memcpy(channel_comp_config_value, &config, sizeof(config));
+    return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                             channel_comp_config_value, sizeof(config));
+}
+
+static ssize_t write_channel_comp_config(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                         const void *buf, uint16_t len, uint16_t offset,
+                                         uint8_t flags) {
+    if (!conn || !attr || !buf) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+    
+    /* Single byte write = channel selection */
+    if (len == 1) {
+        uint8_t channel_id = ((const uint8_t *)buf)[0];
+        if (channel_id >= WATERING_CHANNELS_COUNT) {
+            LOG_ERR("Invalid channel ID %u for compensation config select", channel_id);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+        channel_comp_config_selected_channel = channel_id;
+        LOG_INF("Channel compensation config: selected channel %u", channel_id);
+        return len;
+    }
+    
+    /* Full struct write = configuration update */
+    if (len != sizeof(struct channel_compensation_config_data)) {
+        LOG_ERR("Invalid compensation config write length: %u (expected %zu)",
+                len, sizeof(struct channel_compensation_config_data));
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    const struct channel_compensation_config_data *config = 
+        (const struct channel_compensation_config_data *)buf;
+    
+    /* Validate channel ID */
+    if (config->channel_id >= WATERING_CHANNELS_COUNT) {
+        LOG_ERR("Invalid channel ID %u in compensation config", config->channel_id);
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+    
+    /* Validate rain compensation parameters */
+    if (config->rain_enabled) {
+        if (config->rain_sensitivity < 0.0f || config->rain_sensitivity > 1.0f) {
+            LOG_ERR("Invalid rain sensitivity: %.2f (must be 0.0-1.0)", 
+                    (double)config->rain_sensitivity);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+        if (config->rain_lookback_hours < 1 || config->rain_lookback_hours > 72) {
+            LOG_ERR("Invalid rain lookback hours: %u (must be 1-72)", 
+                    config->rain_lookback_hours);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+        if (config->rain_skip_threshold_mm < 0.0f || config->rain_skip_threshold_mm > 100.0f) {
+            LOG_ERR("Invalid rain skip threshold: %.2f (must be 0-100mm)", 
+                    (double)config->rain_skip_threshold_mm);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+        if (config->rain_reduction_factor < 0.0f || config->rain_reduction_factor > 1.0f) {
+            LOG_ERR("Invalid rain reduction factor: %.2f (must be 0.0-1.0)", 
+                    (double)config->rain_reduction_factor);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+    }
+    
+    /* Validate temperature compensation parameters */
+    if (config->temp_enabled) {
+        if (config->temp_base_temperature < -40.0f || config->temp_base_temperature > 60.0f) {
+            LOG_ERR("Invalid temp base: %.2f (must be -40 to 60°C)", 
+                    (double)config->temp_base_temperature);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+        if (config->temp_sensitivity < 0.1f || config->temp_sensitivity > 2.0f) {
+            LOG_ERR("Invalid temp sensitivity: %.2f (must be 0.1-2.0)", 
+                    (double)config->temp_sensitivity);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+        if (config->temp_min_factor < 0.5f || config->temp_min_factor > 1.0f) {
+            LOG_ERR("Invalid temp min factor: %.2f (must be 0.5-1.0)", 
+                    (double)config->temp_min_factor);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+        if (config->temp_max_factor < 1.0f || config->temp_max_factor > 2.0f) {
+            LOG_ERR("Invalid temp max factor: %.2f (must be 1.0-2.0)", 
+                    (double)config->temp_max_factor);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+    }
+    
+    /* Apply configuration to channel */
+    watering_channel_t *channel = NULL;
+    if (watering_get_channel(config->channel_id, &channel) != WATERING_SUCCESS || !channel) {
+        LOG_ERR("Failed to get channel %u for compensation config write", config->channel_id);
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
+    
+    /* Update rain compensation settings */
+    channel->rain_compensation.enabled = config->rain_enabled != 0;
+    channel->rain_compensation.sensitivity = config->rain_sensitivity;
+    channel->rain_compensation.lookback_hours = config->rain_lookback_hours;
+    channel->rain_compensation.skip_threshold_mm = config->rain_skip_threshold_mm;
+    channel->rain_compensation.reduction_factor = config->rain_reduction_factor;
+    
+    /* Update temperature compensation settings */
+    channel->temp_compensation.enabled = config->temp_enabled != 0;
+    channel->temp_compensation.base_temperature = config->temp_base_temperature;
+    channel->temp_compensation.sensitivity = config->temp_sensitivity;
+    channel->temp_compensation.min_factor = config->temp_min_factor;
+    channel->temp_compensation.max_factor = config->temp_max_factor;
+    
+    /* Persist configuration */
+    watering_error_t result = watering_save_config_priority(true);
+    if (result != WATERING_SUCCESS) {
+        LOG_WRN("Failed to persist compensation config for channel %u: %d", 
+                config->channel_id, result);
+    }
+    
+    /* Update onboarding flags */
+    if (channel->rain_compensation.enabled) {
+        onboarding_update_channel_extended_flag(config->channel_id, 
+                                                CHANNEL_EXT_FLAG_RAIN_COMP_SET, true);
+    }
+    if (channel->temp_compensation.enabled) {
+        onboarding_update_channel_extended_flag(config->channel_id, 
+                                                CHANNEL_EXT_FLAG_TEMP_COMP_SET, true);
+    }
+    
+    LOG_INF("Channel %u compensation config updated (rain=%s, temp=%s)",
+            config->channel_id,
+            config->rain_enabled ? "enabled" : "disabled",
+            config->temp_enabled ? "enabled" : "disabled");
+    
+    /* Send notification */
+    channel_comp_config_selected_channel = config->channel_id;
+    memcpy(channel_comp_config_value, config, sizeof(*config));
+    if (notification_state.channel_comp_config_notifications_enabled && default_conn) {
+        safe_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_CHANNEL_COMP_CONFIG_VALUE],
+                    channel_comp_config_value, sizeof(*config));
+    }
+    
+    return len;
+}
+
+static void channel_comp_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
+    bool notify_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.channel_comp_config_notifications_enabled = notify_enabled;
+    LOG_INF("Channel compensation config notifications %s", notify_enabled ? "enabled" : "disabled");
+    
+    if (notify_enabled && default_conn) {
+        /* Send initial snapshot for the currently selected channel */
+        uint8_t channel_id = channel_comp_config_selected_channel;
+        if (channel_id >= WATERING_CHANNELS_COUNT) {
+            channel_id = 0;
+        }
+        
+        watering_channel_t *channel = NULL;
+        if (watering_get_channel(channel_id, &channel) == WATERING_SUCCESS && channel) {
+            struct channel_compensation_config_data config = {0};
+            config.channel_id = channel_id;
+            config.rain_enabled = channel->rain_compensation.enabled ? 1 : 0;
+            config.rain_sensitivity = channel->rain_compensation.sensitivity;
+            config.rain_lookback_hours = channel->rain_compensation.lookback_hours;
+            config.rain_skip_threshold_mm = channel->rain_compensation.skip_threshold_mm;
+            config.rain_reduction_factor = channel->rain_compensation.reduction_factor;
+            config.temp_enabled = channel->temp_compensation.enabled ? 1 : 0;
+            config.temp_base_temperature = channel->temp_compensation.base_temperature;
+            config.temp_sensitivity = channel->temp_compensation.sensitivity;
+            config.temp_min_factor = channel->temp_compensation.min_factor;
+            config.temp_max_factor = channel->temp_compensation.max_factor;
+            config.last_rain_calc_time = 0;  /* TODO: Add timestamp tracking */
+            config.last_temp_calc_time = 0;  /* TODO: Add timestamp tracking */
+            
+            memcpy(channel_comp_config_value, &config, sizeof(config));
+            safe_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_CHANNEL_COMP_CONFIG_VALUE],
+                        channel_comp_config_value, sizeof(config));
+        }
+    }
+}
+
+/**
+ * @brief Public API to notify channel compensation config changes
+ * @param channel_id Channel that was updated
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_channel_comp_config_notify(uint8_t channel_id) {
+    if (!notification_state.channel_comp_config_notifications_enabled || !default_conn) {
+        return -ENOTCONN;
+    }
+    
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return -EINVAL;
+    }
+    
+    watering_channel_t *channel = NULL;
+    if (watering_get_channel(channel_id, &channel) != WATERING_SUCCESS || !channel) {
+        return -EIO;
+    }
+    
+    struct channel_compensation_config_data config = {0};
+    config.channel_id = channel_id;
+    config.rain_enabled = channel->rain_compensation.enabled ? 1 : 0;
+    config.rain_sensitivity = channel->rain_compensation.sensitivity;
+    config.rain_lookback_hours = channel->rain_compensation.lookback_hours;
+    config.rain_skip_threshold_mm = channel->rain_compensation.skip_threshold_mm;
+    config.rain_reduction_factor = channel->rain_compensation.reduction_factor;
+    config.temp_enabled = channel->temp_compensation.enabled ? 1 : 0;
+    config.temp_base_temperature = channel->temp_compensation.base_temperature;
+    config.temp_sensitivity = channel->temp_compensation.sensitivity;
+    config.temp_min_factor = channel->temp_compensation.min_factor;
+    config.temp_max_factor = channel->temp_compensation.max_factor;
+    config.last_rain_calc_time = 0;  /* TODO: Add timestamp tracking */
+    config.last_temp_calc_time = 0;  /* TODO: Add timestamp tracking */
+    
+    memcpy(channel_comp_config_value, &config, sizeof(config));
+    return safe_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_CHANNEL_COMP_CONFIG_VALUE],
+                       channel_comp_config_value, sizeof(config));
+}
+
 #else /* CONFIG_BT */
 
 /* BLE Stub Functions when BLE is disabled */
@@ -10204,6 +10490,11 @@ int bt_irrigation_test_channel_notification(uint8_t channel_id) {
 
 int bt_irrigation_force_enable_notifications(void) {
     return 0; // BLE disabled - no force enable
+}
+
+int bt_irrigation_channel_comp_config_notify(uint8_t channel_id) {
+    (void)channel_id;
+    return 0; // BLE disabled - no notifications
 }
 
 /* ------------------------------------------------------------------ */

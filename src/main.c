@@ -127,19 +127,12 @@ static int setup_usb_cdc_acm(void) {
         return -ENODEV;
     }
 
+    /* Fast-boot: do a single non-blocking DTR check instead of waiting for the host */
     uint32_t dtr = 0;
-    int32_t wait_left = USB_GLOBAL_TIMEOUT_MS;
-    while (wait_left > 0) {
-        uart_line_ctrl_get(cdc_dev, UART_LINE_CTRL_DTR, &dtr);
-        if (dtr != 0U) {
-            break;
-        }
-        k_sleep(K_MSEC(USB_RETRY_DELAY_MS));
-        wait_left -= USB_RETRY_DELAY_MS;
-    }
+    (void)uart_line_ctrl_get(cdc_dev, UART_LINE_CTRL_DTR, &dtr);
 
     if (dtr == 0U) {
-        printk("USB host did not assert DTR within timeout\n");
+        printk("USB host not asserting DTR yet - skipping wait to speed up boot\n");
     } else {
         uart_line_ctrl_set(cdc_dev, UART_LINE_CTRL_DCD, 1);
         uart_line_ctrl_set(cdc_dev, UART_LINE_CTRL_DSR, 1);

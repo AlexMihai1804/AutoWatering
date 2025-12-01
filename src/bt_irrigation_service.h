@@ -693,5 +693,20 @@ int bt_irrigation_onboarding_status_notify(void);
  */
 int bt_irrigation_reset_control_notify(void);
 
+/**
+ * @brief Notify channel compensation config update
+ * 
+ * Sends notification to connected clients about per-channel rain and
+ * temperature compensation settings. This allows apps to configure
+ * compensation thresholds per-channel instead of relying on global defaults.
+ * 
+ * NOTE: Compensation only applies to TIME and VOLUME watering modes.
+ * FAO-56 modes already incorporate weather data in their calculations.
+ * 
+ * @param channel_id Channel that was updated (0-7)
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_channel_comp_config_notify(uint8_t channel_id);
+
 #endif /* CONFIG_BT */
 #endif /* BT_IRRIGATION_SERVICE_H_ */

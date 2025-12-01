@@ -385,12 +385,48 @@ struct rain_integration_status_ble {
     uint32_t storage_usage_bytes;            /* Storage usage */
 } __packed;                                   /* Total: 78 bytes */
 
+/**
+ * @brief Per-channel compensation configuration for BLE
+ * 
+ * Exposes rain and temperature compensation settings for individual channels.
+ * This allows mobile apps to configure per-channel thresholds instead of
+ * relying only on global defaults from Rain Sensor Config (#18).
+ * 
+ * NOTE: Compensation only applies to TIME and VOLUME watering modes.
+ * FAO-56 modes (AUTO_QUALITY, AUTO_ECO) already incorporate weather data
+ * in their calculations; applying compensation would double-count.
+ */
+struct channel_compensation_config_data {
+    uint8_t channel_id;                      /* Channel ID (0-7) */
+    
+    /* Rain compensation settings */
+    uint8_t rain_enabled;                    /* 0=disabled, 1=enabled */
+    float   rain_sensitivity;                /* Sensitivity factor (0.0-1.0) */
+    uint16_t rain_lookback_hours;            /* Hours to look back for rain data (1-72) */
+    float   rain_skip_threshold_mm;          /* Rain threshold to skip watering (0-100mm) */
+    float   rain_reduction_factor;           /* Duration/volume reduction factor (0.0-1.0) */
+    
+    /* Temperature compensation settings */
+    uint8_t temp_enabled;                    /* 0=disabled, 1=enabled */
+    float   temp_base_temperature;           /* Base temperature for calculations (°C) */
+    float   temp_sensitivity;                /* Temperature sensitivity factor (0.1-2.0) */
+    float   temp_min_factor;                 /* Minimum compensation factor (0.5-1.0) */
+    float   temp_max_factor;                 /* Maximum compensation factor (1.0-2.0) */
+    
+    /* Status fields (read-only, updated by firmware) */
+    uint32_t last_rain_calc_time;            /* Last rain compensation calculation (Unix) */
+    uint32_t last_temp_calc_time;            /* Last temp compensation calculation (Unix) */
+    
+    uint8_t reserved[3];                     /* Reserved for future use */
+} __packed;                                   /* Total: 44 bytes */
+
 /* Compile-time verification of BLE struct sizes (must stay in sync with docs) */
 BUILD_ASSERT(sizeof(struct rain_config_data) == 18, "rain_config_data must be 18 bytes");
 BUILD_ASSERT(sizeof(struct rain_data_data) == 24, "rain_data_data must be 24 bytes");
 BUILD_ASSERT(sizeof(struct rain_history_cmd_data) == 16, "rain_history_cmd_data must be 16 bytes");
 BUILD_ASSERT(sizeof(history_fragment_header_t) == 8, "history_fragment_header_t must be 8 bytes");
 BUILD_ASSERT(sizeof(struct rain_integration_status_ble) == 78, "rain_integration_status_ble must be 78 bytes");
+BUILD_ASSERT(sizeof(struct channel_compensation_config_data) == 44, "channel_compensation_config_data must be 44 bytes");
 BUILD_ASSERT(sizeof(struct growing_env_data) == 71, "growing_env_data must be 71 bytes");
 BUILD_ASSERT(sizeof(struct auto_calc_status_data) == 64, "auto_calc_status_data must be 64 bytes");
 BUILD_ASSERT(sizeof(struct onboarding_status_data) == 33, "onboarding_status_data must be 33 bytes");
