@@ -2300,10 +2300,10 @@ BT_GATT_SERVICE_DEFINE(irrigation_svc,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
                          BT_GATT_PERM_READ_ENCRYPT,
                          read_rain_integration_status, NULL, rain_integration_status_value),
-    BT_GATT_CCC(rain_integration_status_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
+    BT_GATT_CCC(rain_integration_status_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT)
 
     // Channel Compensation Config characteristic (per-channel rain/temp settings)
-    BT_GATT_CHARACTERISTIC(&channel_comp_config_char_uuid.uuid,
+    ,BT_GATT_CHARACTERISTIC(&channel_comp_config_char_uuid.uuid,
                          BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
                          BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                          read_channel_comp_config, write_channel_comp_config, channel_comp_config_value),
@@ -4516,13 +4516,6 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     memset(&notification_state, 0, sizeof(notification_state));
     
     printk("Connected - system status updated to: 0\n");
-
-    /* 
-     * NOTE: We do NOT request connection parameter updates here immediately.
-     * Windows needs time for service discovery and bonding.
-     * We rely on CONFIG_BT_GAP_AUTO_UPDATE_CONN_PARAMS=y to handle this
-     * after the configured delay (5s).
-     */
 
     if (!default_conn) {
         default_conn = bt_conn_ref(conn);

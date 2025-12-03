@@ -336,6 +336,7 @@ int main(void) {
     } else {
     printk("USB init complete\n");
     }
+    
     int ret = nvs_config_init();
     if (ret != 0) {
         printk("FATAL: NVS initialization failed (%d), halting application\n", ret);
