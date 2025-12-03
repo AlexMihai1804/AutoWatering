@@ -1931,6 +1931,21 @@ static void onboarding_status_ccc_changed(const struct bt_gatt_attr *attr, uint1
     }
 }
 
+/* Helper function to convert internal reset_type_t to BLE spec values */
+static uint8_t reset_type_to_ble_spec(reset_type_t type) {
+    switch (type) {
+        case RESET_TYPE_CHANNEL_CONFIG:   return 0x01;
+        case RESET_TYPE_CHANNEL_SCHEDULE: return 0x02;
+        case RESET_TYPE_ALL_CHANNELS:     return 0x10;
+        case RESET_TYPE_ALL_SCHEDULES:    return 0x11;
+        case RESET_TYPE_SYSTEM_CONFIG:    return 0x12;
+        case RESET_TYPE_CALIBRATION:      return 0x13; /* Using 0x13 for calibration */
+        case RESET_TYPE_HISTORY:          return 0x14;
+        case RESET_TYPE_FACTORY_RESET:    return 0xFF;
+        default:                          return 0xFF;
+    }
+}
+
 /* Reset control characteristic read callback */
 static ssize_t read_reset_control(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                 void *buf, uint16_t len, uint16_t offset) {
@@ -1944,7 +1959,8 @@ static ssize_t read_reset_control(struct bt_conn *conn, const struct bt_gatt_att
     reset_confirmation_t confirmation;
     int ret = reset_controller_get_confirmation_info(&confirmation);
     if (ret == 0 && confirmation.is_valid) {
-        reset_data.reset_type = confirmation.type;
+        /* Convert internal type to BLE spec value */
+        reset_data.reset_type = reset_type_to_ble_spec(confirmation.type);
         reset_data.channel_id = confirmation.channel_id;
         reset_data.confirmation_code = confirmation.code;
         reset_data.timestamp = confirmation.generation_time;
@@ -1958,7 +1974,7 @@ static ssize_t read_reset_control(struct bt_conn *conn, const struct bt_gatt_att
         reset_data.status = 0xFF; /* No operation */
     }
     
-    LOG_DBG("Reset control read: type=%u, channel=%u, status=%u", 
+    LOG_DBG("Reset control read: type=0x%02x, channel=%u, status=%u", 
             reset_data.reset_type, reset_data.channel_id, reset_data.status);
     
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &reset_data, sizeof(reset_data));
@@ -7443,7 +7459,8 @@ int bt_irrigation_reset_control_notify(void) {
     reset_confirmation_t confirmation;
     int ret = reset_controller_get_confirmation_info(&confirmation);
     if (ret == 0 && confirmation.is_valid) {
-        reset_data.reset_type = confirmation.type;
+        /* Convert internal type to BLE spec value */
+        reset_data.reset_type = reset_type_to_ble_spec(confirmation.type);
         reset_data.channel_id = confirmation.channel_id;
         reset_data.confirmation_code = confirmation.code;
         reset_data.timestamp = confirmation.generation_time;
