@@ -305,6 +305,24 @@ const char* reset_controller_get_status_description(reset_status_t status) {
 /* Individual reset operation implementations */
 
 static int reset_controller_reset_channel_config(uint8_t channel_id) {
+    /* First, clear ALL channel flags before saving any config */
+    /* This ensures flags are reset even if nvs_save_* functions update them */
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_PLANT_TYPE_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_SOIL_TYPE_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_IRRIGATION_METHOD_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_COVERAGE_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_SUN_EXPOSURE_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_NAME_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_ENABLED, false);
+    
+    /* Also clear extended flags for this channel */
+    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_FAO56_READY, false);
+    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_RAIN_COMP_SET, false);
+    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_TEMP_COMP_SET, false);
+    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_CONFIG_COMPLETE, false);
+    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_LATITUDE_SET, false);
+    
     /* Reset enhanced channel configuration to defaults */
     enhanced_channel_config_t default_config = DEFAULT_ENHANCED_CHANNEL_CONFIG;
     int ret = nvs_save_enhanced_channel_config(channel_id, &default_config);
@@ -325,10 +343,16 @@ static int reset_controller_reset_channel_config(uint8_t channel_id) {
         return ret;
     }
     
-    /* Update onboarding flags - clear all channel flags for this channel */
-    for (int flag = 0; flag < 8; flag++) {
-        onboarding_update_channel_flag(channel_id, flag, false);
-    }
+    /* Re-clear flags after save operations to ensure they stay cleared */
+    /* (in case nvs_save_* functions updated them based on saved values) */
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_PLANT_TYPE_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_SOIL_TYPE_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_IRRIGATION_METHOD_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_COVERAGE_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_SUN_EXPOSURE_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_NAME_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, false);
+    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_ENABLED, false);
     
     printk("Channel %d configuration reset to defaults\n", channel_id);
     return 0;
