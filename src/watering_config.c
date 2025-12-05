@@ -101,7 +101,8 @@ watering_error_t load_default_config(void) {
         
         watering_channels[i].soil_type = SOIL_TYPE_LOAMY;         // Default to loamy soil
         watering_channels[i].irrigation_method = IRRIGATION_DRIP; // Default to drip irrigation
-        watering_channels[i].sun_percentage = 75;                 // Default to 75% sun exposure
+        watering_channels[i].sun_percentage = 75;                 // Default to 75% sun exposure (legacy)
+        watering_channels[i].sun_exposure_pct = 75;               // Default to 75% sun exposure (new field)
         
         // Default to area-based coverage with 1 square meter
         watering_channels[i].use_area_based = true;
@@ -112,6 +113,12 @@ watering_error_t load_default_config(void) {
         watering_channels[i].custom_plant.water_need_factor = 1.0f;
         watering_channels[i].custom_plant.irrigation_freq = 3;
         watering_channels[i].custom_plant.prefer_area_based = true;
+        
+        // Initialize database index fields to sentinel values (not configured)
+        // These sentinel values prevent onboarding flags from being set during system config save
+        watering_channels[i].plant_db_index = UINT16_MAX;
+        watering_channels[i].soil_db_index = UINT8_MAX;
+        watering_channels[i].irrigation_method_index = UINT8_MAX;
     }
     
     // Default days counter

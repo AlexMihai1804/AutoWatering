@@ -3,6 +3,7 @@
 #include "nvs_config.h"
 #include "timezone.h"
 #include "watering.h"
+#include "watering_internal.h"
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/random/random.h>
@@ -329,6 +330,15 @@ static int reset_controller_reset_channel_config(uint8_t channel_id) {
     if (ret < 0) {
         return ret;
     }
+    
+    /* CRITICAL: Also update RAM structure to match NVS defaults */
+    /* This prevents stale values from being re-saved and triggering flags */
+    watering_channels[channel_id].plant_db_index = UINT16_MAX;
+    watering_channels[channel_id].soil_db_index = UINT8_MAX;
+    watering_channels[channel_id].irrigation_method_index = UINT8_MAX;
+    watering_channels[channel_id].sun_exposure_pct = 75;  /* Default sun exposure */
+    watering_channels[channel_id].use_area_based = true;
+    watering_channels[channel_id].coverage.area_m2 = 1.0f;
     
     /* Reset water balance configuration */
     water_balance_config_t default_balance = DEFAULT_WATER_BALANCE_CONFIG;
