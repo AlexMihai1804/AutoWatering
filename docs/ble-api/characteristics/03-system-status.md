@@ -17,7 +17,7 @@ The System Status characteristic exposes the firmware-wide state machine that `w
 - **Size**: 1 byte
 - **Fragmentation**: Not required
 - **Notification Priority**: HIGH (adaptive baseline 50ms via `NOTIFY_PRIORITY_HIGH`)
-- Periodic re-notification every 30s only while status is one of: NO_FLOW, UNEXPECTED_FLOW, FAULT, RTC_ERROR, LOW_POWER (handled by `status_periodic_timer` once the client enables CCC).
+- Periodic re-notification every 30s only while status is one of: NO_FLOW, UNEXPECTED_FLOW, FAULT, RTC_ERROR, LOW_POWER, FREEZE_LOCKOUT (handled by `status_periodic_timer` once the client enables CCC).
 
 ## Data Structure
 
@@ -29,7 +29,8 @@ typedef enum {
     WATERING_STATUS_UNEXPECTED_FLOW = 2,
     WATERING_STATUS_FAULT = 3,
     WATERING_STATUS_RTC_ERROR = 4,
-    WATERING_STATUS_LOW_POWER = 5
+    WATERING_STATUS_LOW_POWER = 5,
+    WATERING_STATUS_FREEZE_LOCKOUT = 6
 } watering_status_t;
 ```
 
@@ -78,6 +79,13 @@ typedef enum {
 - **Trigger Points**: `watering_set_power_mode(POWER_MODE_ULTRA_LOW_POWER)` places the system in ultra-low power mode; exiting that mode returns to OK
 - **Action Required**: Check power supply, replace batteries
 
+### WATERING_STATUS_FREEZE_LOCKOUT (6)
+- **Description**: Anti-freeze safety lockout; irrigation blocked while ambient temperature is at/under the configured freeze threshold or environmental data is stale/unavailable.
+- **Trigger Points**: `watering_tasks.c` detects BME280 temperature ≤2°C (default) or environmental data older than 10 minutes when enqueueing/starting tasks or running the scheduler.
+- **Behaviour**: Blocks enqueue/start, scheduler skips tasks, raises alarm code 3; remains active until cleared.
+- **Recovery**: Clears automatically after valid readings above the clear threshold (default 4°C) or fresh data resumes; sends alarm clear (code 3, data=0).
+- **Action Required**: Wait for temperature to rise or restore BME280 readings; optional override not recommended.
+
 ## Status Transitions
 
 ### Transition Summary (Implemented)
@@ -88,6 +96,8 @@ typedef enum {
 | OK | UNEXPECTED_FLOW | Total pulses exceed `UNEXPECTED_FLOW_THRESHOLD` (10) while no valves active |
 | UNEXPECTED_FLOW | OK | Pulses drop below ~half threshold (cleared condition) |
 | ANY | FAULT | Escalation paths (e.g., max no-flow retries exceeded, unrecoverable internal error) |
+| ANY | FREEZE_LOCKOUT | Temperature ≤ freeze threshold or environmental data stale/unavailable |
+| FREEZE_LOCKOUT | OK | Temperature > clear threshold with fresh data |
 | ANY (fault-like) | Periodic notify | 30s timer fires while status in fault-like set |
 
 ### Transition Conditions
@@ -117,6 +127,12 @@ uint8_t status = WATERING_STATUS_NO_FLOW; // 1
 uint8_t status = WATERING_STATUS_UNEXPECTED_FLOW; // 2
 ```
 **Byte Representation**: `02`
+
+#### Freeze Lockout Active
+```c
+uint8_t status = WATERING_STATUS_FREEZE_LOCKOUT; // 6
+```
+**Byte Representation**: `06`
 
 ### Notification Operations
 

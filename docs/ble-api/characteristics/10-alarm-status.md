@@ -29,7 +29,7 @@ The Alarm Status characteristic transports critical fault information raised by 
 Structure fields are little-endian. `alarm_value` is initialised to zeros at boot so first reads return the cleared state.
 
 ## Field Behaviour
-- `alarm_code`: runtime producers only emit codes 1 (`ALARM_NO_FLOW`) or 2 (`ALARM_UNEXPECTED_FLOW`) today. `write_alarm()` treats 0x00 and 0xFF as clear-all aliases and allows 0x01-0x0D as selective clears (must match the active code). Other single-byte values return `BT_ATT_ERR_VALUE_NOT_ALLOWED`.
+- `alarm_code`: runtime producers emit codes 1 (`ALARM_NO_FLOW`), 2 (`ALARM_UNEXPECTED_FLOW`), and 3 (`ALARM_FREEZE_LOCKOUT`). `write_alarm()` treats 0x00 and 0xFF as clear-all aliases and allows 0x01-0x0D as selective clears (must match the active code). Other single-byte values return `BT_ATT_ERR_VALUE_NOT_ALLOWED`.
 - `alarm_data`: writers such as `watering_monitor.c` use this as context (retry attempt count or number of stray pulses). Clears reset the field to 0 before calling `bt_irrigation_alarm_notify()`.
 - `timestamp`: `bt_irrigation_alarm_notify()` always stamps the structure with `timezone_get_unix_utc()`, even for clear operations supplied with `alarm_data = 0`. Clients should treat the timestamp as "last state change" rather than "alarm onset".
 
@@ -57,6 +57,8 @@ Structure fields are little-endian. `alarm_value` is initialised to zeros at boo
 - `src/watering_monitor.c` raises alarms for flow anomalies:
   - Code 1 (`ALARM_NO_FLOW`): emitted when a commanded watering task fails to register pulses after various retries. `alarm_data` records the retry attempt count; clears use `alarm_data = 0`.
   - Code 2 (`ALARM_UNEXPECTED_FLOW`): emitted when pulses are detected while all valves are closed. `alarm_data` carries the raw pulse count observed before mitigation.
+- `src/watering_tasks.c` raises alarms for anti-freeze safety:
+  - Code 3 (`ALARM_FREEZE_LOCKOUT`): emitted when environmental data is stale/unavailable or temperature ≤ freeze threshold (default 2°C). `alarm_data` carries `temp_c*10` on raise, `0xFFFF` for stale data, and `0` on clear.
 - Other subsystems may call `bt_irrigation_alarm_notify()` in future; consumers should not hard-code the code list and must handle unknown non-zero values.
 
 ## Error Handling

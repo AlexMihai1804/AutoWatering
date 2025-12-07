@@ -4915,7 +4915,7 @@ static ssize_t read_status(struct bt_conn *conn, const struct bt_gatt_attr *attr
     }
     
     /* Per BLE API Documentation: READ returns current system status (uint8_t) */
-    /* Status values: 0=OK, 1=No-Flow, 2=Unexpected-Flow, 3=Fault, 4=RTC-Error, 5=Low-Power */
+    /* Status values: 0=OK, 1=No-Flow, 2=Unexpected-Flow, 3=Fault, 4=RTC-Error, 5=Low-Power, 6=Freeze-Lockout */
     watering_status_t current_status;
     if (watering_get_status(&current_status) == WATERING_SUCCESS) {
         status_value[0] = (uint8_t)current_status;
@@ -4925,7 +4925,8 @@ static ssize_t read_status(struct bt_conn *conn, const struct bt_gatt_attr *attr
                 (current_status == 2) ? "Unexpected-Flow" :
                 (current_status == 3) ? "Fault" :
                 (current_status == 4) ? "RTC-Error" :
-                (current_status == 5) ? "Low-Power" : "Unknown");
+                (current_status == 5) ? "Low-Power" :
+                (current_status == 6) ? "Freeze-Lockout" : "Unknown");
     } else {
         status_value[0] = (uint8_t)WATERING_STATUS_OK; /* Default to OK if can't read */
         LOG_WRN("Failed to read system status, defaulting to OK");
@@ -4944,7 +4945,7 @@ static void status_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t val
         LOG_INF("✅ System Status notifications enabled - will send updates on status changes");
         
         /* Per BLE API Documentation: status values mapping */
-        /* 0=OK, 1=No-Flow, 2=Unexpected-Flow, 3=Fault, 4=RTC-Error, 5=Low-Power */
+        /* 0=OK, 1=No-Flow, 2=Unexpected-Flow, 3=Fault, 4=RTC-Error, 5=Low-Power, 6=Freeze-Lockout */
         
         /* Always read fresh status from system */
         watering_status_t current_status;
@@ -4956,7 +4957,8 @@ static void status_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t val
                    (current_status == 2) ? "Unexpected-Flow" :
                    (current_status == 3) ? "Fault" :
                    (current_status == 4) ? "RTC-Error" :
-                   (current_status == 5) ? "Low-Power" : "Unknown");
+                   (current_status == 5) ? "Low-Power" :
+                   (current_status == 6) ? "Freeze-Lockout" : "Unknown");
         } else {
             status_value[0] = (uint8_t)WATERING_STATUS_OK;
             LOG_WRN("Status CCC enabled - defaulted to OK status");
@@ -4985,7 +4987,8 @@ static void status_work_handler(struct k_work *work)
             current_status == WATERING_STATUS_NO_FLOW ||
             current_status == WATERING_STATUS_UNEXPECTED_FLOW ||
             current_status == WATERING_STATUS_RTC_ERROR ||
-            current_status == WATERING_STATUS_LOW_POWER) {
+            current_status == WATERING_STATUS_LOW_POWER ||
+            current_status == WATERING_STATUS_FREEZE_LOCKOUT) {
             status_value[0] = (uint8_t)current_status;
             const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_STATUS_VALUE];
             safe_notify(default_conn, attr, status_value, sizeof(uint8_t));

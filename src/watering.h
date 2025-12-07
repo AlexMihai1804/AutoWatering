@@ -94,7 +94,8 @@ typedef enum {
     WATERING_SKIP_REASON_RAIN = 0,
     WATERING_SKIP_REASON_MOISTURE = 1,
     WATERING_SKIP_REASON_MANUAL = 2,
-    WATERING_SKIP_REASON_ERROR = 3
+    WATERING_SKIP_REASON_ERROR = 3,
+    WATERING_SKIP_REASON_FREEZE = 4
 } watering_skip_reason_t;
 
 /**
@@ -809,7 +810,8 @@ typedef enum {
     WATERING_STATUS_UNEXPECTED_FLOW = 2,  /**< Flow detected when all valves closed */
     WATERING_STATUS_FAULT = 3,         /**< System in fault state requiring manual reset */
     WATERING_STATUS_RTC_ERROR = 4,     /**< RTC failure detected */
-    WATERING_STATUS_LOW_POWER = 5      /**< System in low power mode */
+    WATERING_STATUS_LOW_POWER = 5,     /**< System in low power mode */
+    WATERING_STATUS_FREEZE_LOCKOUT = 6 /**< Anti-freeze safety lockout */
 } watering_status_t;
 
 /**

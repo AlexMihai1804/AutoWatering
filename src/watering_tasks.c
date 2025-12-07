@@ -13,8 +13,16 @@
 #include "rain_sensor.h"            /* Rain sensor status */
 #include "rain_history.h"           /* Rain history data */
 #include "interval_task_integration.h" /* Interval mode integration */
+#include "environmental_data.h"     /* Temperature source for anti-freeze */
 
 LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
+
+/* --- Anti-freeze safety cutoff configuration -------------------------- */
+#define FREEZE_LOCK_TEMP_C        2.0f   /* block tasks at/under this temp */
+#define FREEZE_CLEAR_TEMP_C       4.0f   /* require this temp to clear lock */
+#define FREEZE_DATA_MAX_AGE_MS    (10 * 60 * 1000) /* 10 minutes stale window */
+#define FREEZE_ALARM_CODE         3      /* BLE alarm code for freeze */
+#define ALARM_REFRESH_MS          60000  /* resend active alarms every 60s */
 
 /**
  * @file watering_tasks.c
@@ -73,6 +81,83 @@ static bool watering_tasks_running = false;
 
 /** Flag to signal threads to exit */
 static bool exit_tasks = false;
+
+/** Anti-freeze state */
+static bool freeze_lockout_active = false;
+static uint32_t last_freeze_alarm_ms = 0;
+
+/* Emit BLE/system alarm with optional log */
+static void raise_alarm(uint8_t alarm_code, uint16_t alarm_data, const char *logmsg)
+{
+    if (logmsg) {
+        printk("%s\n", logmsg);
+    }
+#ifdef CONFIG_BT
+    bt_irrigation_alarm_notify(alarm_code, alarm_data);
+#endif
+}
+
+/* Update system status and notify BLE */
+static void update_system_status(watering_status_t status)
+{
+    system_status = status;
+#ifdef CONFIG_BT
+    bt_irrigation_system_status_update(system_status);
+#endif
+}
+
+/* Check temperature and enforce anti-freeze lockout */
+static bool check_freeze_lockout(float *temperature_out)
+{
+    bme280_environmental_data_t env = {0};
+    int ret = environmental_data_get_current(&env);
+    uint32_t now = k_uptime_get_32();
+
+    bool data_valid = (ret == 0) && env.current.valid;
+    uint32_t last_ts = env.current.timestamp ? env.current.timestamp : env.last_update;
+    bool stale = data_valid && (now - last_ts > FREEZE_DATA_MAX_AGE_MS);
+
+    /* Treat missing or stale data conservativ as lockout to avoid freezing */
+    if (!data_valid || stale) {
+        if (!freeze_lockout_active || (now - last_freeze_alarm_ms) > ALARM_REFRESH_MS) {
+            raise_alarm(FREEZE_ALARM_CODE, 0xFFFF, "ALERT: Environmental data unavailable/stale - freeze lockout");
+            last_freeze_alarm_ms = now;
+        }
+        freeze_lockout_active = true;
+        if (system_status != WATERING_STATUS_FAULT) {
+            update_system_status(WATERING_STATUS_FREEZE_LOCKOUT);
+        }
+        return true;
+    }
+
+    float temp_c = env.current.temperature;
+    if (temperature_out) {
+        *temperature_out = temp_c;
+    }
+
+    if (temp_c <= FREEZE_LOCK_TEMP_C) {
+        freeze_lockout_active = true;
+        if (!last_freeze_alarm_ms || (now - last_freeze_alarm_ms) > ALARM_REFRESH_MS) {
+            raise_alarm(FREEZE_ALARM_CODE, (int16_t)(temp_c * 10), "ALERT: Temperature below freeze cutoff");
+            last_freeze_alarm_ms = now;
+        }
+        if (system_status != WATERING_STATUS_FAULT) {
+            update_system_status(WATERING_STATUS_FREEZE_LOCKOUT);
+        }
+        return true;
+    }
+
+    /* Clear lockout when safe temperature is sustained */
+    if (freeze_lockout_active && temp_c >= FREEZE_CLEAR_TEMP_C) {
+        freeze_lockout_active = false;
+        if (system_status == WATERING_STATUS_FREEZE_LOCKOUT) {
+            update_system_status(WATERING_STATUS_OK);
+        }
+        raise_alarm(FREEZE_ALARM_CODE, 0, "INFO: Freeze lockout cleared");
+    }
+
+    return freeze_lockout_active;
+}
 
 /** Mutex for protecting task state */
 K_MUTEX_DEFINE(watering_state_mutex);
@@ -149,10 +234,21 @@ watering_error_t watering_add_task(watering_task_t *task) {
     if (task == NULL || task->channel == NULL) {
         return WATERING_ERROR_INVALID_PARAM;
     }
-    
+
     uint8_t channel_id = task->channel - watering_channels;
     if (channel_id >= WATERING_CHANNELS_COUNT) {
         return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    /* Anti-freeze safety: block enqueue when too cold or data unavailable */
+    float temp_c = 0.0f;
+    if (check_freeze_lockout(&temp_c)) {
+        printk("Skipping task enqueue for channel %u due to freeze lockout (T=%.1fC)\n",
+               channel_id, (double)temp_c);
+#ifdef CONFIG_BT
+        watering_history_record_task_skip(channel_id, WATERING_SKIP_REASON_FREEZE, temp_c);
+#endif
+        return WATERING_ERROR_BUSY;
     }
     
     // Validate watering mode parameters
@@ -246,6 +342,17 @@ watering_error_t watering_start_task(watering_task_t *task)
     uint8_t channel_id = task->channel - watering_channels;
     if (channel_id >= WATERING_CHANNELS_COUNT) {
         return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    /* Re-check anti-freeze just before start */
+    float temp_c = 0.0f;
+    if (check_freeze_lockout(&temp_c)) {
+        printk("Blocked watering start for channel %u due to freeze lockout (T=%.1fC)\n",
+               channel_id, (double)temp_c);
+#ifdef CONFIG_BT
+        watering_history_record_task_skip(channel_id, WATERING_SKIP_REASON_FREEZE, temp_c);
+#endif
+        return WATERING_ERROR_BUSY;
     }
     
     /* Apply rain-based adjustments to the task before starting */
@@ -476,6 +583,9 @@ bool watering_stop_current_task(void) {
  */
 int watering_check_tasks(void) {
     bool should_fetch_next = false;
+
+    /* Update freeze status periodically so alarms clear/refresh */
+    check_freeze_lockout(NULL);
 
     // Use timeout instead of K_NO_WAIT for better responsiveness while avoiding hangs
     if (k_mutex_lock(&watering_state_mutex, K_MSEC(50)) != 0) {
@@ -930,6 +1040,13 @@ watering_error_t watering_scheduler_run(void) {
     
     printk("Running watering scheduler [time %02d:%02d, day %d]\n", 
            current_hour, current_minute, current_day_of_week);
+
+    /* Global anti-freeze block: do not schedule while lockout active */
+    float temp_c = 0.0f;
+    if (check_freeze_lockout(&temp_c)) {
+        printk("Scheduler: freeze lockout active (T=%.1fC) - skipping all channels\n", (double)temp_c);
+        return WATERING_ERROR_BUSY;
+    }
     
     if (system_status == WATERING_STATUS_FAULT || system_status == WATERING_STATUS_RTC_ERROR) {
         return WATERING_ERROR_BUSY;
