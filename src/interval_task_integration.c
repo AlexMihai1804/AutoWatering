@@ -551,6 +551,11 @@ int interval_task_is_supported(uint8_t channel_id, bool *is_supported)
  */
 watering_error_t interval_task_integration_init(void)
 {
+    static bool initialized = false;
+    if (initialized) {
+        return WATERING_SUCCESS;
+    }
+
     int ret = interval_task_init();
     if (ret != 0) {
         LOG_ERR("Failed to initialize interval task system: %d", ret);
@@ -558,5 +563,6 @@ watering_error_t interval_task_integration_init(void)
     }
     
     LOG_INF("Interval task integration system initialized");
+    initialized = true;
     return WATERING_SUCCESS;
 }

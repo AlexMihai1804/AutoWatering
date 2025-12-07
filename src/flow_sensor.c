@@ -93,14 +93,12 @@ static void flow_update_work_handler(struct k_work *work)
     static uint32_t last_rate_calc_time = 0;
     static uint32_t last_rate_calc_pulses = 0;
 
-    /* CRITICAL FIX: Calculate flow rate even less frequently to prevent system overload
-     * Calculate every 10 seconds instead of every 5 seconds
-     */
-    if ((now - last_rate_calc_time) >= 10000) {  /* 10 seconds instead of 5 seconds */
+    /* Calculate flow rate on a short window so low flows are still reported */
+    if ((now - last_rate_calc_time) >= 2000) {  /* 2 second window */
         uint32_t pulse_diff = cnt - last_rate_calc_pulses;
         uint32_t time_diff_ms = now - last_rate_calc_time;
         
-        if (pulse_diff >= 5 && time_diff_ms > 0) {  /* Require at least 5 pulses */
+        if (pulse_diff >= 1 && time_diff_ms > 0) {  /* accept very low flow */
             /* Calculate pulses per second, then smooth it */
             uint32_t current_rate = (pulse_diff * 1000) / time_diff_ms;
             smoothed_flow_rate = calculate_smoothed_flow_rate(current_rate);
@@ -108,14 +106,6 @@ static void flow_update_work_handler(struct k_work *work)
             if (current_rate > 10) {  /* Only log if >10 pps */
                 LOG_DBG("Flow rate calculated: %u pps (from %u pulses in %u ms)", 
                        current_rate, pulse_diff, time_diff_ms);
-            }
-        } else if (pulse_diff < 5 && pulse_diff > 0) {
-            /* Low flow - calculate anyway but mark as potentially noisy */
-            uint32_t current_rate = (pulse_diff * 1000) / time_diff_ms;
-            smoothed_flow_rate = calculate_smoothed_flow_rate(current_rate);
-            /* Only log if there's actual meaningful flow */
-            if (current_rate > 2) {
-                LOG_DBG("Low flow rate: %u pps (from %u pulses)", current_rate, pulse_diff);
             }
         } else if (pulse_diff == 0) {
             /* No flow detected */
@@ -126,11 +116,9 @@ static void flow_update_work_handler(struct k_work *work)
         last_rate_calc_pulses = cnt;
     }
 
-    /* CRITICAL FIX: Send notifications even less frequently to prevent BLE stack overload
-     * Only send notifications when major changes occur or at very long intervals
-     */
-    bool significant_change = (cnt - last_notified >= 100);  /* Every 100 pulses instead of 50 */
-    bool time_interval_reached = (now - last_flow_notify_time >= 30000);  /* Every 30 seconds instead of 10 seconds */
+    /* Send notifications on moderate changes or periodic heartbeat */
+    bool significant_change = (cnt - last_notified >= 10);      /* Every 10 pulses */
+    bool time_interval_reached = (now - last_flow_notify_time >= 5000);  /* Every 5 seconds */
     
     if (significant_change || time_interval_reached) {
         last_notified = cnt;
@@ -148,7 +136,11 @@ static void flow_update_work_handler(struct k_work *work)
             uint8_t channel_id = watering_task_state.current_active_task->channel - watering_channels;
             if (channel_id < WATERING_CHANNELS_COUNT) {
                 /* Calculate volume from pulse count (assuming calibration) */
-                uint32_t volume_ml = cnt * 1000 / FLOW_CALIB_DT; // Convert pulses to ml
+                uint32_t calib = get_flow_calibration();
+                if (calib == 0) {
+                    calib = FLOW_CALIB_DT;
+                }
+                uint32_t volume_ml = cnt * 1000 / calib; // Convert pulses to ml
                 bt_irrigation_update_statistics_from_flow(channel_id, volume_ml);
             }
         }
@@ -191,13 +183,13 @@ static void flow_sensor_callback(const struct device *dev,
         last_interrupt_time = now;
         atomic_inc(&pulse_count);
 
-    /* CRITICAL FIX: Further reduce work submission frequency to prevent system overload
-     * Only submit work every 25 pulses and with minimum 30-second intervals
-     */
+    /* Submit work on small batches to keep BLE updates responsive */
     uint32_t current_count = atomic_get(&pulse_count);
-    if ((current_count - pulse_count_at_last_work) >= 25) {  /* Every 25 pulses */
+    static uint32_t last_work_submit_time = 0;
+    if ((current_count - pulse_count_at_last_work) >= 5 || (now - last_work_submit_time) >= 3000) {  /* Every 5 pulses or 3s */
         if (!k_work_is_pending(&flow_update_work)) {
             pulse_count_at_last_work = current_count;
+            last_work_submit_time = now;
             k_work_submit(&flow_update_work);
             /* Only log every 100th pulse to avoid spam */
             if (current_count % 100 == 0) {
@@ -258,13 +250,10 @@ int flow_sensor_init(void) {
     /* init work item for BLE notifications */
     k_work_init(&flow_update_work, flow_update_work_handler);
 
-    /* CRITICAL FIX: Disable periodic timer to prevent BLE stack overload
-     * Periodic notifications were causing BLE stack freeze issues
-     * Flow updates will only be sent when actual flow changes occur
-     */
+    /* Moderate periodic timer to ensure slow flows still report */
     k_timer_init(&periodic_ble_timer, periodic_ble_timer_handler, NULL);
-    /* Timer is initialized but NOT started - no periodic updates */
-    LOG_INF("Flow sensor: periodic timer disabled to prevent BLE overload");
+    k_timer_start(&periodic_ble_timer, K_SECONDS(5), K_SECONDS(5));
+    LOG_INF("Flow sensor: periodic timer enabled (5s heartbeat)");
     
     /* Load flow calibration from persistent storage */
     uint32_t saved_calibration;

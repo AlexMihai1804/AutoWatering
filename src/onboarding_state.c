@@ -167,6 +167,11 @@ static bool update_channel_complete_flag_locked(uint8_t channel_id) {
 
 int onboarding_state_init(void) {
     k_mutex_lock(&onboarding_mutex, K_FOREVER);
+
+    if (state_initialized) {
+        k_mutex_unlock(&onboarding_mutex);
+        return 0;
+    }
     
     /* Try to load existing state from NVS */
     int ret = nvs_load_onboarding_state(&current_state);

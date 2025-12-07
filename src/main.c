@@ -373,14 +373,14 @@ int main(void) {
     printk("Starting rain sensor init...\n");
     ret = rain_sensor_init();
     if (ret != 0) {
-        printk("Rain sensor initialization failed: %d – continuing without rain data\n", ret);
+        printk("Rain sensor initialization failed: %d - continuing without rain data\n", ret);
     } else {
         printk("Rain sensor initialization successful\n");
     }
     
     ret = initialize_component("RTC", rtc_init);
     if (ret != 0) {
-        printk("WARNING: RTC init failed (%d) – using uptime fallback\n", ret);
+        printk("WARNING: RTC init failed (%d) - using uptime fallback\n", ret);
     } else {
         set_default_rtc_time();
     }

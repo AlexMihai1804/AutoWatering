@@ -56,9 +56,6 @@ typedef enum {
 /** Current state of task execution system */
 static task_state_t current_task_state = W_TASK_STATE_IDLE;
 
-/** Flow sensor calibration - pulses per liter */
-static uint32_t pulses_per_liter = DEFAULT_PULSES_PER_LITER;
-
 /** Stack sizes for watering threads */
 #define WATERING_STACK_SIZE 2048
 #define SCHEDULER_STACK_SIZE 2048
@@ -429,7 +426,11 @@ bool watering_stop_current_task(void) {
     
     /* Calculate actual values for history recording */
     uint16_t actual_value;
-    uint16_t total_volume_ml = get_pulse_count() * 1000 / pulses_per_liter; // Convert to ml
+    uint32_t calibration = get_flow_calibration();
+    if (calibration == 0) {
+        calibration = DEFAULT_PULSES_PER_LITER;
+    }
+    uint16_t total_volume_ml = get_pulse_count() * 1000 / calibration; // Convert to ml
     
     if (watering_task_state.current_active_task->channel->watering_event.watering_mode == WATERING_BY_DURATION) {
         actual_value = duration_ms / (60 * 1000); // Convert to minutes
@@ -632,7 +633,8 @@ watering_error_t watering_cleanup_tasks(void) {
         return WATERING_SUCCESS; // Skip cleanup if busy, try again later
     }
     
-    if (current_task_state == W_TASK_STATE_COMPLETED && watering_task_state.current_active_task != NULL) {
+    if (current_task_state == W_TASK_STATE_COMPLETED) {
+        /* Ensure state is fully reset even if the active task pointer was already cleared */
         watering_task_state.current_active_task = NULL;
         watering_task_state.task_in_progress = false;
         current_task_state = W_TASK_STATE_IDLE;
@@ -657,14 +659,13 @@ watering_error_t watering_set_flow_calibration(uint32_t new_pulses_per_liter) {
     if (new_pulses_per_liter == 0) {
         return WATERING_ERROR_INVALID_PARAM;
     }
-    
-    // Use timeout instead of K_FOREVER to prevent system freeze
-    if (k_mutex_lock(&watering_state_mutex, K_MSEC(100)) != 0) {
-        return WATERING_ERROR_BUSY;
+
+    /* Persist and update the authoritative calibration in flow_sensor */
+    int ret = set_flow_calibration(new_pulses_per_liter);
+    if (ret < 0) {
+        return WATERING_ERROR_CONFIG;
     }
-    pulses_per_liter = new_pulses_per_liter;
-    k_mutex_unlock(&watering_state_mutex);
-    
+
     printk("Flow sensor calibration updated: %d pulses per liter\n", new_pulses_per_liter);
     return WATERING_SUCCESS;
 }
@@ -679,16 +680,13 @@ watering_error_t watering_get_flow_calibration(uint32_t *pulses_per_liter_out) {
     if (pulses_per_liter_out == NULL) {
         return WATERING_ERROR_INVALID_PARAM;
     }
-    
-    // Use timeout instead of K_FOREVER to prevent system freeze
-    if (k_mutex_lock(&watering_state_mutex, K_MSEC(100)) != 0) {
-        // If mutex is busy, return the last known calibration value
-        *pulses_per_liter_out = pulses_per_liter;
-        return WATERING_SUCCESS;
+
+    /* Always read the authoritative value from flow_sensor (persisted in NVS) */
+    *pulses_per_liter_out = get_flow_calibration();
+    if (*pulses_per_liter_out == 0) {
+        *pulses_per_liter_out = DEFAULT_PULSES_PER_LITER;
     }
-    *pulses_per_liter_out = pulses_per_liter;
-    k_mutex_unlock(&watering_state_mutex);
-    
+
     return WATERING_SUCCESS;
 }
 

@@ -35,6 +35,7 @@ static struct k_thread flow_monitor_data;
 
 /** Flag to signal monitor thread to exit */
 static bool exit_tasks = false;
+static bool monitor_started = false;
 
 /** Counter for consecutive flow errors */
 static uint8_t flow_error_attempts = 0;
@@ -83,11 +84,9 @@ watering_error_t check_flow_anomalies(void)
 {
     uint32_t now = k_uptime_get_32();
     
-    // CRITICAL FIX: Use non-blocking mutex to prevent deadlock
-    if (k_mutex_lock(&flow_monitor_mutex, K_NO_WAIT) != 0) {
-        // If we can't get the mutex immediately, skip this check
-        // It's better to miss a check than to hang the system
-        return WATERING_SUCCESS;
+    /* Prefer a short wait instead of skipping checks entirely so we still detect leaks */
+    if (k_mutex_lock(&flow_monitor_mutex, K_MSEC(10)) != 0) {
+        return WATERING_SUCCESS; /* give up this cycle but try again quickly */
     }
     
     // Only check periodically to allow flow to stabilize
@@ -477,8 +476,25 @@ watering_error_t flow_monitor_init(void) {
     last_flow_check_time = 0;
     exit_tasks = false;
 
-    /* DEBUG: Disable flow monitor thread to isolate lockups during BLE init */
-    printk("Flow monitoring task DISABLED for debug\n");
+    /* Start background monitoring thread once */
+    if (!monitor_started) {
+        k_tid_t tid = k_thread_create(&flow_monitor_data,
+                                      flow_monitor_stack,
+                                      K_THREAD_STACK_SIZEOF(flow_monitor_stack),
+                                      flow_monitor_fn,
+                                      NULL, NULL, NULL,
+                                      K_PRIO_PREEMPT(6), 0, K_NO_WAIT);
+        if (tid) {
+            k_thread_name_set(tid, "flow_monitor");
+            monitor_started = true;
+            printk("Flow monitoring task started\n");
+        } else {
+            printk("ERROR: Failed to start flow monitoring task\n");
+            k_mutex_unlock(&flow_monitor_mutex);
+            return WATERING_ERROR_CONFIG;
+        }
+    }
+
     k_mutex_unlock(&flow_monitor_mutex);
     return WATERING_SUCCESS;
 }
@@ -521,8 +537,11 @@ void flow_monitor_clear_errors(void)
     flow_error_attempts   = 0;
     last_flow_check_time  = 0;
     last_task_pulses      = 0;
-    /* Clear all errors unconditionally when explicitly requested */
-    system_status = WATERING_STATUS_OK;
+    /* Only clear flow-related flags; keep other fault states intact */
+    if (system_status == WATERING_STATUS_NO_FLOW ||
+        system_status == WATERING_STATUS_UNEXPECTED_FLOW) {
+        system_status = WATERING_STATUS_OK;
+    }
     k_mutex_unlock(&flow_monitor_mutex);
 }
 /**

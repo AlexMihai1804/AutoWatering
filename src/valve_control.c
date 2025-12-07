@@ -139,7 +139,8 @@ static watering_error_t master_valve_open(void)
         return WATERING_ERROR_HARDWARE;
     }
     
-    int ret = valve_set_state(&master_config.valve, true);
+    /* Master valve uses inverted logic: false = open (relay energized) */
+    int ret = valve_set_state(&master_config.valve, false);
     if (ret != 0) {
         printk("Failed to activate master valve: %d\n", ret);
         return WATERING_ERROR_HARDWARE;
@@ -168,7 +169,8 @@ static watering_error_t master_valve_close(void)
         return WATERING_ERROR_HARDWARE;
     }
     
-    int ret = valve_set_state(&master_config.valve, false);
+    /* Master valve uses inverted logic: true = closed (relay de-energized) */
+    int ret = valve_set_state(&master_config.valve, true);
     if (ret != 0) {
         printk("Failed to deactivate master valve: %d\n", ret);
         return WATERING_ERROR_HARDWARE;
@@ -213,7 +215,8 @@ watering_error_t valve_init(void) {
     if (gpio_spec_ready(&master_config.valve)) {
         int ret = gpio_pin_configure_dt(&master_config.valve, GPIO_OUTPUT_INACTIVE);
         if (ret == 0) {
-            valve_set_state(&master_config.valve, false);
+            /* Master valve uses inverted logic: true = closed (relay de-energized) */
+            valve_set_state(&master_config.valve, true);
             master_config.is_active = false;
             printk("SUCCESS\n");
         } else {
