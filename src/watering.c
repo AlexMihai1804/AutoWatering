@@ -456,7 +456,8 @@ watering_error_t watering_validate_event_config(const watering_event_t *event) {
 
     // Validate schedule type
     if (event->schedule_type != SCHEDULE_DAILY && 
-        event->schedule_type != SCHEDULE_PERIODIC) {
+        event->schedule_type != SCHEDULE_PERIODIC &&
+        event->schedule_type != SCHEDULE_AUTO) {
         return WATERING_ERROR_INVALID_PARAM;
     }
 
@@ -489,14 +490,60 @@ watering_error_t watering_validate_event_config(const watering_event_t *event) {
         if (event->schedule.daily.days_of_week == 0) {
             return WATERING_ERROR_INVALID_PARAM;
         }
-    } else {
+    } else if (event->schedule_type == SCHEDULE_PERIODIC) {
         // Periodic must have interval > 0
         if (event->schedule.periodic.interval_days == 0) {
             return WATERING_ERROR_INVALID_PARAM;
         }
     }
+    // SCHEDULE_AUTO has no schedule-specific validation here
+    // (plant/soil/date requirements checked in watering_channel_auto_mode_valid)
 
     return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Check if a channel has valid configuration for AUTO (FAO-56) scheduling mode
+ * 
+ * AUTO mode requires plant_db_index, soil_db_index, and planting_date_unix to be configured.
+ * This function validates that all prerequisites are met before enabling SCHEDULE_AUTO.
+ * 
+ * @param channel Pointer to the watering channel to validate
+ * @return true if channel can use AUTO mode, false if prerequisites are missing
+ */
+bool watering_channel_auto_mode_valid(const watering_channel_t *channel)
+{
+    if (!channel) {
+        return false;
+    }
+    
+    // Check plant database index is set (UINT16_MAX means not configured)
+    if (channel->plant_db_index == UINT16_MAX) {
+        return false;
+    }
+    
+    // Check soil database index is set (UINT8_MAX means not configured)
+    if (channel->soil_db_index == UINT8_MAX) {
+        return false;
+    }
+    
+    // Check planting date is set (0 means not configured)
+    if (channel->planting_date_unix == 0) {
+        return false;
+    }
+    
+    // Check coverage is configured (need area or plant count for volume calculation)
+    if (channel->use_area_based) {
+        if (channel->coverage.area_m2 <= 0) {
+            return false;
+        }
+    } else {
+        if (channel->coverage.plant_count == 0) {
+            return false;
+        }
+    }
+    
+    return true;
 }
 
 /* ------------------------------------------------------------------ */

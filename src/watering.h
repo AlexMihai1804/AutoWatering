@@ -28,6 +28,14 @@ struct water_balance_t;
 /** Number of available watering channels in the system */
 #define WATERING_CHANNELS_COUNT 8
 
+/** Solar timing constants */
+#define SOLAR_EVENT_SUNSET   0      /**< Schedule relative to sunset */
+#define SOLAR_EVENT_SUNRISE  1      /**< Schedule relative to sunrise */
+#define SOLAR_OFFSET_MIN    -120    /**< Minimum offset from solar event (minutes) */
+#define SOLAR_OFFSET_MAX     120    /**< Maximum offset from solar event (minutes) */
+#define SOLAR_FALLBACK_SUNSET_HOUR   20  /**< Fallback sunset hour for polar regions */
+#define SOLAR_FALLBACK_SUNRISE_HOUR   6  /**< Fallback sunrise hour for polar regions */
+
 /**
  * @brief Standardized error codes for watering system
  */
@@ -46,6 +54,7 @@ typedef enum {
     WATERING_ERROR_INVALID_DATA = -11,
     WATERING_ERROR_BUFFER_FULL = -12,
     WATERING_ERROR_NO_MEMORY = -13,
+    WATERING_ERROR_SOLAR_FALLBACK = -14, /**< Solar calculation failed, using fallback time */
 } watering_error_t;
 
 /**
@@ -55,7 +64,8 @@ typedef enum {
  */
 typedef enum { 
     SCHEDULE_DAILY,    /**< Water on specific days of the week */
-    SCHEDULE_PERIODIC  /**< Water every N days */
+    SCHEDULE_PERIODIC, /**< Water every N days */
+    SCHEDULE_AUTO      /**< FAO-56 based smart scheduling - waters only when soil deficit >= RAW threshold */
 } schedule_type_t;
 
 /**
@@ -652,13 +662,18 @@ typedef struct watering_event_t {
         } by_volume;
     } watering;
 
-    /** Time to start watering event */
+    /** Time to start watering event (or fallback if solar timing enabled) */
     struct {
         uint8_t hour;    /**< Hour of day (0-23) */
         uint8_t minute;  /**< Minute of hour (0-59) */
     } start_time;
 
     bool auto_enabled;  /**< Whether this event is enabled for automatic scheduling */
+    
+    /** Solar timing configuration */
+    bool use_solar_timing;       /**< If true, start time is relative to sunrise/sunset */
+    uint8_t solar_event;         /**< 0 = SOLAR_EVENT_SUNSET, 1 = SOLAR_EVENT_SUNRISE */
+    int8_t solar_offset_minutes; /**< Offset from solar event (-120 to +120 min) */
 } watering_event_t;
 
 /**
@@ -694,11 +709,16 @@ typedef struct {
     
     /* Environmental overrides */
     float latitude_deg;                /**< Location latitude for solar calculations */
+    float longitude_deg;               /**< Location longitude for solar calculations */
     uint8_t sun_exposure_pct;          /**< Site-specific sun exposure (0-100%) */
     
     /* Water balance state (runtime) */
     struct water_balance_t *water_balance; /**< Current water balance state */
     uint32_t last_calculation_time;    /**< Last automatic calculation timestamp */
+    
+    /* AUTO (FAO-56) scheduling state */
+    uint16_t last_auto_check_julian_day; /**< Julian day of last AUTO mode check (prevents duplicate daily runs) */
+    bool auto_check_ran_today;         /**< Flag to track if AUTO check already ran today */
     
     /* Legacy fields for backward compatibility */
     plant_info_t plant_info;          /**< Detailed plant type and specific variety (legacy) */
@@ -954,6 +974,17 @@ watering_error_t watering_load_config(void);
  * @return WATERING_SUCCESS if valid, error code if invalid
  */
 watering_error_t watering_validate_event_config(const watering_event_t *event);
+
+/**
+ * @brief Check if a channel has valid configuration for AUTO (FAO-56) scheduling mode
+ * 
+ * AUTO mode requires plant_db_index, soil_db_index, and planting_date_unix to be configured.
+ * This function validates that all prerequisites are met before enabling SCHEDULE_AUTO.
+ * 
+ * @param channel Pointer to the watering channel to validate
+ * @return true if channel can use AUTO mode, false if prerequisites are missing
+ */
+bool watering_channel_auto_mode_valid(const watering_channel_t *channel);
 
 /**
  * @brief Get the current system status
