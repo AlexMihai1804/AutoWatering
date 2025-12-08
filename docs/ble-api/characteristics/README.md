@@ -1,6 +1,6 @@
 # BLE Characteristics Reference
 
-Updated to reflect the 26 characteristics implemented in firmware (`bt_irrigation_service.c`).
+Updated to reflect the 27 characteristics implemented in firmware (Irrigation Service + Custom Configuration Service).
 
 See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fragmentation types, long write semantics). A concise cross-characteristic summary of fragmentation/long-write schemes is available in [`_fragmentation-reference.md`](_fragmentation-reference.md).
 
@@ -61,6 +61,12 @@ See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fr
 | 24 | **[Rain Integration Status](24-rain-integration-status.md)** | de18 | 78B | R/N | Rain integration snapshot |
 | 25 | **[Onboarding Status](25-onboarding-status.md)** | de20 | 29B | R/N | Onboarding progress |
 | 26 | **[Reset Control](26-reset-control.md)** | de21 | 16B | R/W/N | Controlled resets |
+
+### Custom Configuration Service
+
+| # | Characteristic | UUID (full) | Size | Properties | Purpose |
+|---|----------------|-------------|------|------------|---------|
+| 27 | **[Custom Soil Configuration](27-custom-soil-configuration.md)** | 12345678-1234-5678-9abc-def123456781 | 76B | R/W/N | Create/update/delete per-channel custom soil |
 
 **Legend**: R=Read, W=Write, N=Notify
 
