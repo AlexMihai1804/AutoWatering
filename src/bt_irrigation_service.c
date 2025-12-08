@@ -2365,7 +2365,10 @@ static ssize_t read_schedule(struct bt_conn *conn, const struct bt_gatt_attr *at
             .minute = 0,
             .watering_mode = 0, /* Duration */
             .value = 5, /* 5 minutes */
-            .auto_enabled = 0
+            .auto_enabled = 0,
+            .use_solar_timing = 0,
+            .solar_event = 0, /* Sunset */
+            .solar_offset_minutes = 0
         };
         read_value = default_schedule;
         read_value.channel_id = channel_id; /* Override with actual channel */
@@ -2385,6 +2388,9 @@ static ssize_t read_schedule(struct bt_conn *conn, const struct bt_gatt_attr *at
     } else if (channel->watering_event.schedule_type == SCHEDULE_PERIODIC) {
         read_value.schedule_type = 1;
         read_value.days_mask = channel->watering_event.schedule.periodic.interval_days;
+    } else if (channel->watering_event.schedule_type == SCHEDULE_AUTO) {
+        read_value.schedule_type = 2;
+        read_value.days_mask = 0x7F; /* All days - AUTO mode checks daily */
     } else {
         read_value.schedule_type = 0; /* Default to daily */
         read_value.days_mask = 0x7F; /* All days */
@@ -2404,10 +2410,15 @@ static ssize_t read_schedule(struct bt_conn *conn, const struct bt_gatt_attr *at
     
     read_value.auto_enabled = channel->watering_event.auto_enabled ? 1 : 0;
     
-    LOG_DBG("Schedule read: ch=%u, type=%u, days=0x%02X, time=%02u:%02u, mode=%u, value=%u, auto=%u",
+    /* Map solar timing configuration */
+    read_value.use_solar_timing = channel->watering_event.use_solar_timing ? 1 : 0;
+    read_value.solar_event = channel->watering_event.solar_event;
+    read_value.solar_offset_minutes = channel->watering_event.solar_offset_minutes;
+    
+    LOG_DBG("Schedule read: ch=%u, type=%u, days=0x%02X, time=%02u:%02u, mode=%u, value=%u, auto=%u, solar=%u",
             read_value.channel_id, read_value.schedule_type, read_value.days_mask,
             read_value.hour, read_value.minute, read_value.watering_mode,
-            read_value.value, read_value.auto_enabled);
+            read_value.value, read_value.auto_enabled, read_value.use_solar_timing);
     
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              &read_value, sizeof(read_value));
@@ -2480,37 +2491,40 @@ static ssize_t write_schedule(struct bt_conn *conn, const struct bt_gatt_attr *a
         }
 
         /* Validate input data according to BLE API Documentation */
-        if (value->hour > 23 || value->minute > 59 || value->schedule_type > 1 ||
+        if (value->hour > 23 || value->minute > 59 || value->schedule_type > 2 ||
             value->watering_mode > 1) {
             LOG_ERR("Invalid schedule parameters: hour=%u, minute=%u, type=%u, mode=%u", 
                     value->hour, value->minute, value->schedule_type, value->watering_mode);
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
         }
 
-        /* Validate value (must be > 0 if auto_enabled = 1, UNLESS FAO-56 is enabled) */
-        /* When FAO-56 is enabled, the system calculates duration/volume automatically */
+        /* Validate value (must be > 0 if auto_enabled = 1, UNLESS FAO-56 or AUTO schedule is enabled) */
+        /* When FAO-56 is enabled or schedule_type=2 (AUTO), the system calculates volume automatically */
         uint8_t ext_flags = onboarding_get_channel_extended_flags(value->channel_id);
         bool fao56_enabled = (ext_flags & CHANNEL_EXT_FLAG_FAO56_READY) != 0;
-        LOG_INF("Schedule validation: ch=%u, ext_flags=0x%02x, FAO56_READY=%d", 
-                value->channel_id, ext_flags, fao56_enabled);
-        if (value->auto_enabled && value->value == 0 && !fao56_enabled) {
+        bool is_auto_schedule = (value->schedule_type == 2);
+        LOG_INF("Schedule validation: ch=%u, ext_flags=0x%02x, FAO56_READY=%d, AUTO=%d", 
+                value->channel_id, ext_flags, fao56_enabled, is_auto_schedule);
+        if (value->auto_enabled && value->value == 0 && !fao56_enabled && !is_auto_schedule) {
             LOG_ERR("Invalid schedule value: auto_enabled=1 but value=0 (FAO-56 not enabled, ext_flags=0x%02x)", ext_flags);
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
         }
-        if (value->auto_enabled && value->value == 0 && fao56_enabled) {
-            LOG_INF("Schedule value=0 accepted: FAO-56 auto-calculation enabled for channel %u", 
+        if (value->auto_enabled && value->value == 0 && (fao56_enabled || is_auto_schedule)) {
+            LOG_INF("Schedule value=0 accepted: %s for channel %u", 
+                    is_auto_schedule ? "AUTO schedule mode" : "FAO-56 auto-calculation enabled",
                     value->channel_id);
         }
 
-        /* Validate days_mask (must be > 0 if auto_enabled = 1) */
-        if (value->auto_enabled && value->days_mask == 0) {
+        /* Validate days_mask (must be > 0 if auto_enabled = 1, UNLESS AUTO schedule) */
+        /* AUTO schedule ignores days_mask - it checks every day automatically */
+        if (value->auto_enabled && value->days_mask == 0 && !is_auto_schedule) {
             LOG_ERR("Invalid schedule days_mask: auto_enabled=1 but days_mask=0");
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
         }
 
         LOG_INF("Schedule update: ch=%u, type=%u (%s), days=0x%02X, time=%02u:%02u, mode=%u (%s), value=%u, auto=%u",
                 value->channel_id, value->schedule_type, 
-                (value->schedule_type == 0) ? "Daily" : "Periodic",
+                (value->schedule_type == 0) ? "Daily" : (value->schedule_type == 1) ? "Periodic" : "Auto",
                 value->days_mask, value->hour, value->minute, 
                 value->watering_mode, (value->watering_mode == 0) ? "Duration" : "Volume",
                 value->value, value->auto_enabled);
@@ -2525,10 +2539,38 @@ static ssize_t write_schedule(struct bt_conn *conn, const struct bt_gatt_attr *a
             /* Daily schedule */
             channel->watering_event.schedule_type = SCHEDULE_DAILY;
             channel->watering_event.schedule.daily.days_of_week = value->days_mask;
-        } else {
+        } else if (value->schedule_type == 1) {
             /* Periodic schedule */
             channel->watering_event.schedule_type = SCHEDULE_PERIODIC;
             channel->watering_event.schedule.periodic.interval_days = value->days_mask;
+        } else {
+            /* AUTO (Smart Schedule) - FAO-56 based */
+            channel->watering_event.schedule_type = SCHEDULE_AUTO;
+            channel->watering_event.schedule.daily.days_of_week = 0x7F; /* Check every day */
+            /* AUTO mode requires valid plant/soil/planting_date configuration */
+            if (!watering_channel_auto_mode_valid(channel)) {
+                LOG_WRN("AUTO schedule set but channel %u missing plant/soil/date config", 
+                        value->channel_id);
+            }
+        }
+
+        /* Update solar timing configuration */
+        channel->watering_event.use_solar_timing = (value->use_solar_timing != 0);
+        channel->watering_event.solar_event = value->solar_event;
+        /* Clamp solar offset to valid range */
+        if (value->solar_offset_minutes < SOLAR_OFFSET_MIN) {
+            channel->watering_event.solar_offset_minutes = SOLAR_OFFSET_MIN;
+        } else if (value->solar_offset_minutes > SOLAR_OFFSET_MAX) {
+            channel->watering_event.solar_offset_minutes = SOLAR_OFFSET_MAX;
+        } else {
+            channel->watering_event.solar_offset_minutes = value->solar_offset_minutes;
+        }
+        
+        if (channel->watering_event.use_solar_timing) {
+            LOG_INF("Solar timing enabled: ch=%u, event=%s, offset=%+d min",
+                    value->channel_id,
+                    (value->solar_event == SOLAR_EVENT_SUNRISE) ? "sunrise" : "sunset",
+                    channel->watering_event.solar_offset_minutes);
         }
 
         /* Update watering mode and parameters */
@@ -7748,6 +7790,9 @@ int bt_irrigation_schedule_update(uint8_t channel_id) {
     } else if (channel->watering_event.schedule_type == SCHEDULE_PERIODIC) {
         schedule_data->schedule_type = 1;
         schedule_data->days_mask = channel->watering_event.schedule.periodic.interval_days;
+    } else if (channel->watering_event.schedule_type == SCHEDULE_AUTO) {
+        schedule_data->schedule_type = 2;
+        schedule_data->days_mask = 0x7F; /* AUTO checks every day */
     } else {
         schedule_data->schedule_type = 0; /* Default to daily */
         schedule_data->days_mask = 0x7F; /* All days */
@@ -7767,9 +7812,15 @@ int bt_irrigation_schedule_update(uint8_t channel_id) {
     
     schedule_data->auto_enabled = channel->watering_event.auto_enabled ? 1 : 0;
     
-    LOG_DBG("Schedule notification: ch=%u, type=%u, days=0x%02X, time=%02u:%02u",
+    /* Map solar timing configuration */
+    schedule_data->use_solar_timing = channel->watering_event.use_solar_timing ? 1 : 0;
+    schedule_data->solar_event = channel->watering_event.solar_event;
+    schedule_data->solar_offset_minutes = channel->watering_event.solar_offset_minutes;
+    
+    LOG_DBG("Schedule notification: ch=%u, type=%u, days=0x%02X, time=%02u:%02u, solar=%u",
             schedule_data->channel_id, schedule_data->schedule_type,
-            schedule_data->days_mask, schedule_data->hour, schedule_data->minute);
+            schedule_data->days_mask, schedule_data->hour, schedule_data->minute,
+            schedule_data->use_solar_timing);
     
     // Send notification to client
     const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_SCHEDULE_VALUE];

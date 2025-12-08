@@ -38,13 +38,17 @@ struct channel_config_data {
 /* Schedule configuration structure */
 struct schedule_config_data {
     uint8_t channel_id;
-    uint8_t schedule_type; // 0=daily, 1=periodic
-    uint8_t days_mask; // Days for daily schedule or interval days for periodic
+    uint8_t schedule_type; // 0=daily, 1=periodic, 2=auto (FAO-56 smart)
+    uint8_t days_mask; // Days for daily schedule or interval days for periodic (ignored for auto)
     uint8_t hour;
     uint8_t minute;
     uint8_t watering_mode; // 0=duration, 1=volume
-    uint16_t value; // Minutes or liters
+    uint16_t value; // Minutes or liters (auto mode calculates volume automatically)
     uint8_t auto_enabled; // 0=disabled, 1=enabled
+    /* Solar timing fields (v2 extension) */
+    uint8_t use_solar_timing;    // 0=use fixed time, 1=use sunrise/sunset
+    uint8_t solar_event;         // 0=sunset, 1=sunrise
+    int8_t solar_offset_minutes; // Offset from solar event (-120 to +120)
 } __packed;
 
 /* System configuration structure */
@@ -436,7 +440,7 @@ BUILD_ASSERT(sizeof(struct reset_control_data) == 16, "reset_control_data must b
 /* Additional size guards (recently audited) */
 BUILD_ASSERT(sizeof(struct valve_control_data) == 4, "valve_control_data must be 4 bytes");
 BUILD_ASSERT(sizeof(struct channel_config_data) == 76, "channel_config_data must be 76 bytes");
-BUILD_ASSERT(sizeof(struct schedule_config_data) == 9, "schedule_config_data unexpected size");
+BUILD_ASSERT(sizeof(struct schedule_config_data) == 12, "schedule_config_data unexpected size (9->12 with solar timing)");
 BUILD_ASSERT(sizeof(struct task_queue_data) == 9, "task_queue_data unexpected size");
 BUILD_ASSERT(sizeof(struct statistics_data) == 15, "statistics_data unexpected size");
 BUILD_ASSERT(sizeof(struct current_task_data) == 21, "current_task_data unexpected size");
