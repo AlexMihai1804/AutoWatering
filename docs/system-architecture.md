@@ -70,8 +70,12 @@ All module initializations log warnings on failure but keep the system running u
 - Master valve sequencing and overlap handling implemented in `valve_control.c`.
 
 ### Scheduling & Automation
-- Daily bitmask and periodic schedules (`schedule_type_t`) converted to queued tasks.
+- Three schedule modes via `schedule_type_t`:
+  - **SCHEDULE_DAILY (0)**: Runs on selected days via bitmask (e.g., Mon/Wed/Fri).
+  - **SCHEDULE_PERIODIC (1)**: Runs every N days.
+  - **SCHEDULE_AUTO (2)**: FAO-56 smart irrigation - checks soil water deficit daily, only irrigates when deficit ≥ RAW threshold. Requires plant_db_index, soil_db_index, and planting_date_unix to be configured.
 - FAO-56 calculations executed on demand (`apply_quality_irrigation_mode`, `apply_eco_irrigation_mode`) with maximum volume limiting.
+- AUTO mode (`fao56_daily_update_deficit`) evaluates deficit at configured time (e.g., 06:00), applies missed-day accumulation on power-up, and triggers volume-based irrigation when needed.
 - Rain integration (`rain_integration_calculate_impact`) applies volume/time reductions or skips before tasks start.
 - Temperature compensation adjusts FAO-56 outputs when enabled per channel (`temperature_compensation_integration.c`).
 

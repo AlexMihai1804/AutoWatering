@@ -17,11 +17,19 @@ Focused, externally facing list. All items map to existing modules or confirmed 
 - Interval mode: watering/pause phase cycling for TIME and VOLUME modes (configurable minutes/seconds).
 
 ### Scheduling & Automation
-- Daily (bitmask) or periodic (every N days) scheduling per channel.
+- Three schedule modes per channel:
+  - **Daily (bitmask)**: Runs on selected days of the week.
+  - **Periodic**: Runs every N days.
+  - **AUTO (Smart Schedule)**: FAO-56 based - evaluates soil water deficit daily, irrigates only when deficit exceeds plant's RAW threshold. Requires plant/soil/planting_date configuration.
 - On-demand FAO-56 based irrigation requirement calculation (`watering_run_automatic_calculations()`).
+- AUTO mode features:
+  - Daily deficit tracking with ETc (crop evapotranspiration) accumulation.
+  - Environmental stress adjustment on hot/dry days (reduced MAD threshold).
+  - Automatic rainfall integration (subtracts effective precipitation from deficit).
+  - Multi-day offline gap handling: estimates missed ETc on power-up.
 - Rain integration: skip / reduction logic (channel-specific) using recent rainfall history.
   - ⚠️ Rain Skip and Temperature Compensation apply **only to TIME and VOLUME modes**.
-  - FAO-56 modes (Quality/Eco) already incorporate rain and temperature in ET₀ calculations.
+  - FAO-56 modes (Quality/Eco/AUTO) already incorporate rain and temperature in ET₀ calculations.
 - Configurable auto-calculation interval (1–24 hours).
 
 ### Sensing & Monitoring
