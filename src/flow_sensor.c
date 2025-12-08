@@ -347,23 +347,30 @@ uint32_t get_flow_calibration(void)
  */
 int set_flow_calibration(uint32_t pulses_per_liter)
 {
+    int ret = set_flow_calibration_in_memory(pulses_per_liter);
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = nvs_save_flow_calibration(pulses_per_liter);
+    if (ret < 0) {
+        LOG_ERR("Failed to save flow calibration to NVS: %d", ret);
+        return ret;
+    }
+
+    LOG_INF("Flow calibration saved to persistent storage: %u pulses/L", pulses_per_liter);
+    return 0;
+}
+
+int set_flow_calibration_in_memory(uint32_t pulses_per_liter)
+{
     /* Validate calibration range */
     if (pulses_per_liter < 100 || pulses_per_liter > 10000) {
         printk("Flow calibration out of range: %u (valid: 100-10000)\n", pulses_per_liter);
         return -EINVAL;
     }
-    
+
     current_flow_calibration = pulses_per_liter;
-    printk("Flow calibration updated: %u pulses/L\n", current_flow_calibration);
-    
-    /* Save to persistent storage (also updates onboarding flag) */
-    int nvs_ret = nvs_save_flow_calibration(current_flow_calibration);
-    if (nvs_ret < 0) {
-        LOG_ERR("Failed to save flow calibration to NVS: %d", nvs_ret);
-        return nvs_ret;
-    }
-    
-    LOG_INF("Flow calibration saved to persistent storage: %u pulses/L", current_flow_calibration);
-    
+    printk("Flow calibration updated in memory: %u pulses/L\n", current_flow_calibration);
     return 0;
 }

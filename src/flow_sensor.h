@@ -61,4 +61,15 @@ uint32_t get_flow_calibration(void);
  */
 int set_flow_calibration(uint32_t pulses_per_liter);
 
+/**
+ * @brief Set flow calibration without persisting or updating onboarding flags
+ * 
+ * Intended for boot/load paths so onboarding completion stays at 0% after reset.
+ * Validation rules are identical to set_flow_calibration.
+ *
+ * @param pulses_per_liter Calibration value in pulses per liter
+ * @return 0 on success, negative error code on failure
+ */
+int set_flow_calibration_in_memory(uint32_t pulses_per_liter);
+
 #endif // FLOW_SENSOR_H

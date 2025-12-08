@@ -5,6 +5,7 @@
 #include "watering.h"
 #include "watering_internal.h"
 #include "nvs_config.h"  // Changed to use direct NVS
+#include "flow_sensor.h" // For in-memory calibration updates on load
 
 /**
  * @file watering_config.c
@@ -72,7 +73,7 @@ watering_error_t load_default_config(void) {
     printk("Loading default configuration values\n");
     
     // Set flow sensor calibration to default
-    watering_set_flow_calibration(DEFAULT_PULSES_PER_LITER);
+    set_flow_calibration_in_memory(DEFAULT_PULSES_PER_LITER);
     
     // Set default channel names and configuration
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
@@ -321,8 +322,12 @@ watering_error_t watering_load_config(void) {
     // Load flow sensor calibration
     ret = nvs_load_flow_calibration(&saved_calibration);
     if (ret >= 0) {
-        watering_set_flow_calibration(saved_calibration);
-        loaded_configs++;
+        int cal_ret = set_flow_calibration_in_memory(saved_calibration);
+        if (cal_ret == 0) {
+            loaded_configs++;
+        } else {
+            LOG_ERROR("Error applying calibration from storage", cal_ret);
+        }
     } else if (ret != -ENOENT) {
         LOG_ERROR("Error reading calibration", ret);
     }
