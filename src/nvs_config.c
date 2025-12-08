@@ -417,6 +417,10 @@ int nvs_save_complete_channel_config(uint8_t ch, const watering_channel_t *chann
     if (channel->config_status.growing_env_configured && channel->latitude_deg != 0.0f) {
         onboarding_update_channel_extended_flag(ch, CHANNEL_EXT_FLAG_LATITUDE_SET, true);
     }
+    /* Backfill cycle soak flag if growing env configured (even if disabled) */
+    if (channel->config_status.growing_env_configured || channel->enable_cycle_soak) {
+        onboarding_update_channel_extended_flag(ch, CHANNEL_EXT_FLAG_CYCLE_SOAK_SET, true);
+    }
 
     /* Save water balance state if available */
     if (channel->water_balance) {
@@ -485,9 +489,13 @@ int nvs_load_complete_channel_config(uint8_t ch, watering_channel_t *channel)
         channel->sun_exposure_pct = enhanced_config.sun_exposure_pct;
         channel->last_calculation_time = enhanced_config.last_calculation_time;
 
-        /* Restore latitude flag if a non-zero latitude is persisted */
-        if (channel->latitude_deg != 0.0f) {
+        /* Restore latitude flag only if user actually configured growing env + latitude */
+        if (channel->config_status.growing_env_configured && channel->latitude_deg != 0.0f) {
             onboarding_update_channel_extended_flag(ch, CHANNEL_EXT_FLAG_LATITUDE_SET, true);
+        }
+        /* Restore cycle & soak flag if growing env configured (even if disabled) */
+        if (channel->config_status.growing_env_configured || channel->enable_cycle_soak) {
+            onboarding_update_channel_extended_flag(ch, CHANNEL_EXT_FLAG_CYCLE_SOAK_SET, true);
         }
     }
     

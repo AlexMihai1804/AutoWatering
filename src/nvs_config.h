@@ -229,7 +229,7 @@ typedef struct {
     .enable_cycle_soak = false,           /* Disabled by default */ \
     .planting_date_unix = 0,              /* Not set */ \
     .days_after_planting = 0,             /* Not calculated */ \
-    .latitude_deg = 45.0f,                /* Default latitude (Romania) */ \
+    .latitude_deg = 0.0f,                 /* Unset until user provides location */ \
     .sun_exposure_pct = 75,               /* 75% sun exposure */ \
     .last_calculation_time = 0            /* Never calculated */ \
 }
