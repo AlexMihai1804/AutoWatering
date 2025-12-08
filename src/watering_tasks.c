@@ -14,6 +14,7 @@
 #include "rain_history.h"           /* Rain history data */
 #include "interval_task_integration.h" /* Interval mode integration */
 #include "environmental_data.h"     /* Temperature source for anti-freeze */
+#include "fao56_calc.h"             /* FAO-56 calculations for AUTO mode */
 
 LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -170,6 +171,9 @@ uint16_t days_since_start = 0;  // Changed from static to global
 
 /** Last read time to detect day changes */
 static uint8_t last_day = 0;
+
+/** AUTO mode julian day tracking (prevents multiple runs per day) */
+static uint16_t current_julian_day = 0;
 
 /** Automatic calculation scheduling */
 static uint32_t last_auto_calc_time = 0;
@@ -553,6 +557,20 @@ bool watering_stop_current_task(void) {
     current_task_state = W_TASK_STATE_IDLE;
     
     k_mutex_unlock(&watering_state_mutex);
+    
+    /* AUTO mode: Reduce deficit after successful irrigation */
+    watering_channel_t *stop_channel = NULL;
+    if (watering_get_channel(channel_id, &stop_channel) == WATERING_SUCCESS && stop_channel &&
+        stop_channel->watering_event.schedule_type == SCHEDULE_AUTO && total_volume_ml > 0) {
+        float volume_liters = (float)total_volume_ml / 1000.0f;
+        watering_error_t deficit_err = fao56_reduce_deficit_after_irrigation(channel_id, volume_liters);
+        if (deficit_err != WATERING_SUCCESS) {
+            printk("AUTO mode: Failed to reduce deficit for channel %d: %d\n", channel_id + 1, deficit_err);
+        } else {
+            printk("AUTO mode: Channel %d deficit reduced after %.1f L irrigation\n", 
+                   channel_id + 1, (double)volume_liters);
+        }
+    }
     
     /* Record task completion in history */
     #ifdef CONFIG_BT
@@ -978,11 +996,30 @@ static void scheduler_task_fn(void *p1, void *p2, void *p3) {
                     rtc_error_count--;
                 }
                 
+                /* Calculate current julian day (day of year) for AUTO mode tracking */
+                /* Simple formula: days elapsed in current year */
+                static const uint16_t days_before_month[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+                if (now.month >= 1 && now.month <= 12) {
+                    current_julian_day = days_before_month[now.month - 1] + now.day;
+                    /* Leap year adjustment for months after February */
+                    if (now.month > 2 && (now.year % 4 == 0) && 
+                        ((now.year % 100 != 0) || (now.year % 400 == 0))) {
+                        current_julian_day++;
+                    }
+                }
+                
                 if (now.day != last_day) {
                     days_since_start++;
                     last_day = now.day;
+                    
+                    /* Reset AUTO check flags for all channels on day change */
+                    for (int ch = 0; ch < WATERING_CHANNELS_COUNT; ch++) {
+                        watering_channels[ch].auto_check_ran_today = false;
+                    }
+                    
                     watering_save_config();
-                    printk("Day changed, days since start: %d\n", days_since_start);
+                    printk("Day changed, days since start: %d, julian day: %d\n", 
+                           days_since_start, current_julian_day);
                 }
             } else {
                 handle_rtc_failure();
@@ -1073,10 +1110,39 @@ watering_error_t watering_scheduler_run(void) {
         }
         
         bool should_run = false;
+        bool is_auto_mode = false;
+        fao56_auto_decision_t auto_decision = {0};
+        
         /* TIMEZONE FIX: Both times are now in LOCAL TIME for proper scheduling */
         /* current_hour/current_minute = RTC time converted to local timezone */
-        /* event->start_time.hour/minute = user-configured local time */
-        if (event->start_time.hour == current_hour && event->start_time.minute == current_minute) {
+        /* event->start_time.hour/minute = user-configured local time (or fallback for solar timing) */
+        
+        /* Calculate effective start time (handles solar timing if enabled) */
+        uint8_t effective_hour = event->start_time.hour;
+        uint8_t effective_minute = event->start_time.minute;
+        
+        if (event->use_solar_timing) {
+            /* Get timezone offset in hours (rounded from minutes) */
+            int16_t tz_offset_min = timezone_get_total_offset(timezone_get_unix_utc());
+            int8_t tz_offset_hours = (int8_t)(tz_offset_min / 60);
+            
+            watering_error_t solar_ret = fao56_get_effective_start_time(
+                event, 
+                channel->latitude_deg, 
+                channel->longitude_deg,
+                current_julian_day,
+                tz_offset_hours,
+                &effective_hour, 
+                &effective_minute
+            );
+            
+            if (solar_ret == WATERING_ERROR_SOLAR_FALLBACK) {
+                printk("Solar timing: Channel %d using fallback time %02u:%02u\n",
+                       i + 1, effective_hour, effective_minute);
+            }
+        }
+        
+        if (effective_hour == current_hour && effective_minute == current_minute) {
             if (event->schedule_type == SCHEDULE_DAILY) {
                 if (event->schedule.daily.days_of_week & (1 << current_day_of_week)) {
                     should_run = true;
@@ -1086,6 +1152,67 @@ watering_error_t watering_scheduler_run(void) {
                     days_since_start > 0 && 
                     (days_since_start % event->schedule.periodic.interval_days) == 0) {
                     should_run = true;
+                }
+            } else if (event->schedule_type == SCHEDULE_AUTO) {
+                /* AUTO mode: FAO-56 based smart scheduling */
+                is_auto_mode = true;
+                
+                /* Prevent running multiple times per day using julian day tracking */
+                if (channel->last_auto_check_julian_day == current_julian_day && 
+                    channel->auto_check_ran_today) {
+                    printk("AUTO mode: Channel %d already checked today (julian=%u)\n", 
+                           i + 1, current_julian_day);
+                    continue;
+                }
+                
+                /* Validate AUTO mode prerequisites */
+                if (!watering_channel_auto_mode_valid(channel)) {
+                    printk("AUTO mode: Channel %d missing required config (plant/soil/date)\n", i + 1);
+                    continue;
+                }
+                
+                /* Handle multi-day offline gap: apply missed ETc accumulation */
+                if (channel->last_auto_check_julian_day > 0) {
+                    int16_t days_diff;
+                    if (current_julian_day >= channel->last_auto_check_julian_day) {
+                        days_diff = current_julian_day - channel->last_auto_check_julian_day;
+                    } else {
+                        /* Year wrapped: assume 365 days in year for simplicity */
+                        days_diff = (365 - channel->last_auto_check_julian_day) + current_julian_day;
+                    }
+                    if (days_diff > 1 && days_diff <= 366) {
+                        /* More than 1 day gap - apply conservative ETc for missed days
+                         * (subtract 1 because today's check will handle the current day) */
+                        uint16_t days_missed = (uint16_t)(days_diff - 1);
+                        watering_error_t gap_err = fao56_apply_missed_days_deficit(i, days_missed);
+                        if (gap_err == WATERING_SUCCESS) {
+                            printk("AUTO mode: Channel %d applied %u missed days deficit\n", 
+                                   i + 1, days_missed);
+                        }
+                    }
+                }
+                
+                /* Run daily deficit update and get irrigation decision */
+                watering_error_t auto_err = fao56_daily_update_deficit(i, &auto_decision);
+                if (auto_err != WATERING_SUCCESS) {
+                    printk("AUTO mode: Deficit calculation failed for channel %d: %d\n", 
+                           i + 1, auto_err);
+                    continue;
+                }
+                
+                /* Mark that we've done the daily check */
+                channel->last_auto_check_julian_day = current_julian_day;
+                channel->auto_check_ran_today = true;
+                
+                /* Only run if FAO-56 says we need water */
+                if (auto_decision.should_water && auto_decision.volume_liters > 0) {
+                    should_run = true;
+                    printk("AUTO mode: Channel %d NEEDS WATER - deficit=%.1f mm, volume=%.1f L\n",
+                           i + 1, (double)auto_decision.current_deficit_mm, 
+                           (double)auto_decision.volume_liters);
+                } else {
+                    printk("AUTO mode: Channel %d SKIP - soil has adequate moisture (deficit=%.1f mm)\n",
+                           i + 1, (double)auto_decision.current_deficit_mm);
                 }
             }
         }
@@ -1107,7 +1234,12 @@ watering_error_t watering_scheduler_run(void) {
             new_task.channel = channel;
             new_task.trigger_type = WATERING_TRIGGER_SCHEDULED;  // Scheduled tasks
             
-            if (event->watering_mode == WATERING_BY_DURATION) {
+            if (is_auto_mode) {
+                /* AUTO mode: Always use volume-based watering with FAO-56 calculated volume */
+                new_task.by_volume.volume_liters = (uint32_t)auto_decision.volume_liters;
+                /* Temporarily override watering mode to volume for this task */
+                channel->watering_event.watering_mode = WATERING_BY_VOLUME;
+            } else if (event->watering_mode == WATERING_BY_DURATION) {
                 new_task.by_time.start_time = k_uptime_get_32();
             } else {
                 new_task.by_volume.volume_liters = event->watering.by_volume.volume_liters;
@@ -1117,7 +1249,12 @@ watering_error_t watering_scheduler_run(void) {
             if (result == WATERING_SUCCESS) {
                 /* Use RTC timestamp for persistent last watering time tracking */
                 channel->last_watering_time = timezone_get_unix_utc();
-                printk("Watering schedule added for channel %d (added to task queue)\n", i + 1);
+                if (is_auto_mode) {
+                    printk("AUTO watering scheduled for channel %d: %.1f L\n", 
+                           i + 1, (double)auto_decision.volume_liters);
+                } else {
+                    printk("Watering schedule added for channel %d (added to task queue)\n", i + 1);
+                }
             } else {
                 printk("Failed to add scheduled task for channel %d: error %d\n", i + 1, result);
             }
