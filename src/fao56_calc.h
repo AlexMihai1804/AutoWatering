@@ -465,6 +465,69 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
                                                        irrigation_calculation_t *result);
 
 /* ================================================================== */
+/* AUTO (Smart Schedule) Mode - Daily Deficit Tracking              */
+/* ================================================================== */
+
+/**
+ * @brief Result structure for daily AUTO mode evaluation
+ */
+typedef struct {
+    bool should_water;                 /**< True if irrigation is needed today */
+    float volume_liters;               /**< Volume to apply if watering (L) */
+    float current_deficit_mm;          /**< Current soil water deficit (mm) */
+    float raw_threshold_mm;            /**< RAW threshold that triggered decision (mm) */
+    float daily_etc_mm;                /**< Daily crop evapotranspiration (mm) */
+    float effective_rain_mm;           /**< Effective rainfall subtracted (mm) */
+    float stress_factor;               /**< Applied environmental stress factor */
+} fao56_auto_decision_t;
+
+/**
+ * @brief Perform daily deficit update and irrigation decision for AUTO mode
+ * 
+ * This function is called once per day (typically at 06:00) for channels configured
+ * with SCHEDULE_AUTO. It:
+ * 1. Reads current environmental data and 24h rainfall
+ * 2. Computes daily ETc (ET0 × Kc based on plant growth stage)
+ * 3. Subtracts effective rainfall from the deficit
+ * 4. Adds daily ETc loss to the deficit
+ * 5. Applies environmental stress adjustment on hot/dry days
+ * 6. Compares deficit against the plant's RAW threshold
+ * 7. Persists updated water balance to NVS
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param decision Output structure with irrigation decision and diagnostics
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t fao56_daily_update_deficit(uint8_t channel_id, 
+                                            fao56_auto_decision_t *decision);
+
+/**
+ * @brief Handle multi-day offline gap by estimating missed deficit accumulation
+ * 
+ * Called on boot or when AUTO check detects missed days. Applies conservative
+ * ETc estimates for each missed day to prevent under-watering after power loss.
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param days_missed Number of days since last update
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t fao56_apply_missed_days_deficit(uint8_t channel_id, 
+                                                  uint16_t days_missed);
+
+/**
+ * @brief Reduce channel deficit after successful irrigation
+ * 
+ * Called after a watering task completes. Converts applied volume to mm
+ * and subtracts from current_deficit_mm, then persists to NVS.
+ * 
+ * @param channel_id Channel ID (0-7)
+ * @param volume_applied_liters Volume of water applied (L)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t fao56_reduce_deficit_after_irrigation(uint8_t channel_id,
+                                                        float volume_applied_liters);
+
+/* ================================================================== */
 /* Performance Optimization - Calculation Caching Functions         */
 /* ================================================================== */
 
@@ -753,5 +816,67 @@ watering_error_t fao56_check_system_health(uint32_t *health_status,
  */
 void fao56_log_calculation_error(uint8_t channel_id, watering_error_t error_code,
                                const char *function_name, const char *additional_info);
+
+/* ============================================================================
+ * SOLAR TIMING CALCULATIONS (NOAA Algorithm)
+ * ============================================================================ */
+
+/**
+ * @brief Solar times calculation result
+ * 
+ * Contains sunrise/sunset times and related solar information
+ */
+typedef struct {
+    uint8_t sunrise_hour;       /**< Sunrise hour (0-23, local time) */
+    uint8_t sunrise_minute;     /**< Sunrise minute (0-59) */
+    uint8_t sunset_hour;        /**< Sunset hour (0-23, local time) */
+    uint8_t sunset_minute;      /**< Sunset minute (0-59) */
+    uint16_t day_length_minutes; /**< Day length in minutes */
+    bool is_polar_day;          /**< True if sun never sets (midnight sun) */
+    bool is_polar_night;        /**< True if sun never rises (polar night) */
+    bool calculation_valid;     /**< True if calculation succeeded */
+} solar_times_t;
+
+/**
+ * @brief Calculate sunrise and sunset times using NOAA algorithm
+ * 
+ * Uses the NOAA Solar Calculator algorithm for ~1 minute precision.
+ * Handles polar regions with appropriate fallbacks.
+ * 
+ * @param latitude_deg Latitude in degrees (-90 to +90)
+ * @param longitude_deg Longitude in degrees (-180 to +180)
+ * @param day_of_year Day of year (1-365/366)
+ * @param timezone_offset_hours UTC offset in hours (e.g., +2 for UTC+2)
+ * @param result Solar times result structure
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t fao56_calc_solar_times(float latitude_deg, 
+                                        float longitude_deg,
+                                        uint16_t day_of_year,
+                                        int8_t timezone_offset_hours,
+                                        solar_times_t *result);
+
+/**
+ * @brief Get effective start time based on solar timing configuration
+ * 
+ * If solar timing is enabled, calculates actual start time from sunrise/sunset.
+ * If solar calculation fails or polar conditions apply, uses fallback time.
+ * 
+ * @param event Watering event with solar timing configuration
+ * @param latitude_deg Latitude in degrees
+ * @param longitude_deg Longitude in degrees
+ * @param day_of_year Day of year (1-365/366)
+ * @param timezone_offset_hours UTC offset in hours
+ * @param effective_hour Output: effective start hour (0-23)
+ * @param effective_minute Output: effective start minute (0-59)
+ * @return WATERING_SUCCESS on success, WATERING_ERROR_SOLAR_FALLBACK if using fallback
+ */
+watering_error_t fao56_get_effective_start_time(const watering_event_t *event,
+                                                 float latitude_deg,
+                                                 float longitude_deg,
+                                                 uint16_t day_of_year,
+                                                 int8_t timezone_offset_hours,
+                                                 uint8_t *effective_hour,
+                                                 uint8_t *effective_minute);
 
 #endif // FAO56_CALC_H

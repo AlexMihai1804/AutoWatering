@@ -6,6 +6,8 @@
 #include "fao56_calc.h"
 #include "watering_log.h"
 #include "plant_db.h" // accessor prototypes for plant, soil, irrigation method
+#include "rain_history.h"
+#include "nvs_config.h"
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -1924,8 +1926,7 @@ float adjust_volume_for_partial_wetting(
  * @param irrigation_applied Recent irrigation applied (mm)
  * @return WATERING_SUCCESS on success, error code on failure
  */
-// Mark unused until daily ET integration supplies non-zero value every build; prevents noisy warning.
-static __attribute__((unused)) watering_error_t track_deficit_accumulation(
+static watering_error_t track_deficit_accumulation(
     water_balance_t *balance,
     float daily_et,
     float effective_precipitation,
@@ -2884,5 +2885,617 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
     // Update channel's last calculation time
     channel->last_calculation_time = k_uptime_get_32() / 1000;
 
+    return WATERING_SUCCESS;
+}
+
+/* ================================================================== */
+/* AUTO (Smart Schedule) Mode - Daily Deficit Tracking              */
+/* ================================================================== */
+
+/**
+ * @brief Perform daily deficit update and irrigation decision for AUTO mode
+ */
+watering_error_t fao56_daily_update_deficit(uint8_t channel_id, 
+                                            fao56_auto_decision_t *decision)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT || !decision) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Initialize decision output
+    memset(decision, 0, sizeof(fao56_auto_decision_t));
+    decision->should_water = false;
+    decision->stress_factor = 1.0f;
+    
+    // Get channel configuration
+    watering_channel_t *channel = NULL;
+    watering_error_t err = watering_get_channel(channel_id, &channel);
+    if (err != WATERING_SUCCESS || !channel) {
+        LOG_ERR("AUTO mode: Failed to get channel %u", channel_id);
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Validate AUTO mode prerequisites
+    if (!watering_channel_auto_mode_valid(channel)) {
+        LOG_WRN("AUTO mode: Channel %u missing required configuration (plant/soil/planting date)", 
+                channel_id);
+        return WATERING_ERROR_CONFIG;
+    }
+    
+    // Get plant, soil, and irrigation method from database
+    if (channel->plant_db_index >= PLANT_FULL_SPECIES_COUNT) {
+        LOG_ERR("AUTO mode: Invalid plant_db_index %u for channel %u", 
+                channel->plant_db_index, channel_id);
+        return WATERING_ERROR_INVALID_DATA;
+    }
+    const plant_full_data_t *plant = &plant_full_database[channel->plant_db_index];
+    
+    if (channel->soil_db_index >= SOIL_ENHANCED_TYPES_COUNT) {
+        LOG_ERR("AUTO mode: Invalid soil_db_index %u for channel %u", 
+                channel->soil_db_index, channel_id);
+        return WATERING_ERROR_INVALID_DATA;
+    }
+    const soil_enhanced_data_t *soil = &soil_enhanced_database[channel->soil_db_index];
+    
+    if (channel->irrigation_method_index >= IRRIGATION_METHODS_COUNT) {
+        LOG_ERR("AUTO mode: Invalid irrigation_method_index %u for channel %u", 
+                channel->irrigation_method_index, channel_id);
+        return WATERING_ERROR_INVALID_DATA;
+    }
+    const irrigation_method_data_t *method = &irrigation_methods_database[channel->irrigation_method_index];
+    
+    // Read current environmental data
+    environmental_data_t env_data;
+    watering_error_t sensor_err = env_sensors_read(&env_data);
+    if (sensor_err != WATERING_SUCCESS) {
+        LOG_WRN("AUTO mode: Failed to read env sensors, using defaults");
+        // Use conservative defaults
+        env_data.air_temp_mean_c = 25.0f;
+        env_data.air_temp_min_c = 18.0f;
+        env_data.air_temp_max_c = 32.0f;
+        env_data.temp_valid = true;
+        env_data.rel_humidity_pct = 50.0f;
+        env_data.humidity_valid = true;
+    }
+    
+    // Get 24h rainfall from rain history
+    float rainfall_24h = rain_history_get_last_24h();
+    env_data.rain_mm_24h = rainfall_24h;
+    env_data.rain_valid = true;
+    
+    // Calculate days after planting
+    uint32_t current_time = timezone_get_unix_utc();
+    uint16_t days_after_planting = 0;
+    if (channel->planting_date_unix > 0 && current_time > channel->planting_date_unix) {
+        days_after_planting = (uint16_t)((current_time - channel->planting_date_unix) / 86400);
+    }
+    channel->days_after_planting = days_after_planting;
+    
+    // Calculate current root depth
+    float root_depth_m = calc_current_root_depth(plant, days_after_planting);
+    
+    // Ensure water balance structure exists
+    static water_balance_t channel_balance[WATERING_CHANNELS_COUNT];
+    if (!channel->water_balance) {
+        channel->water_balance = &channel_balance[channel_id];
+        memset(channel->water_balance, 0, sizeof(water_balance_t));
+    }
+    water_balance_t *balance = channel->water_balance;
+    
+    // Calculate AWC and RAW parameters
+    float awc_mm_per_m = soil->awc_mm_per_m;
+    balance->rwz_awc_mm = awc_mm_per_m * root_depth_m;
+    
+    float wetting_fraction = method->wetting_fraction_x1000 / 1000.0f;
+    if (wetting_fraction < 0.1f) wetting_fraction = 0.1f;
+    balance->wetting_awc_mm = balance->rwz_awc_mm * wetting_fraction;
+    
+    float depletion_fraction = plant->depletion_fraction_p_x1000 / 1000.0f;
+    if (depletion_fraction < 0.1f) depletion_fraction = 0.5f; // Default to 50%
+    balance->raw_mm = balance->wetting_awc_mm * depletion_fraction;
+    
+    // Calculate effective precipitation
+    float effective_rain = calc_effective_precipitation(rainfall_24h, soil, method);
+    balance->effective_rain_mm = effective_rain;
+    decision->effective_rain_mm = effective_rain;
+    
+    // Calculate daily ET0 using Hargreaves-Samani (temperature-based method)
+    uint16_t day_of_year = fao56_get_current_day_of_year();
+    float latitude_rad = channel->latitude_deg * (PI / 180.0f);
+    
+    float daily_et0 = calc_et0_hargreaves_samani(&env_data, latitude_rad, day_of_year);
+    if (daily_et0 < HEURISTIC_ET0_MIN) daily_et0 = HEURISTIC_ET0_MIN;
+    if (daily_et0 > HEURISTIC_ET0_MAX) daily_et0 = HEURISTIC_ET0_MAX;
+    
+    // Calculate crop coefficient (Kc) based on growth stage
+    phenological_stage_t stage = calc_phenological_stage(plant, days_after_planting);
+    float kc = calc_crop_coefficient(plant, stage, days_after_planting);
+    
+    // Calculate daily ETc (crop evapotranspiration)
+    float daily_etc = daily_et0 * kc;
+    decision->daily_etc_mm = daily_etc;
+    
+    // Apply environmental stress adjustment for hot/dry conditions
+    float base_mad = depletion_fraction;
+    float adjusted_mad = apply_environmental_stress_adjustment(base_mad, &env_data, plant);
+    decision->stress_factor = adjusted_mad / base_mad;
+    
+    // Track deficit: add ETc loss, subtract effective rain
+    err = track_deficit_accumulation(balance, daily_etc, effective_rain, 0.0f);
+    if (err != WATERING_SUCCESS) {
+        LOG_ERR("AUTO mode: Deficit tracking failed for channel %u", channel_id);
+        return err;
+    }
+    
+    // Update decision output values
+    decision->current_deficit_mm = balance->current_deficit_mm;
+    decision->raw_threshold_mm = balance->wetting_awc_mm * adjusted_mad;
+    
+    // Check if irrigation is needed using adjusted MAD threshold
+    bool irrigation_needed = check_irrigation_trigger_mad(balance, plant, soil, decision->stress_factor);
+    decision->should_water = irrigation_needed;
+    
+    if (irrigation_needed) {
+        // Calculate volume to apply: refill entire deficit
+        float net_irrigation_mm = balance->current_deficit_mm;
+        
+        // Apply irrigation efficiency (efficiency_pct is 0-100)
+        float efficiency = method->efficiency_pct / 100.0f;
+        if (efficiency < 0.5f) efficiency = 0.8f; // Default 80% if invalid
+        float gross_irrigation_mm = net_irrigation_mm / efficiency;
+        
+        // Convert mm to liters based on coverage
+        float area_m2;
+        if (channel->use_area_based) {
+            area_m2 = channel->coverage.area_m2;
+        } else {
+            // Assume 0.5 m² per plant for volume calculation
+            area_m2 = channel->coverage.plant_count * 0.5f;
+        }
+        
+        decision->volume_liters = gross_irrigation_mm * area_m2;
+        
+        // Apply max volume limit if configured
+        if (channel->max_volume_limit_l > 0 && decision->volume_liters > channel->max_volume_limit_l) {
+            decision->volume_liters = channel->max_volume_limit_l;
+            LOG_INF("AUTO mode: Volume capped to %.1f L limit for channel %u", 
+                    (double)channel->max_volume_limit_l, channel_id);
+        }
+        
+        LOG_INF("AUTO mode: Channel %u NEEDS WATER - deficit=%.1f mm >= threshold=%.1f mm, volume=%.1f L",
+                channel_id, (double)balance->current_deficit_mm, 
+                (double)decision->raw_threshold_mm, (double)decision->volume_liters);
+    } else {
+        decision->volume_liters = 0.0f;
+        LOG_INF("AUTO mode: Channel %u SKIP - deficit=%.1f mm < threshold=%.1f mm",
+                channel_id, (double)balance->current_deficit_mm, (double)decision->raw_threshold_mm);
+    }
+    
+    // Update balance timestamp
+    balance->last_update_time = k_uptime_get_32();
+    balance->irrigation_needed = irrigation_needed;
+    
+    // Persist updated water balance to NVS
+    int nvs_ret = nvs_save_complete_channel_config(channel_id, channel);
+    if (nvs_ret < 0) {
+        LOG_WRN("AUTO mode: Failed to persist water balance for channel %u: %d", channel_id, nvs_ret);
+    }
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Handle multi-day offline gap by estimating missed deficit accumulation
+ */
+watering_error_t fao56_apply_missed_days_deficit(uint8_t channel_id, 
+                                                  uint16_t days_missed)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT || days_missed == 0) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (days_missed > 30) {
+        // Cap at 30 days to prevent unreasonable deficit accumulation
+        days_missed = 30;
+        LOG_WRN("AUTO mode: Capping missed days to 30 for channel %u", channel_id);
+    }
+    
+    watering_channel_t *channel = NULL;
+    watering_error_t err = watering_get_channel(channel_id, &channel);
+    if (err != WATERING_SUCCESS || !channel) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (!watering_channel_auto_mode_valid(channel)) {
+        return WATERING_ERROR_CONFIG;
+    }
+    
+    if (!channel->water_balance) {
+        LOG_WRN("AUTO mode: No water balance for channel %u, skipping missed days", channel_id);
+        return WATERING_SUCCESS;
+    }
+    
+    // Get plant data for Kc
+    if (channel->plant_db_index >= PLANT_FULL_SPECIES_COUNT) {
+        return WATERING_ERROR_INVALID_DATA;
+    }
+    const plant_full_data_t *plant = &plant_full_database[channel->plant_db_index];
+    
+    // Calculate days after planting
+    uint32_t current_time = timezone_get_unix_utc();
+    uint16_t days_after_planting = 0;
+    if (channel->planting_date_unix > 0 && current_time > channel->planting_date_unix) {
+        days_after_planting = (uint16_t)((current_time - channel->planting_date_unix) / 86400);
+    }
+    
+    // Use conservative average ET0 estimate (3 mm/day typical temperate climate)
+    const float avg_et0_mm_day = 3.0f;
+    
+    // Get average Kc for current growth stage
+    phenological_stage_t stage = calc_phenological_stage(plant, days_after_planting);
+    float kc = calc_crop_coefficient(plant, stage, days_after_planting);
+    
+    // Estimated daily ETc
+    float daily_etc = avg_et0_mm_day * kc;
+    
+    // Apply accumulated deficit for missed days (no rainfall assumption - conservative)
+    float total_missed_deficit = daily_etc * days_missed;
+    
+    water_balance_t *balance = channel->water_balance;
+    balance->current_deficit_mm += total_missed_deficit;
+    
+    // Clamp to AWC maximum
+    if (balance->current_deficit_mm > balance->wetting_awc_mm && balance->wetting_awc_mm > 0) {
+        balance->current_deficit_mm = balance->wetting_awc_mm;
+    }
+    
+    LOG_INF("AUTO mode: Applied %u missed days deficit to channel %u: +%.1f mm (new total: %.1f mm)",
+            days_missed, channel_id, (double)total_missed_deficit, 
+            (double)balance->current_deficit_mm);
+    
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Reduce channel deficit after successful irrigation
+ */
+watering_error_t fao56_reduce_deficit_after_irrigation(uint8_t channel_id,
+                                                        float volume_applied_liters)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT || volume_applied_liters <= 0) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    watering_channel_t *channel = NULL;
+    watering_error_t err = watering_get_channel(channel_id, &channel);
+    if (err != WATERING_SUCCESS || !channel) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    if (!channel->water_balance) {
+        LOG_WRN("AUTO mode: No water balance for channel %u, cannot reduce deficit", channel_id);
+        return WATERING_SUCCESS;
+    }
+    
+    water_balance_t *balance = channel->water_balance;
+    
+    // Convert liters to mm based on coverage area
+    float area_m2;
+    if (channel->use_area_based) {
+        area_m2 = channel->coverage.area_m2;
+    } else {
+        // Assume 0.5 m² per plant
+        area_m2 = channel->coverage.plant_count * 0.5f;
+    }
+    
+    if (area_m2 <= 0) {
+        LOG_WRN("AUTO mode: Invalid coverage area for channel %u", channel_id);
+        return WATERING_SUCCESS;
+    }
+    
+    float irrigation_mm = volume_applied_liters / area_m2;
+    
+    // Apply irrigation efficiency (assume 80% reaches root zone)
+    float effective_irrigation_mm = irrigation_mm * 0.8f;
+    
+    // Reduce deficit
+    float old_deficit = balance->current_deficit_mm;
+    balance->current_deficit_mm -= effective_irrigation_mm;
+    
+    // Clamp to zero (cannot have negative deficit)
+    if (balance->current_deficit_mm < 0) {
+        balance->current_deficit_mm = 0;
+    }
+    
+    balance->irrigation_needed = false;
+    balance->last_update_time = k_uptime_get_32();
+    
+    LOG_INF("AUTO mode: Channel %u deficit reduced %.1f -> %.1f mm (applied %.1f L = %.1f mm effective)",
+            channel_id, (double)old_deficit, (double)balance->current_deficit_mm,
+            (double)volume_applied_liters, (double)effective_irrigation_mm);
+    
+    // Persist updated balance to NVS
+    int nvs_ret = nvs_save_complete_channel_config(channel_id, channel);
+    if (nvs_ret < 0) {
+        LOG_WRN("AUTO mode: Failed to persist reduced deficit for channel %u: %d", channel_id, nvs_ret);
+    }
+    
+    return WATERING_SUCCESS;
+}
+
+/* ============================================================================
+ * SOLAR TIMING CALCULATIONS (NOAA Algorithm)
+ * ============================================================================
+ * 
+ * Implementation of the NOAA Solar Calculator algorithm for computing
+ * sunrise and sunset times with approximately 1 minute precision.
+ * 
+ * Reference: https://gml.noaa.gov/grad/solcalc/solareqns.PDF
+ * ============================================================================ */
+
+/**
+ * @brief Calculate the fractional year (gamma) in radians
+ * 
+ * @param day_of_year Day of year (1-365/366)
+ * @param is_leap_year True if leap year
+ * @return Fractional year in radians
+ */
+static float calc_fractional_year(uint16_t day_of_year, bool is_leap_year)
+{
+    float days_in_year = is_leap_year ? 366.0f : 365.0f;
+    return (2.0f * PI / days_in_year) * ((float)day_of_year - 1.0f);
+}
+
+/**
+ * @brief Calculate the equation of time in minutes
+ * 
+ * The equation of time accounts for the eccentricity of Earth's orbit
+ * and the axial tilt of the Earth.
+ * 
+ * @param gamma Fractional year in radians
+ * @return Equation of time in minutes
+ */
+static float calc_equation_of_time(float gamma)
+{
+    float eqtime = 229.18f * (0.000075f +
+                   0.001868f * cosf(gamma) -
+                   0.032077f * sinf(gamma) -
+                   0.014615f * cosf(2.0f * gamma) -
+                   0.040849f * sinf(2.0f * gamma));
+    return eqtime;
+}
+
+/**
+ * @brief Calculate the solar declination angle in radians
+ * 
+ * @param gamma Fractional year in radians
+ * @return Solar declination in radians
+ */
+static float calc_solar_declination(float gamma)
+{
+    float decl = 0.006918f -
+                 0.399912f * cosf(gamma) +
+                 0.070257f * sinf(gamma) -
+                 0.006758f * cosf(2.0f * gamma) +
+                 0.000907f * sinf(2.0f * gamma) -
+                 0.002697f * cosf(3.0f * gamma) +
+                 0.00148f * sinf(3.0f * gamma);
+    return decl;
+}
+
+/**
+ * @brief Calculate the hour angle at sunrise/sunset
+ * 
+ * For sunrise/sunset, the zenith angle is 90.833 degrees (90° + 50 arcminutes)
+ * to account for atmospheric refraction and the sun's apparent radius.
+ * 
+ * @param latitude_rad Latitude in radians
+ * @param declination Solar declination in radians
+ * @param hour_angle_out Output: hour angle in radians (positive = before noon)
+ * @return 0 if normal day/night, 1 if polar day, -1 if polar night
+ */
+static int calc_sunrise_hour_angle(float latitude_rad, float declination, float *hour_angle_out)
+{
+    // Zenith angle for sunrise/sunset: 90.833 degrees
+    float zenith = 90.833f * PI / 180.0f;
+    
+    float cos_ha = (cosf(zenith) / (cosf(latitude_rad) * cosf(declination))) -
+                   (tanf(latitude_rad) * tanf(declination));
+    
+    // Check for polar conditions
+    if (cos_ha > 1.0f) {
+        // Polar night - sun never rises
+        *hour_angle_out = 0;
+        return -1;
+    } else if (cos_ha < -1.0f) {
+        // Polar day - sun never sets
+        *hour_angle_out = PI;
+        return 1;
+    }
+    
+    *hour_angle_out = acosf(cos_ha);
+    return 0;
+}
+
+watering_error_t fao56_calc_solar_times(float latitude_deg, 
+                                        float longitude_deg,
+                                        uint16_t day_of_year,
+                                        int8_t timezone_offset_hours,
+                                        solar_times_t *result)
+{
+    if (result == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Initialize result
+    memset(result, 0, sizeof(solar_times_t));
+    
+    // Validate latitude
+    if (latitude_deg < -90.0f || latitude_deg > 90.0f) {
+        LOG_WRN("Solar calc: Invalid latitude %.2f", (double)latitude_deg);
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Validate longitude
+    if (longitude_deg < -180.0f || longitude_deg > 180.0f) {
+        LOG_WRN("Solar calc: Invalid longitude %.2f", (double)longitude_deg);
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Validate day of year
+    if (day_of_year < 1 || day_of_year > 366) {
+        LOG_WRN("Solar calc: Invalid day of year %u", day_of_year);
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // Convert latitude to radians
+    float latitude_rad = latitude_deg * PI / 180.0f;
+    
+    // Assume non-leap year for simplicity (error is minimal)
+    bool is_leap_year = false;
+    
+    // Calculate fractional year
+    float gamma = calc_fractional_year(day_of_year, is_leap_year);
+    
+    // Calculate equation of time
+    float eqtime = calc_equation_of_time(gamma);
+    
+    // Calculate solar declination
+    float declination = calc_solar_declination(gamma);
+    
+    // Calculate hour angle at sunrise
+    float hour_angle;
+    int polar_status = calc_sunrise_hour_angle(latitude_rad, declination, &hour_angle);
+    
+    if (polar_status != 0) {
+        // Polar conditions - use fallback times
+        if (polar_status > 0) {
+            // Polar day (midnight sun)
+            result->is_polar_day = true;
+            result->day_length_minutes = 24 * 60;
+            LOG_INF("Solar calc: Polar day detected at lat %.2f", (double)latitude_deg);
+        } else {
+            // Polar night
+            result->is_polar_night = true;
+            result->day_length_minutes = 0;
+            LOG_INF("Solar calc: Polar night detected at lat %.2f", (double)latitude_deg);
+        }
+        
+        // Use fallback times
+        result->sunrise_hour = SOLAR_FALLBACK_SUNRISE_HOUR;
+        result->sunrise_minute = 0;
+        result->sunset_hour = SOLAR_FALLBACK_SUNSET_HOUR;
+        result->sunset_minute = 0;
+        result->calculation_valid = false;
+        
+        return WATERING_SUCCESS;
+    }
+    
+    // Convert hour angle to minutes from solar noon
+    float ha_minutes = hour_angle * 180.0f / PI * 4.0f; // 1 degree = 4 minutes
+    
+    // Calculate solar noon in local standard time (minutes from midnight)
+    // Solar noon = 720 - 4*longitude - eqtime + 60*timezone
+    float solar_noon = 720.0f - 4.0f * longitude_deg - eqtime + 60.0f * timezone_offset_hours;
+    
+    // Calculate sunrise and sunset in minutes from midnight
+    float sunrise_minutes = solar_noon - ha_minutes;
+    float sunset_minutes = solar_noon + ha_minutes;
+    
+    // Normalize to 0-1440 range
+    while (sunrise_minutes < 0) sunrise_minutes += 1440.0f;
+    while (sunrise_minutes >= 1440.0f) sunrise_minutes -= 1440.0f;
+    while (sunset_minutes < 0) sunset_minutes += 1440.0f;
+    while (sunset_minutes >= 1440.0f) sunset_minutes -= 1440.0f;
+    
+    // Convert to hours and minutes
+    result->sunrise_hour = (uint8_t)((int)sunrise_minutes / 60);
+    result->sunrise_minute = (uint8_t)((int)sunrise_minutes % 60);
+    result->sunset_hour = (uint8_t)((int)sunset_minutes / 60);
+    result->sunset_minute = (uint8_t)((int)sunset_minutes % 60);
+    
+    // Calculate day length
+    result->day_length_minutes = (uint16_t)(2.0f * ha_minutes);
+    
+    result->is_polar_day = false;
+    result->is_polar_night = false;
+    result->calculation_valid = true;
+    
+    LOG_DBG("Solar calc: lat=%.2f, lon=%.2f, DOY=%u, TZ=%+d => sunrise=%02u:%02u, sunset=%02u:%02u",
+            (double)latitude_deg, (double)longitude_deg, day_of_year, timezone_offset_hours,
+            result->sunrise_hour, result->sunrise_minute,
+            result->sunset_hour, result->sunset_minute);
+    
+    return WATERING_SUCCESS;
+}
+
+watering_error_t fao56_get_effective_start_time(const watering_event_t *event,
+                                                 float latitude_deg,
+                                                 float longitude_deg,
+                                                 uint16_t day_of_year,
+                                                 int8_t timezone_offset_hours,
+                                                 uint8_t *effective_hour,
+                                                 uint8_t *effective_minute)
+{
+    if (event == NULL || effective_hour == NULL || effective_minute == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    
+    // If solar timing not enabled, use configured start time directly
+    if (!event->use_solar_timing) {
+        *effective_hour = event->start_time.hour;
+        *effective_minute = event->start_time.minute;
+        return WATERING_SUCCESS;
+    }
+    
+    // Calculate solar times
+    solar_times_t solar;
+    watering_error_t ret = fao56_calc_solar_times(latitude_deg, longitude_deg,
+                                                   day_of_year, timezone_offset_hours,
+                                                   &solar);
+    
+    if (ret != WATERING_SUCCESS) {
+        // Use fallback time
+        *effective_hour = event->start_time.hour;
+        *effective_minute = event->start_time.minute;
+        return WATERING_ERROR_SOLAR_FALLBACK;
+    }
+    
+    // Get base time from selected solar event
+    int base_minutes;
+    if (event->solar_event == SOLAR_EVENT_SUNRISE) {
+        base_minutes = solar.sunrise_hour * 60 + solar.sunrise_minute;
+    } else {
+        // Default to sunset
+        base_minutes = solar.sunset_hour * 60 + solar.sunset_minute;
+    }
+    
+    // Apply offset
+    int8_t offset = event->solar_offset_minutes;
+    
+    // Clamp offset to valid range
+    if (offset < SOLAR_OFFSET_MIN) offset = SOLAR_OFFSET_MIN;
+    if (offset > SOLAR_OFFSET_MAX) offset = SOLAR_OFFSET_MAX;
+    
+    int effective_minutes = base_minutes + offset;
+    
+    // Normalize to 0-1440 range
+    while (effective_minutes < 0) effective_minutes += 1440;
+    while (effective_minutes >= 1440) effective_minutes -= 1440;
+    
+    *effective_hour = (uint8_t)(effective_minutes / 60);
+    *effective_minute = (uint8_t)(effective_minutes % 60);
+    
+    // Check if we're using fallback times (polar conditions)
+    if (solar.is_polar_day || solar.is_polar_night || !solar.calculation_valid) {
+        LOG_INF("Solar timing: Using fallback for polar conditions, effective=%02u:%02u",
+                *effective_hour, *effective_minute);
+        return WATERING_ERROR_SOLAR_FALLBACK;
+    }
+    
+    LOG_DBG("Solar timing: event=%s, offset=%+d min => effective=%02u:%02u",
+            event->solar_event == SOLAR_EVENT_SUNRISE ? "sunrise" : "sunset",
+            offset, *effective_hour, *effective_minute);
+    
     return WATERING_SUCCESS;
 }
