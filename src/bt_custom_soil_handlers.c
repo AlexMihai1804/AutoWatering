@@ -719,9 +719,8 @@ watering_error_t bt_convert_from_enhanced_ble_config(const struct enhanced_chann
     if (channel->temp_compensation.enabled) {
         onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_TEMP_COMP_SET, true);
     }
-    if (channel->enable_cycle_soak) {
-        onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_CYCLE_SOAK_SET, true);
-    }
+    /* Mark cycle/soak configured even if disabled (user provided a choice) */
+    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_CYCLE_SOAK_SET, true);
     
     /* Check if FAO-56 is now ready after this configuration */
     onboarding_check_fao56_ready(channel_id);

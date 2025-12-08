@@ -6686,9 +6686,8 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
             if (env_data->planting_date_unix > 0) {
                 onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_PLANTING_DATE_SET, true);
             }
-            if (env_data->enable_cycle_soak) {
-                onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_CYCLE_SOAK_SET, true);
-            }
+            /* Flag cycle/soak as configured once we process this payload (enabled or not) */
+            onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_CYCLE_SOAK_SET, true);
             
             printk("✅ BLE: Growing environment updated for channel %u via fragmentation\n", 
                     env_data->channel_id);
@@ -6843,9 +6842,8 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
     if (env_data->planting_date_unix > 0) {
         onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_PLANTING_DATE_SET, true);
     }
-    if (env_data->enable_cycle_soak) {
-        onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_CYCLE_SOAK_SET, true);
-    }
+    /* Mark cycle/soak as configured regardless of enabled value */
+    onboarding_update_channel_extended_flag(env_data->channel_id, CHANNEL_EXT_FLAG_CYCLE_SOAK_SET, true);
     
     printk("✅ BLE: Growing environment updated for channel %u\n", env_data->channel_id);
     
