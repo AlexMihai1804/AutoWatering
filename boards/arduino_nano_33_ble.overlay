@@ -1,6 +1,7 @@
 /*
  * AutoWatering – Arduino Nano 33 BLE enhanced storage & peripherals overlay
- * Mirrors the ProMicro feature set with pin mappings aligned to the Nano 33 BLE header.
+ * W25Q128 external flash for NVS storage and BLE OTA updates.
+ * Pin mappings aligned to the Nano 33 BLE header.
  */
 
 / {
@@ -41,7 +42,7 @@
         status = "okay";
 
         /* keep a master_valve node for the code; mapped per request */
-    master_valve: master_valve { gpios = <&gpio0 6 GPIO_ACTIVE_LOW>; label = "Master Valve"; };
+        master_valve: master_valve { gpios = <&gpio0 6 GPIO_ACTIVE_LOW>; label = "Master Valve"; };
 
         /* User-requested mapping for the 8 zone valves */
         valve1: valve_1 { gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>; label = "Valve 1"; };
@@ -60,12 +61,14 @@
         settings-partition = &settings_partition;
         nvs-storage        = &nvs_storage;
         rain-sensor        = &rain_sensor;
+        spi-flash0         = &w25q128;
 
         console            = &cdc_acm_uart0;
         shell-uart         = &cdc_acm_uart0;
     };
 
     chosen {
+        zephyr,code-partition        = &slot0_partition;
         zephyr,settings-partition    = &settings_partition;
         zephyr,bt-settings-partition = &settings_partition;
         zephyr,console               = &cdc_acm_uart0;
@@ -118,6 +121,63 @@
     };
 };
 
+/* SPI2 for W25Q128 external flash */
+&spi2 {
+    status = "okay";
+    compatible = "nordic,nrf-spim";
+    pinctrl-0 = <&spi2_default>;
+    pinctrl-1 = <&spi2_sleep>;
+    pinctrl-names = "default", "sleep";
+    cs-gpios = <&gpio0 23 GPIO_ACTIVE_LOW>;
+
+    w25q128: w25q128@0 {
+        compatible = "jedec,spi-nor";
+        reg = <0>;
+        spi-max-frequency = <40000000>;
+        jedec-id = [ef 40 18];
+        size = <DT_SIZE_M(128)>;  /* 128 Mbit = 16 MB */
+        has-dpd;
+        t-enter-dpd = <3000>;
+        t-exit-dpd = <30000>;
+
+        partitions {
+            compatible = "fixed-partitions";
+            #address-cells = <1>;
+            #size-cells = <1>;
+
+            /* Slot 1 for MCUboot secondary image (256 KB) */
+            slot1_partition: partition@0 {
+                label = "image-1";
+                reg = <0x00000000 0x00040000>;
+            };
+
+            /* NVS storage partition (256 KB) */
+            nvs_storage: partition@40000 {
+                label = "nvs_storage";
+                reg = <0x00040000 0x00040000>;
+            };
+
+            /* Settings partition for BT (8 KB) */
+            settings_partition: partition@80000 {
+                label = "settings";
+                reg = <0x00080000 0x00002000>;
+            };
+
+            /* Scratch partition for MCUboot swap (64 KB) */
+            scratch_partition: partition@82000 {
+                label = "image-scratch";
+                reg = <0x00082000 0x00010000>;
+            };
+
+            /* Remaining space for future use (approx 15.4 MB) */
+            ext_storage_partition: partition@92000 {
+                label = "ext_storage";
+                reg = <0x00092000 0x00F6E000>;
+            };
+        };
+    };
+};
+
 &pinctrl {
     i2c0_nano_default: i2c0_nano_default {
         group1 {
@@ -136,30 +196,41 @@
             low-power-enable;
         };
     };
+
+    /* SPI2 pinctrl for W25Q128 external flash */
+    spi2_default: spi2_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 1, 15)>,
+                    <NRF_PSEL(SPIM_MOSI, 1, 13)>,
+                    <NRF_PSEL(SPIM_MISO, 1, 14)>;
+        };
+    };
+
+    spi2_sleep: spi2_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 1, 15)>,
+                    <NRF_PSEL(SPIM_MOSI, 1, 13)>,
+                    <NRF_PSEL(SPIM_MISO, 1, 14)>;
+            low-power-enable;
+        };
+    };
 };
 
-&code_partition {
-    reg = <0x00010000 0x000c8000>;
-};
-
-&storage_partition {
-    status = "disabled";
-};
+/* Internal flash partitions - MCUboot layout */
+/* Delete existing partitions and redefine for MCUboot */
+/delete-node/ &code_partition;
+/delete-node/ &storage_partition;
 
 &flash0 {
     partitions {
-        compatible     = "fixed-partitions";
+        compatible = "fixed-partitions";
         #address-cells = <1>;
-        #size-cells    = <1>;
+        #size-cells = <1>;
 
-        nvs_storage: partition@d8000 {
-            label = "nvs_storage";
-            reg   = <0x000d8000 0x00026000>;
-        };
-
-        settings_partition: partition@fe000 {
-            label = "settings";
-            reg   = <0x000fe000 0x00002000>;
+        /* Slot 0: Primary application image (MCUboot) */
+        slot0_partition: partition@10000 {
+            label = "image-0";
+            reg = <0x00010000 0x000e8000>;
         };
     };
 };
