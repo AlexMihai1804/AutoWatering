@@ -118,17 +118,28 @@ static bool check_freeze_lockout(float *temperature_out)
     uint32_t last_ts = env.current.timestamp ? env.current.timestamp : env.last_update;
     bool stale = data_valid && (now - last_ts > FREEZE_DATA_MAX_AGE_MS);
 
-    /* Treat missing or stale data conservativ as lockout to avoid freezing */
+    /* If data is stale but warm, allow tasks (warn instead of hard lockout) */
     if (!data_valid || stale) {
-        if (!freeze_lockout_active || (now - last_freeze_alarm_ms) > ALARM_REFRESH_MS) {
-            raise_alarm(FREEZE_ALARM_CODE, 0xFFFF, "ALERT: Environmental data unavailable/stale - freeze lockout");
-            last_freeze_alarm_ms = now;
+        float temp_c_stale = env.current.temperature;
+        bool warm_enough = data_valid && !isnan(temp_c_stale) && (temp_c_stale >= FREEZE_CLEAR_TEMP_C);
+        if (warm_enough) {
+            /* Clear any existing lockout if stale-but-warm */
+            if (freeze_lockout_active && system_status == WATERING_STATUS_FREEZE_LOCKOUT) {
+                update_system_status(WATERING_STATUS_OK);
+            }
+            freeze_lockout_active = false;
+            /* Keep going to allow task creation without returning early */
+        } else {
+            if (!freeze_lockout_active || (now - last_freeze_alarm_ms) > ALARM_REFRESH_MS) {
+                raise_alarm(FREEZE_ALARM_CODE, 0xFFFF, "ALERT: Environmental data unavailable/stale - freeze lockout");
+                last_freeze_alarm_ms = now;
+            }
+            freeze_lockout_active = true;
+            if (system_status != WATERING_STATUS_FAULT) {
+                update_system_status(WATERING_STATUS_FREEZE_LOCKOUT);
+            }
+            return true;
         }
-        freeze_lockout_active = true;
-        if (system_status != WATERING_STATUS_FAULT) {
-            update_system_status(WATERING_STATUS_FREEZE_LOCKOUT);
-        }
-        return true;
     }
 
     float temp_c = env.current.temperature;
