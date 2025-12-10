@@ -62,6 +62,7 @@
         nvs-storage        = &nvs_storage;
         rain-sensor        = &rain_sensor;
         spi-flash0         = &w25q128;
+        database-partition = &database_partition;
 
         console            = &cdc_acm_uart0;
         shell-uart         = &cdc_acm_uart0;
@@ -145,34 +146,40 @@
             #address-cells = <1>;
             #size-cells = <1>;
 
-            /* Slot 1 for MCUboot secondary image (256 KB) */
+            /* Slot 1 for MCUboot secondary image (1 MB - matches slot0) */
             slot1_partition: partition@0 {
                 label = "image-1";
-                reg = <0x00000000 0x00040000>;
+                reg = <0x00000000 0x00100000>;
+            };
+
+            /* Scratch partition for MCUboot swap (128 KB) */
+            scratch_partition: partition@100000 {
+                label = "image-scratch";
+                reg = <0x00100000 0x00020000>;
             };
 
             /* NVS storage partition (256 KB) */
-            nvs_storage: partition@40000 {
+            nvs_storage: partition@120000 {
                 label = "nvs_storage";
-                reg = <0x00040000 0x00040000>;
+                reg = <0x00120000 0x00040000>;
             };
 
             /* Settings partition for BT (8 KB) */
-            settings_partition: partition@80000 {
+            settings_partition: partition@160000 {
                 label = "settings";
-                reg = <0x00080000 0x00002000>;
+                reg = <0x00160000 0x00002000>;
             };
 
-            /* Scratch partition for MCUboot swap (64 KB) */
-            scratch_partition: partition@82000 {
-                label = "image-scratch";
-                reg = <0x00082000 0x00010000>;
+            /* Database partition for plant/soil/irrigation data (512 KB) */
+            database_partition: partition@162000 {
+                label = "database";
+                reg = <0x00162000 0x00080000>;
             };
 
-            /* Remaining space for future use (approx 15.4 MB) */
-            ext_storage_partition: partition@92000 {
+            /* Remaining space for future use (approx 14.4 MB) */
+            ext_storage_partition: partition@1E2000 {
                 label = "ext_storage";
-                reg = <0x00092000 0x00F6E000>;
+                reg = <0x001E2000 0x00E1E000>;
             };
         };
     };
