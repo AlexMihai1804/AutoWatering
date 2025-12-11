@@ -25,7 +25,7 @@ LOG_MODULE_REGISTER(database_flash, CONFIG_LOG_DEFAULT_LEVEL);
 /* LittleFS mount configuration */
 FS_LITTLEFS_DECLARE_DEFAULT_CONFIG(lfs_storage);
 
-static struct fs_mount_t lfs_mount = {
+static struct fs_mount_t db_lfs_mount = {
     .type = FS_LITTLEFS,
     .fs_data = &lfs_storage,
     .storage_dev = (void *)DATABASE_PARTITION_ID,
@@ -197,7 +197,7 @@ int db_flash_mount(void)
         return 0;
     }
     
-    int rc = fs_mount(&lfs_mount);
+    int rc = fs_mount(&db_lfs_mount);
     if (rc < 0) {
         if (rc == -ENODEV) {
             LOG_WRN("No filesystem, formatting...");
@@ -205,7 +205,7 @@ int db_flash_mount(void)
             if (rc < 0) {
                 return rc;
             }
-            rc = fs_mount(&lfs_mount);
+            rc = fs_mount(&db_lfs_mount);
         }
         if (rc < 0) {
             LOG_ERR("Failed to mount LittleFS: %d", rc);
@@ -226,7 +226,7 @@ int db_flash_unmount(void)
     
     db_flash_unload_all();
     
-    int rc = fs_unmount(&lfs_mount);
+    int rc = fs_unmount(&db_lfs_mount);
     if (rc < 0) {
         LOG_ERR("Failed to unmount LittleFS: %d", rc);
         return rc;
@@ -241,7 +241,7 @@ int db_flash_format(void)
 {
     /* Unmount first if mounted */
     if (db_handle.mounted) {
-        fs_unmount(&lfs_mount);
+        fs_unmount(&db_lfs_mount);
         db_handle.mounted = false;
     }
     
@@ -263,7 +263,7 @@ int db_flash_format(void)
     }
     
     /* Mount to create filesystem */
-    rc = fs_mount(&lfs_mount);
+    rc = fs_mount(&db_lfs_mount);
     if (rc < 0) {
         LOG_ERR("Failed to format/mount: %d", rc);
         return rc;

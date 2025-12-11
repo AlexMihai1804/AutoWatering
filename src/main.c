@@ -38,6 +38,8 @@
 #include "nvs_storage_monitor.h"
 #include "onboarding_state.h"
 #include "reset_controller.h"
+#include "database_flash.h"
+#include "history_flash.h"
 
 #ifdef CONFIG_BT
 #include "bt_irrigation_service.h"
@@ -501,6 +503,24 @@ int main(void) {
         printk("Warning: Environmental data system initialization failed: %d\n", ret);
     } else {
         printk("Environmental data system initialized successfully\n");
+    }
+
+    // Initialize external flash database (LittleFS)
+    printk("Initializing external flash database...\n");
+    ret = db_flash_init();
+    if (ret != 0) {
+        printk("Warning: External flash database initialization failed: %d\n", ret);
+    } else {
+        printk("External flash database initialized successfully\n");
+    }
+
+    // Initialize history flash storage
+    printk("Initializing history flash storage...\n");
+    ret = history_flash_init();
+    if (ret != 0) {
+        printk("Warning: History flash storage initialization failed: %d\n", ret);
+    } else {
+        printk("History flash storage initialized successfully\n");
     }
 
     // Initialize environmental history

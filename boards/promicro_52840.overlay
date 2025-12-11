@@ -69,6 +69,7 @@
         settings-partition = &settings_partition;
         nvs-storage        = &nvs_storage;
         rain-sensor        = &rain_sensor;
+        spi-flash0         = &w25q128;
 
         console            = &cdc_acm_uart0;
         shell-uart         = &cdc_acm_uart0;
@@ -98,6 +99,24 @@
             psels = <NRF_PSEL(TWIM_SCL, 0, 31)>,
                     <NRF_PSEL(TWIM_SDA, 0, 29)>;
             bias-pull-up;
+            low-power-enable;
+        };
+    };
+
+    /* SPI2 pinctrl for W25Q128 external flash */
+    spi2_default: spi2_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 1, 15)>,
+                    <NRF_PSEL(SPIM_MOSI, 1, 13)>,
+                    <NRF_PSEL(SPIM_MISO, 1, 14)>;
+        };
+    };
+
+    spi2_sleep: spi2_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 1, 15)>,
+                    <NRF_PSEL(SPIM_MOSI, 1, 13)>,
+                    <NRF_PSEL(SPIM_MISO, 1, 14)>;
             low-power-enable;
         };
     };
@@ -133,6 +152,58 @@
         label = "BME280";
         /* Optional interrupt pin for data ready */
         /* int-gpios = <&gpio0 3 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>; */
+    };
+};
+
+/* ---------- SPI2 for W25Q128 external flash ---------- */
+&spi2 {
+    status = "okay";
+    compatible = "nordic,nrf-spim";
+    pinctrl-0 = <&spi2_default>;
+    pinctrl-1 = <&spi2_sleep>;
+    pinctrl-names = "default", "sleep";
+    cs-gpios = <&gpio0 23 GPIO_ACTIVE_LOW>;
+
+    w25q128: w25q128@0 {
+        compatible = "jedec,spi-nor";
+        reg = <0>;
+        spi-max-frequency = <40000000>;
+        jedec-id = [ef 40 18];
+        size = <DT_SIZE_M(128)>;  /* 128 Mbit = 16 MB */
+        has-dpd;
+        t-enter-dpd = <3000>;
+        t-exit-dpd = <30000>;
+
+        partitions {
+            compatible = "fixed-partitions";
+            #address-cells = <1>;
+            #size-cells = <1>;
+
+            /* Slot 1 for MCUboot secondary image (1 MB - matches slot0) */
+            slot1_partition: partition@0 {
+                label = "image-1";
+                reg = <0x00000000 0x00100000>;
+            };
+
+            /* Scratch partition for MCUboot swap (128 KB) */
+            scratch_partition: partition@100000 {
+                label = "image-scratch";
+                reg = <0x00100000 0x00020000>;
+            };
+
+            /* Database & History partition for LittleFS (512 KB) */
+            /* Contains: plant/soil/irrigation DBs + environmental/rain history */
+            database_partition: partition@120000 {
+                label = "database";
+                reg = <0x00120000 0x00080000>;
+            };
+
+            /* Remaining space for future use (approx 14.6 MB) */
+            ext_storage_partition: partition@1A0000 {
+                label = "ext_storage";
+                reg = <0x001A0000 0x00E60000>;
+            };
+        };
     };
 };
 

@@ -135,6 +135,10 @@ target_sources(app PRIVATE
     src/enhanced_error_handling.c
     src/power_management.c
     
+    # External flash storage (W25Q128 + LittleFS)
+    src/database_flash.c
+    src/history_flash.c
+    
     # Generated enhanced database files - will be created automatically
     ${SRC_DIR}/plant_full_db.c
     ${SRC_DIR}/soil_enhanced_db.c
