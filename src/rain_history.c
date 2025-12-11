@@ -9,6 +9,10 @@
 #include "watering.h"
 #include <errno.h>
 
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+#include "history_flash.h"
+#endif
+
 LOG_MODULE_REGISTER(rain_history, LOG_LEVEL_INF);
 
 /* External NVS function declarations */
@@ -46,10 +50,12 @@ struct rain_history_state_s rain_history_state = {
 /* Forward declarations */
 static uint32_t get_hour_epoch(uint32_t timestamp);
 static uint32_t get_day_epoch(uint32_t timestamp);
+#ifndef CONFIG_HISTORY_EXTERNAL_FLASH
 static watering_error_t rotate_hourly_data(void);
 static watering_error_t rotate_daily_data(void);
 static int find_hourly_index(uint32_t hour_epoch);
 static int find_daily_index(uint32_t day_epoch);
+#endif
 
 /**
  * @brief Get hour epoch (timestamp rounded to hour boundary)
@@ -70,6 +76,7 @@ static uint32_t get_day_epoch(uint32_t timestamp)
 /**
  * @brief Find index of hourly data entry
  */
+#ifndef CONFIG_HISTORY_EXTERNAL_FLASH
 static int find_hourly_index(uint32_t hour_epoch)
 {
     for (int i = 0; i < rain_history_state.hourly_count; i++) {
@@ -79,10 +86,12 @@ static int find_hourly_index(uint32_t hour_epoch)
     }
     return -1;
 }
+#endif
 
 /**
  * @brief Find index of daily data entry
  */
+#ifndef CONFIG_HISTORY_EXTERNAL_FLASH
 static int find_daily_index(uint32_t day_epoch)
 {
     for (int i = 0; i < rain_history_state.daily_count; i++) {
@@ -92,10 +101,12 @@ static int find_daily_index(uint32_t day_epoch)
     }
     return -1;
 }
+#endif
 
 /**
  * @brief Rotate hourly data when storage is full
  */
+#ifndef CONFIG_HISTORY_EXTERNAL_FLASH
 static watering_error_t rotate_hourly_data(void)
 {
     if (rain_history_state.hourly_count < RAIN_HOURLY_ENTRIES) {
@@ -119,10 +130,12 @@ static watering_error_t rotate_hourly_data(void)
     LOG_DBG("Rotated hourly data, oldest entry at index %d", oldest_index);
     return WATERING_SUCCESS;
 }
+#endif
 
 /**
  * @brief Rotate daily data when storage is full
  */
+#ifndef CONFIG_HISTORY_EXTERNAL_FLASH
 static watering_error_t rotate_daily_data(void)
 {
     if (rain_history_state.daily_count < RAIN_DAILY_ENTRIES) {
@@ -146,6 +159,7 @@ static watering_error_t rotate_daily_data(void)
     LOG_DBG("Rotated daily data, oldest entry at index %d", oldest_index);
     return WATERING_SUCCESS;
 }
+#endif
 
 watering_error_t rain_history_init(void)
 {
@@ -158,6 +172,21 @@ watering_error_t rain_history_init(void)
     /* Initialize mutex */
     k_mutex_init(&rain_history_state.mutex);
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Initialize external flash storage for rain history */
+    int ret = history_flash_init();
+    if (ret != 0) {
+        LOG_ERR("Failed to initialize rain history flash storage: %d", ret);
+        return WATERING_ERROR_STORAGE;
+    }
+    
+    /* Get stats from flash */
+    history_flash_stats_t flash_stats;
+    if (history_flash_get_stats(&flash_stats) == 0) {
+        rain_history_state.hourly_count = flash_stats.rain_hourly.entry_count;
+        rain_history_state.daily_count = flash_stats.rain_daily.entry_count;
+    }
+#else
     /* Clear data arrays */
     memset(rain_history_state.hourly_data, 0, sizeof(rain_history_state.hourly_data));
     memset(rain_history_state.daily_data, 0, sizeof(rain_history_state.daily_data));
@@ -168,6 +197,7 @@ watering_error_t rain_history_init(void)
         LOG_WRN("Failed to load rain history from NVS: %d", ret);
         /* Continue with empty history */
     }
+#endif
     
     rain_history_state.initialized = true;
     
@@ -212,10 +242,28 @@ watering_error_t rain_history_record_hourly_full(uint32_t hour_epoch,
     }
     
     if (rainfall_mm < 0.0f || rainfall_mm > 1000.0f) {
-    LOG_ERR("Invalid rainfall amount: %.2f mm", (double)rainfall_mm);
+        LOG_ERR("Invalid rainfall amount: %.2f mm", (double)rainfall_mm);
         return WATERING_ERROR_INVALID_PARAM;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Use external flash storage */
+    history_rain_hourly_t flash_entry = {
+        .hour_epoch = hour_epoch,
+        .rainfall_mm_x100 = (uint16_t)(rainfall_mm * 100.0f),
+        .pulse_count = pulse_count,
+        .data_quality = data_quality
+    };
+    
+    int ret = history_flash_add_rain_hourly(&flash_entry);
+    if (ret < 0) {
+        LOG_ERR("Failed to add rain hourly to flash: %d", ret);
+        return WATERING_ERROR_STORAGE;
+    }
+    
+    LOG_DBG("Added hourly entry to flash for epoch %u: %.2f mm", hour_epoch, (double)rainfall_mm);
+    return WATERING_SUCCESS;
+#else
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
     
     /* Check if entry already exists for this hour */
@@ -227,7 +275,7 @@ watering_error_t rain_history_record_hourly_full(uint32_t hour_epoch,
         rain_history_state.hourly_data[existing_index].pulse_count = pulse_count;
         rain_history_state.hourly_data[existing_index].data_quality = data_quality;
         
-    LOG_DBG("Updated hourly entry for epoch %u: %.2f mm", hour_epoch, (double)rainfall_mm);
+        LOG_DBG("Updated hourly entry for epoch %u: %.2f mm", hour_epoch, (double)rainfall_mm);
     } else {
         /* Add new entry */
         if (rain_history_state.hourly_count >= RAIN_HOURLY_ENTRIES) {
@@ -243,8 +291,8 @@ watering_error_t rain_history_record_hourly_full(uint32_t hour_epoch,
         entry->pulse_count = pulse_count;
         entry->data_quality = data_quality;
         
-    LOG_DBG("Added hourly entry for epoch %u: %.2f mm (index %u)", 
-        hour_epoch, (double)rainfall_mm, rain_history_state.hourly_write_index);
+        LOG_DBG("Added hourly entry for epoch %u: %.2f mm (index %u)", 
+            hour_epoch, (double)rainfall_mm, rain_history_state.hourly_write_index);
         
         /* Move to next index for circular buffer */
         rain_history_state.hourly_write_index = 
@@ -261,6 +309,7 @@ watering_error_t rain_history_record_hourly_full(uint32_t hour_epoch,
     }
     
     return WATERING_SUCCESS;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 watering_error_t rain_history_aggregate_daily(void)
@@ -269,6 +318,70 @@ watering_error_t rain_history_aggregate_daily(void)
         return WATERING_ERROR_NOT_INITIALIZED;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Flash-based aggregation - read recent hourly data and aggregate */
+    uint32_t current_time = k_uptime_get_32() / 1000;
+    uint32_t today_epoch = get_day_epoch(current_time);
+    uint32_t yesterday_epoch = today_epoch - 86400;
+    
+    /* Read hourly entries from flash */
+    history_rain_hourly_t hourly_buffer[48]; /* Last 2 days max */
+    uint16_t hourly_count = 0;
+    
+    int ret = history_flash_read_rain_hourly(0, hourly_buffer, 48, &hourly_count);
+    if (ret < 0) {
+        LOG_ERR("Failed to read rain hourly from flash: %d", ret);
+        return WATERING_ERROR_STORAGE;
+    }
+    
+    /* Aggregate yesterday's data */
+    float total_rainfall = 0.0f;
+    float max_hourly = 0.0f;
+    uint8_t active_hours = 0;
+    uint8_t valid_hours = 0;
+    
+    for (int i = 0; i < hourly_count; i++) {
+        if (hourly_buffer[i].hour_epoch >= yesterday_epoch && 
+            hourly_buffer[i].hour_epoch < today_epoch) {
+            float hourly_mm = hourly_buffer[i].rainfall_mm_x100 / 100.0f;
+            total_rainfall += hourly_mm;
+            
+            if (hourly_mm > max_hourly) {
+                max_hourly = hourly_mm;
+            }
+            
+            if (hourly_mm > 0.0f) {
+                active_hours++;
+            }
+            
+            if (hourly_buffer[i].data_quality >= RAIN_QUALITY_FAIR) {
+                valid_hours++;
+            }
+        }
+    }
+    
+    /* Only create daily entry if we have some data */
+    if (valid_hours > 0) {
+        history_rain_daily_t daily_entry = {
+            .day_epoch = yesterday_epoch,
+            .total_rainfall_mm_x100 = (uint32_t)(total_rainfall * 100.0f),
+            .max_hourly_mm_x100 = (uint16_t)(max_hourly * 100.0f),
+            .active_hours = active_hours,
+            .data_completeness = (valid_hours * 100) / 24
+        };
+        
+        ret = history_flash_add_rain_daily(&daily_entry);
+        if (ret < 0) {
+            LOG_ERR("Failed to add rain daily to flash: %d", ret);
+            return WATERING_ERROR_STORAGE;
+        }
+        
+        LOG_INF("Daily aggregation for %u: %.2f mm total, %.2f mm max hourly, %u active hours",
+            yesterday_epoch, (double)total_rainfall, (double)max_hourly, active_hours);
+    }
+    
+    return WATERING_SUCCESS;
+#else
     uint32_t current_time = k_uptime_get_32() / 1000;
     uint32_t today_epoch = get_day_epoch(current_time);
     uint32_t yesterday_epoch = today_epoch - 86400;
@@ -331,8 +444,8 @@ watering_error_t rain_history_aggregate_daily(void)
             daily->active_hours = active_hours;
             daily->data_completeness = (valid_hours * 100) / 24;
             
-        LOG_INF("Daily aggregation for %u: %.2f mm total, %.2f mm max hourly, %u active hours",
-            yesterday_epoch, (double)total_rainfall, (double)max_hourly, active_hours);
+            LOG_INF("Daily aggregation for %u: %.2f mm total, %.2f mm max hourly, %u active hours",
+                yesterday_epoch, (double)total_rainfall, (double)max_hourly, active_hours);
             
             /* Move to next index for circular buffer */
             rain_history_state.daily_write_index = 
@@ -343,6 +456,7 @@ watering_error_t rain_history_aggregate_daily(void)
     k_mutex_unlock(&rain_history_state.mutex);
     
     return WATERING_SUCCESS;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 watering_error_t rain_history_get_hourly(uint32_t start_hour, 
@@ -357,6 +471,32 @@ watering_error_t rain_history_get_hourly(uint32_t start_hour,
     
     *count = 0;
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Read from external flash */
+    history_rain_hourly_t flash_buffer[RAIN_HOURLY_ENTRIES];
+    uint16_t flash_count = 0;
+    
+    int ret = history_flash_read_rain_hourly(0, flash_buffer, max_entries, &flash_count);
+    if (ret < 0) {
+        LOG_ERR("Failed to read rain hourly from flash: %d", ret);
+        return WATERING_ERROR_STORAGE;
+    }
+    
+    /* Filter by time range and convert to RAM format */
+    for (int i = 0; i < flash_count && *count < max_entries; i++) {
+        if (flash_buffer[i].hour_epoch >= start_hour && 
+            flash_buffer[i].hour_epoch <= end_hour) {
+            data[*count].hour_epoch = flash_buffer[i].hour_epoch;
+            data[*count].rainfall_mm_x100 = flash_buffer[i].rainfall_mm_x100;
+            data[*count].pulse_count = flash_buffer[i].pulse_count;
+            data[*count].data_quality = flash_buffer[i].data_quality;
+            (*count)++;
+        }
+    }
+    
+    LOG_DBG("Retrieved %u hourly entries from flash for range %u-%u", *count, start_hour, end_hour);
+    return WATERING_SUCCESS;
+#else
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
     
     for (int i = 0; i < rain_history_state.hourly_count && *count < max_entries; i++) {
@@ -372,6 +512,7 @@ watering_error_t rain_history_get_hourly(uint32_t start_hour,
     
     LOG_DBG("Retrieved %u hourly entries for range %u-%u", *count, start_hour, end_hour);
     return WATERING_SUCCESS;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 watering_error_t rain_history_get_daily(uint32_t start_day, 
@@ -386,6 +527,33 @@ watering_error_t rain_history_get_daily(uint32_t start_day,
     
     *count = 0;
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Read from external flash */
+    history_rain_daily_t flash_buffer[RAIN_DAILY_ENTRIES];
+    uint16_t flash_count = 0;
+    
+    int ret = history_flash_read_rain_daily(0, flash_buffer, max_entries, &flash_count);
+    if (ret < 0) {
+        LOG_ERR("Failed to read rain daily from flash: %d", ret);
+        return WATERING_ERROR_STORAGE;
+    }
+    
+    /* Filter by time range and convert to RAM format */
+    for (int i = 0; i < flash_count && *count < max_entries; i++) {
+        if (flash_buffer[i].day_epoch >= start_day && 
+            flash_buffer[i].day_epoch <= end_day) {
+            data[*count].day_epoch = flash_buffer[i].day_epoch;
+            data[*count].total_rainfall_mm_x100 = flash_buffer[i].total_rainfall_mm_x100;
+            data[*count].max_hourly_mm_x100 = flash_buffer[i].max_hourly_mm_x100;
+            data[*count].active_hours = flash_buffer[i].active_hours;
+            data[*count].data_completeness = flash_buffer[i].data_completeness;
+            (*count)++;
+        }
+    }
+    
+    LOG_DBG("Retrieved %u daily entries from flash for range %u-%u", *count, start_day, end_day);
+    return WATERING_SUCCESS;
+#else
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
     
     for (int i = 0; i < rain_history_state.daily_count && *count < max_entries; i++) {
@@ -401,6 +569,7 @@ watering_error_t rain_history_get_daily(uint32_t start_day,
     
     LOG_DBG("Retrieved %u daily entries for range %u-%u", *count, start_day, end_day);
     return WATERING_SUCCESS;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 float rain_history_get_recent_total(uint32_t hours_back)
@@ -414,6 +583,24 @@ float rain_history_get_recent_total(uint32_t hours_back)
     
     float total_rainfall = 0.0f;
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Read from external flash */
+    history_rain_hourly_t flash_buffer[RAIN_HOURLY_ENTRIES];
+    uint16_t flash_count = 0;
+    
+    int ret = history_flash_read_rain_hourly(0, flash_buffer, RAIN_HOURLY_ENTRIES, &flash_count);
+    if (ret < 0) {
+        LOG_ERR("Failed to read rain hourly from flash: %d", ret);
+        return 0.0f;
+    }
+    
+    for (int i = 0; i < flash_count; i++) {
+        if (flash_buffer[i].hour_epoch >= start_time && 
+            flash_buffer[i].hour_epoch <= current_time) {
+            total_rainfall += flash_buffer[i].rainfall_mm_x100 / 100.0f;
+        }
+    }
+#else
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
     
     for (int i = 0; i < rain_history_state.hourly_count; i++) {
@@ -425,6 +612,7 @@ float rain_history_get_recent_total(uint32_t hours_back)
     }
     
     k_mutex_unlock(&rain_history_state.mutex);
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
     
     return total_rainfall;
 }
@@ -447,6 +635,23 @@ float rain_history_get_today(void)
     
     float total_rainfall = 0.0f;
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Read from external flash */
+    history_rain_hourly_t flash_buffer[RAIN_HOURLY_ENTRIES];
+    uint16_t flash_count = 0;
+    
+    int ret = history_flash_read_rain_hourly(0, flash_buffer, RAIN_HOURLY_ENTRIES, &flash_count);
+    if (ret < 0) {
+        LOG_ERR("Failed to read rain hourly from flash: %d", ret);
+        return 0.0f;
+    }
+    
+    for (int i = 0; i < flash_count; i++) {
+        if (flash_buffer[i].hour_epoch >= today_start) {
+            total_rainfall += flash_buffer[i].rainfall_mm_x100 / 100.0f;
+        }
+    }
+#else
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
     
     for (int i = 0; i < rain_history_state.hourly_count; i++) {
@@ -458,6 +663,7 @@ float rain_history_get_today(void)
     }
     
     k_mutex_unlock(&rain_history_state.mutex);
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
     
     return total_rainfall;
 }
@@ -467,16 +673,33 @@ float rain_history_get_current_hour(void)
     uint32_t current_time = k_uptime_get_32() / 1000;
     uint32_t current_hour = get_hour_epoch(current_time);
     
+    float rainfall = 0.0f;
+    
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Read from external flash */
+    history_rain_hourly_t flash_buffer[24]; /* Just recent entries */
+    uint16_t flash_count = 0;
+    
+    int ret = history_flash_read_rain_hourly(0, flash_buffer, 24, &flash_count);
+    if (ret >= 0) {
+        for (int i = 0; i < flash_count; i++) {
+            if (flash_buffer[i].hour_epoch == current_hour) {
+                rainfall = flash_buffer[i].rainfall_mm_x100 / 100.0f;
+                break;
+            }
+        }
+    }
+#else
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
     
     int index = find_hourly_index(current_hour);
-    float rainfall = 0.0f;
     
     if (index >= 0) {
         rainfall = rain_history_state.hourly_data[index].rainfall_mm_x100 / 100.0f;
     }
     
     k_mutex_unlock(&rain_history_state.mutex);
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
     
     return rainfall;
 }
@@ -487,6 +710,11 @@ watering_error_t rain_history_save_to_nvs(void)
         return WATERING_ERROR_NOT_INITIALIZED;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Flash storage handles persistence automatically */
+    LOG_DBG("Rain history using external flash - NVS save not needed");
+    return WATERING_SUCCESS;
+#else
     watering_error_t result = WATERING_SUCCESS;
     
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
@@ -522,6 +750,7 @@ watering_error_t rain_history_save_to_nvs(void)
     k_mutex_unlock(&rain_history_state.mutex);
     
     return result;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 watering_error_t rain_history_load_from_nvs(void)
@@ -530,6 +759,11 @@ watering_error_t rain_history_load_from_nvs(void)
         return WATERING_ERROR_NOT_INITIALIZED;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Flash storage handles persistence automatically */
+    LOG_DBG("Rain history using external flash - NVS load not needed");
+    return WATERING_SUCCESS;
+#else
     watering_error_t result = WATERING_SUCCESS;
     
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
@@ -572,6 +806,7 @@ watering_error_t rain_history_load_from_nvs(void)
     k_mutex_unlock(&rain_history_state.mutex);
     
     return result;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 watering_error_t rain_history_get_stats(rain_history_stats_t *stats)
@@ -580,6 +815,25 @@ watering_error_t rain_history_get_stats(rain_history_stats_t *stats)
         return WATERING_ERROR_INVALID_PARAM;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Get stats from flash */
+    history_flash_stats_t flash_stats;
+    int ret = history_flash_get_stats(&flash_stats);
+    if (ret < 0) {
+        LOG_ERR("Failed to get rain history stats from flash: %d", ret);
+        return WATERING_ERROR_STORAGE;
+    }
+    
+    stats->hourly_entries = flash_stats.rain_hourly.entry_count;
+    stats->daily_entries = flash_stats.rain_daily.entry_count;
+    stats->oldest_hourly = flash_stats.rain_hourly.oldest_timestamp;
+    stats->newest_hourly = flash_stats.rain_hourly.newest_timestamp;
+    stats->oldest_daily = flash_stats.rain_daily.oldest_timestamp;
+    stats->newest_daily = flash_stats.rain_daily.newest_timestamp;
+    stats->total_storage_bytes = flash_stats.rain_hourly.file_size_bytes + flash_stats.rain_daily.file_size_bytes;
+    
+    return WATERING_SUCCESS;
+#else
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
     
     stats->hourly_entries = rain_history_state.hourly_count;
@@ -609,6 +863,7 @@ watering_error_t rain_history_get_stats(rain_history_stats_t *stats)
     k_mutex_unlock(&rain_history_state.mutex);
     
     return WATERING_SUCCESS;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 watering_error_t rain_history_maintenance(void)
@@ -635,12 +890,39 @@ void rain_history_debug_info(void)
     printk("Today's rainfall: %.2f mm\n", (double)rain_history_get_today());
     printk("Current hour: %.2f mm\n", (double)rain_history_get_current_hour());
     printk("===============================\n");
-}watering_error_t rain_history_clear_all(void)
+}
+
+watering_error_t rain_history_clear_all(void)
 {
     if (!rain_history_state.initialized) {
         return WATERING_ERROR_NOT_INITIALIZED;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Clear flash storage */
+    int ret = history_flash_clear(HISTORY_TYPE_RAIN_HOURLY);
+    if (ret < 0) {
+        LOG_ERR("Failed to clear rain hourly flash: %d", ret);
+        return WATERING_ERROR_STORAGE;
+    }
+    
+    ret = history_flash_clear(HISTORY_TYPE_RAIN_DAILY);
+    if (ret < 0) {
+        LOG_ERR("Failed to clear rain daily flash: %d", ret);
+        return WATERING_ERROR_STORAGE;
+    }
+    
+    /* Reset counters */
+    k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
+    rain_history_state.hourly_count = 0;
+    rain_history_state.daily_count = 0;
+    rain_history_state.hourly_write_index = 0;
+    rain_history_state.daily_write_index = 0;
+    k_mutex_unlock(&rain_history_state.mutex);
+    
+    LOG_INF("All rain history data cleared from flash");
+    return WATERING_SUCCESS;
+#else
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
     
     /* Clear in-memory data */
@@ -663,6 +945,7 @@ void rain_history_debug_info(void)
     
     LOG_INF("All rain history data cleared");
     return WATERING_SUCCESS;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 watering_error_t rain_history_clear_hourly_older_than(uint32_t older_than_epoch)
@@ -671,6 +954,11 @@ watering_error_t rain_history_clear_hourly_older_than(uint32_t older_than_epoch)
         return WATERING_ERROR_NOT_INITIALIZED;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Flash storage handles rotation automatically, just log */
+    LOG_DBG("Rain hourly cleanup requested for epoch < %u (flash handles automatically)", older_than_epoch);
+    return WATERING_SUCCESS;
+#else
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
     
     uint16_t removed_count = 0;
@@ -700,6 +988,7 @@ watering_error_t rain_history_clear_hourly_older_than(uint32_t older_than_epoch)
     }
     
     return WATERING_SUCCESS;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 watering_error_t rain_history_clear_daily_older_than(uint32_t older_than_epoch)
@@ -708,6 +997,11 @@ watering_error_t rain_history_clear_daily_older_than(uint32_t older_than_epoch)
         return WATERING_ERROR_NOT_INITIALIZED;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Flash storage handles rotation automatically, just log */
+    LOG_DBG("Rain daily cleanup requested for epoch < %u (flash handles automatically)", older_than_epoch);
+    return WATERING_SUCCESS;
+#else
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
     
     uint16_t removed_count = 0;
@@ -737,6 +1031,7 @@ watering_error_t rain_history_clear_daily_older_than(uint32_t older_than_epoch)
     }
     
     return WATERING_SUCCESS;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 watering_error_t rain_history_get_storage_usage(uint32_t *used_bytes, uint32_t *total_bytes)
@@ -763,6 +1058,11 @@ watering_error_t rain_history_validate_data(void)
         return WATERING_ERROR_NOT_INITIALIZED;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Flash storage validates on read, just return success */
+    LOG_DBG("Rain history using external flash - validation handled by flash layer");
+    return WATERING_SUCCESS;
+#else
     k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
     
     uint16_t validation_errors = 0;
@@ -828,6 +1128,7 @@ watering_error_t rain_history_validate_data(void)
     
     LOG_DBG("Rain history validation passed");
     return WATERING_SUCCESS;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 watering_error_t rain_history_export_csv(uint32_t start_time,
@@ -846,23 +1147,73 @@ watering_error_t rain_history_export_csv(uint32_t start_time,
     
     *bytes_written = 0;
     
-    k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
-    
     /* Write CSV header */
     int written = snprintf(buffer, buffer_size,
                           "timestamp,type,rainfall_mm,pulse_count,data_quality\n");
-        if (written >= buffer_size) {
-        k_mutex_unlock(&rain_history_state.mutex);
+    if (written >= buffer_size) {
         return WATERING_ERROR_BUFFER_FULL;
     }
     
     *bytes_written = written;
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Read hourly data from flash */
+    history_rain_hourly_t hourly_buffer[RAIN_HOURLY_ENTRIES];
+    uint16_t hourly_count = 0;
+    
+    int ret = history_flash_read_rain_hourly(0, hourly_buffer, RAIN_HOURLY_ENTRIES, &hourly_count);
+    if (ret >= 0) {
+        for (int i = 0; i < hourly_count; i++) {
+            if (hourly_buffer[i].hour_epoch >= start_time && 
+                hourly_buffer[i].hour_epoch <= end_time) {
+                written = snprintf(buffer + *bytes_written, buffer_size - *bytes_written,
+                                  "%u,hourly,%.2f,%u,%u\n",
+                                  hourly_buffer[i].hour_epoch,
+                                  (double)(hourly_buffer[i].rainfall_mm_x100 / 100.0f),
+                                  hourly_buffer[i].pulse_count,
+                                  hourly_buffer[i].data_quality);
+                
+                if (*bytes_written + written >= buffer_size) {
+                    return WATERING_ERROR_BUFFER_FULL;
+                }
+                
+                *bytes_written += written;
+            }
+        }
+    }
+    
+    /* Read daily data from flash */
+    history_rain_daily_t daily_buffer[RAIN_DAILY_ENTRIES];
+    uint16_t daily_count = 0;
+    
+    ret = history_flash_read_rain_daily(0, daily_buffer, RAIN_DAILY_ENTRIES, &daily_count);
+    if (ret >= 0) {
+        for (int i = 0; i < daily_count; i++) {
+            if (daily_buffer[i].day_epoch >= start_time && 
+                daily_buffer[i].day_epoch <= end_time) {
+                written = snprintf(buffer + *bytes_written, buffer_size - *bytes_written,
+                                  "%u,daily,%.2f,%u,%u\n",
+                                  daily_buffer[i].day_epoch,
+                                  (double)(daily_buffer[i].total_rainfall_mm_x100 / 100.0f),
+                                  daily_buffer[i].active_hours,
+                                  daily_buffer[i].data_completeness);
+                
+                if (*bytes_written + written >= buffer_size) {
+                    return WATERING_ERROR_BUFFER_FULL;
+                }
+                
+                *bytes_written += written;
+            }
+        }
+    }
+#else
+    k_mutex_lock(&rain_history_state.mutex, K_FOREVER);
+    
     /* Export hourly data */
     for (int i = 0; i < rain_history_state.hourly_count; i++) {
         rain_hourly_data_t *entry = &rain_history_state.hourly_data[i];
         
-                if (entry->hour_epoch >= start_time && entry->hour_epoch <= end_time) {
+        if (entry->hour_epoch >= start_time && entry->hour_epoch <= end_time) {
             written = snprintf(buffer + *bytes_written, buffer_size - *bytes_written,
                               "%u,hourly,%.2f,%u,%u\n",
                               entry->hour_epoch,
@@ -883,7 +1234,7 @@ watering_error_t rain_history_export_csv(uint32_t start_time,
     for (int i = 0; i < rain_history_state.daily_count; i++) {
         rain_daily_data_t *entry = &rain_history_state.daily_data[i];
         
-                if (entry->day_epoch >= start_time && entry->day_epoch <= end_time) {
+        if (entry->day_epoch >= start_time && entry->day_epoch <= end_time) {
             written = snprintf(buffer + *bytes_written, buffer_size - *bytes_written,
                               "%u,daily,%.2f,%u,%u\n",
                               entry->day_epoch,
@@ -901,10 +1252,13 @@ watering_error_t rain_history_export_csv(uint32_t start_time,
     }
     
     k_mutex_unlock(&rain_history_state.mutex);
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
     
     LOG_DBG("Exported rain history CSV: %u bytes", *bytes_written);
     return WATERING_SUCCESS;
-}watering_error_t rain_history_monitor_storage(void)
+}
+
+watering_error_t rain_history_monitor_storage(void)
 {
     if (!rain_history_state.initialized) {
         return WATERING_ERROR_NOT_INITIALIZED;

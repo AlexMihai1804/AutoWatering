@@ -208,7 +208,8 @@ typedef struct {
 
 /* Multi-resolution environmental history storage */
 typedef struct {
-    // Hourly data (30 days × 24 hours = 720 entries)
+#ifndef CONFIG_HISTORY_EXTERNAL_FLASH
+    // Hourly data (30 days × 24 hours = 720 entries) - 46KB
     hourly_history_entry_t hourly[720];
     uint16_t hourly_head;             // Ring buffer head pointer
     uint16_t hourly_count;            // Number of valid entries
@@ -222,6 +223,12 @@ typedef struct {
     monthly_history_entry_t monthly[60];
     uint8_t monthly_head;             // Ring buffer head pointer
     uint8_t monthly_count;            // Number of valid entries
+#else
+    /* When using external flash, only keep counts and pointers */
+    uint16_t hourly_count;            // Number of valid entries
+    uint16_t daily_count;             // Number of valid entries
+    uint8_t monthly_count;            // Number of valid entries
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
     
     uint32_t last_hourly_update;      // Last hourly aggregation
     uint32_t last_daily_update;       // Last daily aggregation

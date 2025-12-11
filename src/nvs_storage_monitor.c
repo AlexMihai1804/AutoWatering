@@ -374,6 +374,11 @@ static watering_error_t nvs_storage_cleanup_old_data(uint8_t target_usage_percen
  */
 static watering_error_t nvs_storage_rotate_environmental_history(void)
 {
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // Environmental history is stored in external flash, no NVS rotation needed
+    LOG_DBG("Environmental history uses external flash, NVS rotation skipped");
+    return WATERING_SUCCESS;
+#else
     LOG_INF("Rotating environmental history data");
     
     // Read current environmental history
@@ -423,6 +428,7 @@ static watering_error_t nvs_storage_rotate_environmental_history(void)
     }
     
     return WATERING_SUCCESS;
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
 }
 
 /**

@@ -304,8 +304,11 @@ extern struct rain_history_state_s {
     uint16_t hourly_write_index;
     uint16_t daily_write_index;
     uint32_t last_hourly_save;
+#ifndef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* RAM buffers - only when not using external flash (~28KB) */
     rain_hourly_data_t hourly_data[RAIN_HOURLY_ENTRIES];
     rain_daily_data_t daily_data[RAIN_DAILY_ENTRIES];
+#endif /* CONFIG_HISTORY_EXTERNAL_FLASH */
     struct k_mutex mutex;
 
     /* BLE command state */

@@ -4,6 +4,9 @@
 #include "environmental_data.h"
 #include "rain_history.h"
 #include "watering_history.h"
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+#include "history_flash.h"
+#endif
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 #include <string.h>
@@ -55,6 +58,23 @@ int env_history_init(void)
     // Initialize the environmental history structure
     memset(&g_env_history, 0, sizeof(environmental_history_t));
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // Initialize flash storage for history
+    int flash_result = history_flash_init();
+    if (flash_result != 0) {
+        LOG_ERR("Failed to initialize history flash storage: %d", flash_result);
+        return flash_result;
+    }
+    
+    // Get counts from flash storage
+    history_flash_stats_t flash_stats;
+    if (history_flash_get_stats(&flash_stats) == 0) {
+        g_env_history.hourly_count = flash_stats.env_hourly.entry_count;
+        g_env_history.daily_count = flash_stats.env_daily.entry_count;
+        g_env_history.monthly_count = flash_stats.env_monthly.entry_count;
+    }
+    LOG_INF("Environmental history using external flash storage");
+#else
     // Initialize ring buffer pointers
     g_env_history.hourly_head = 0;
     g_env_history.hourly_count = 0;
@@ -63,17 +83,18 @@ int env_history_init(void)
     g_env_history.monthly_head = 0;
     g_env_history.monthly_count = 0;
     
-    // Initialize timestamps
-    g_env_history.last_hourly_update = 0;
-    g_env_history.last_daily_update = 0;
-    g_env_history.last_monthly_update = 0;
-
     // Try to load existing data from NVS
     int result = env_history_load_from_nvs();
     if (result != 0) {
         LOG_WRN("Failed to load environmental history from NVS: %d", result);
         // Continue with empty history - this is not a fatal error
     }
+#endif
+    
+    // Initialize timestamps
+    g_env_history.last_hourly_update = 0;
+    g_env_history.last_daily_update = 0;
+    g_env_history.last_monthly_update = 0;
 
     g_env_history_initialized = true;
     LOG_INF("Environmental history storage initialized");
@@ -109,6 +130,27 @@ int env_history_add_hourly_entry(const hourly_history_entry_t *entry)
         return -WATERING_ERROR_INVALID_PARAM;
     }
 
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // Convert to flash format and write to external flash
+    history_env_hourly_t flash_entry = {
+        .timestamp = entry->timestamp,
+        .temperature_x100 = (int16_t)(entry->environmental.temperature * 100),
+        .humidity_x100 = (uint16_t)(entry->environmental.humidity * 100),
+        .pressure_x100 = (uint32_t)(entry->environmental.pressure * 100),
+        .rainfall_mm_x100 = (uint16_t)(entry->rainfall_mm * 100),
+        .watering_events = entry->watering_events,
+        .total_volume_ml = entry->total_volume_ml,
+        .active_channels = entry->active_channels,
+    };
+    
+    int result = history_flash_add_env_hourly(&flash_entry);
+    if (result == 0) {
+        g_env_history.hourly_count++;
+        g_env_history.last_hourly_update = entry->timestamp;
+        LOG_DBG("Added hourly entry to flash at timestamp %u", entry->timestamp);
+    }
+    return result;
+#else
     // Add entry to hourly ring buffer
     int result = env_history_add_to_ring_buffer(
         g_env_history.hourly,
@@ -125,6 +167,7 @@ int env_history_add_hourly_entry(const hourly_history_entry_t *entry)
     }
 
     return result;
+#endif
 }
 
 const environmental_history_t* env_history_get_storage(void)
@@ -153,6 +196,22 @@ int env_history_aggregate_hourly(uint32_t current_timestamp)
     hourly_history_entry_t last_entry = {0};
     bool have_last_entry = false;
 
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* For flash storage, read last entry from flash */
+    if (g_env_history.hourly_count > 0) {
+        history_env_hourly_t flash_entry;
+        uint16_t read_count = 0;
+        if (history_flash_read_env_hourly(g_env_history.hourly_count - 1, 
+                                          &flash_entry, 1, &read_count) == 0 && read_count > 0) {
+            last_entry.timestamp = flash_entry.timestamp;
+            last_entry.environmental.temperature = flash_entry.temperature_x100 / 100.0f;
+            last_entry.environmental.humidity = flash_entry.humidity_x100 / 100.0f;
+            last_entry.environmental.pressure = flash_entry.pressure_x100 / 100.0f;
+            last_entry.environmental.valid = true;
+            have_last_entry = true;
+        }
+    }
+#else
     if (g_env_history.hourly_count > 0) {
         uint16_t last_idx = g_env_history.hourly_count - 1U;
         if (env_history_get_from_ring_buffer(
@@ -165,7 +224,10 @@ int env_history_aggregate_hourly(uint32_t current_timestamp)
                 &last_entry) == 0) {
             have_last_entry = true;
         }
-    } else if (g_env_history.last_hourly_update != 0U) {
+    }
+#endif
+    
+    if (!have_last_entry && g_env_history.last_hourly_update != 0U) {
         last_entry.timestamp = g_env_history.last_hourly_update;
         have_last_entry = true;
     }
@@ -271,6 +333,7 @@ int env_history_aggregate_hourly(uint32_t current_timestamp)
     }
 
     if (added_entries) {
+#ifndef CONFIG_HISTORY_EXTERNAL_FLASH
         int persist_result = env_history_save_to_nvs();
         if (persist_result != 0) {
             LOG_WRN("Failed to persist environmental history to NVS: %d", persist_result);
@@ -278,6 +341,10 @@ int env_history_aggregate_hourly(uint32_t current_timestamp)
             LOG_DBG("Hourly aggregation processed up to hour index %u (timestamp %u)",
                     target_hour_index, target_hour_index * ENV_HISTORY_HOURLY_INTERVAL_SEC);
         }
+#else
+        /* Flash storage auto-persists, just log */
+        LOG_DBG("Hourly aggregation to flash processed up to hour index %u", target_hour_index);
+#endif
     }
     return 0;
 }
@@ -369,6 +436,27 @@ int env_history_aggregate_daily(uint32_t current_timestamp)
     daily_entry.humidity.avg = humidity_sum / hourly_count;
     daily_entry.pressure.avg = pressure_sum / hourly_count;
 
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // Convert to flash format and write
+    history_env_daily_t flash_entry;
+    flash_entry.date = daily_entry.date;
+    flash_entry.temp_min_x100 = (int16_t)(daily_entry.temperature.min * 100);
+    flash_entry.temp_max_x100 = (int16_t)(daily_entry.temperature.max * 100);
+    flash_entry.temp_avg_x100 = (int16_t)(daily_entry.temperature.avg * 100);
+    flash_entry.humid_min_x100 = (uint16_t)(daily_entry.humidity.min * 100);
+    flash_entry.humid_max_x100 = (uint16_t)(daily_entry.humidity.max * 100);
+    flash_entry.humid_avg_x100 = (uint16_t)(daily_entry.humidity.avg * 100);
+    flash_entry.press_min_x10 = (uint16_t)(daily_entry.pressure.min * 10);
+    flash_entry.press_max_x10 = (uint16_t)(daily_entry.pressure.max * 10);
+    flash_entry.press_avg_x10 = (uint16_t)(daily_entry.pressure.avg * 10);
+    flash_entry.total_rainfall_mm_x100 = (uint32_t)(daily_entry.total_rainfall_mm * 100);
+    flash_entry.watering_events = daily_entry.watering_events;
+    flash_entry.total_volume_ml = daily_entry.total_volume_ml;
+    flash_entry.sample_count = daily_entry.sample_count;
+    flash_entry.active_channels = daily_entry.active_channels_bitmap;
+    
+    result = history_flash_add_env_daily(&flash_entry);
+#else
     // Add daily entry to ring buffer
     result = env_history_add_to_ring_buffer(
         g_env_history.daily,
@@ -378,6 +466,7 @@ int env_history_aggregate_daily(uint32_t current_timestamp)
         &g_env_history.daily_count,
         &daily_entry
     );
+#endif
 
     if (result == 0) {
         g_env_history.last_daily_update = current_timestamp;
@@ -473,6 +562,26 @@ int env_history_aggregate_monthly(uint32_t current_timestamp)
     monthly_entry.humidity.avg = humidity_sum / daily_count;
     monthly_entry.pressure.avg = pressure_sum / daily_count;
 
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // Convert to flash format and write
+    history_env_monthly_t flash_entry;
+    flash_entry.year_month = monthly_entry.year_month;
+    flash_entry.temp_min_x100 = (int16_t)(monthly_entry.temperature.min * 100);
+    flash_entry.temp_max_x100 = (int16_t)(monthly_entry.temperature.max * 100);
+    flash_entry.temp_avg_x100 = (int16_t)(monthly_entry.temperature.avg * 100);
+    flash_entry.humid_min_x100 = (uint16_t)(monthly_entry.humidity.min * 100);
+    flash_entry.humid_max_x100 = (uint16_t)(monthly_entry.humidity.max * 100);
+    flash_entry.humid_avg_x100 = (uint16_t)(monthly_entry.humidity.avg * 100);
+    flash_entry.press_min_x10 = (uint16_t)(monthly_entry.pressure.min * 10);
+    flash_entry.press_max_x10 = (uint16_t)(monthly_entry.pressure.max * 10);
+    flash_entry.press_avg_x10 = (uint16_t)(monthly_entry.pressure.avg * 10);
+    flash_entry.total_rainfall_mm_x100 = (uint32_t)(monthly_entry.total_rainfall_mm * 100);
+    flash_entry.watering_events = monthly_entry.watering_events;
+    flash_entry.total_volume_ml = monthly_entry.total_volume_ml;
+    flash_entry.days_active = monthly_entry.days_active;
+    
+    result = history_flash_add_env_monthly(&flash_entry);
+#else
     // Add monthly entry to ring buffer
     uint16_t monthly_head_16 = g_env_history.monthly_head;
     uint16_t monthly_count_16 = g_env_history.monthly_count;
@@ -489,6 +598,7 @@ int env_history_aggregate_monthly(uint32_t current_timestamp)
     // Update the actual values
     g_env_history.monthly_head = (uint8_t)monthly_head_16;
     g_env_history.monthly_count = (uint8_t)monthly_count_16;
+#endif
 
     if (result == 0) {
         g_env_history.last_monthly_update = current_timestamp;
@@ -586,7 +696,41 @@ int env_history_get_hourly_range(uint32_t start_timestamp,
     }
     
     *actual_count = 0;
+
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Read from flash and filter by timestamp */
+    history_env_hourly_t flash_entries[24]; /* Read in chunks */
+    uint16_t total_count = g_env_history.hourly_count;
+    uint16_t offset = 0;
     
+    while (offset < total_count && *actual_count < max_entries) {
+        uint16_t chunk_size = MIN(24, total_count - offset);
+        uint16_t read_count = 0;
+        
+        int rc = history_flash_read_env_hourly(offset, flash_entries, chunk_size, &read_count);
+        if (rc != 0 || read_count == 0) {
+            break;
+        }
+        
+        for (uint16_t i = 0; i < read_count && *actual_count < max_entries; i++) {
+            if (flash_entries[i].timestamp >= start_timestamp && 
+                flash_entries[i].timestamp <= end_timestamp) {
+                /* Convert flash format to runtime format */
+                entries[*actual_count].timestamp = flash_entries[i].timestamp;
+                entries[*actual_count].environmental.temperature = flash_entries[i].temperature_x100 / 100.0f;
+                entries[*actual_count].environmental.humidity = flash_entries[i].humidity_x100 / 100.0f;
+                entries[*actual_count].environmental.pressure = flash_entries[i].pressure_x100 / 100.0f;
+                entries[*actual_count].environmental.valid = true;
+                entries[*actual_count].rainfall_mm = flash_entries[i].rainfall_mm_x100 / 100.0f;
+                entries[*actual_count].watering_events = flash_entries[i].watering_events;
+                entries[*actual_count].total_volume_ml = flash_entries[i].total_volume_ml;
+                entries[*actual_count].active_channels = flash_entries[i].active_channels;
+                (*actual_count)++;
+            }
+        }
+        offset += read_count;
+    }
+#else
     // Search through hourly ring buffer
     for (uint16_t i = 0; i < g_env_history.hourly_count && *actual_count < max_entries; i++) {
         hourly_history_entry_t entry;
@@ -605,6 +749,7 @@ int env_history_get_hourly_range(uint32_t start_timestamp,
             (*actual_count)++;
         }
     }
+#endif
     
     return 0;
 }
@@ -624,7 +769,47 @@ int env_history_get_daily_range(uint32_t start_timestamp,
     }
     
     *actual_count = 0;
+
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Read from flash and filter by timestamp */
+    history_env_daily_t flash_entries[16]; /* Read in chunks */
+    uint16_t total_count = g_env_history.daily_count;
+    uint16_t offset = 0;
     
+    while (offset < total_count && *actual_count < max_entries) {
+        uint16_t chunk_size = MIN(16, total_count - offset);
+        uint16_t read_count = 0;
+        
+        int rc = history_flash_read_env_daily(offset, flash_entries, chunk_size, &read_count);
+        if (rc != 0 || read_count == 0) {
+            break;
+        }
+        
+        for (uint16_t i = 0; i < read_count && *actual_count < max_entries; i++) {
+            if (flash_entries[i].date >= start_timestamp && 
+                flash_entries[i].date <= end_timestamp) {
+                /* Convert flash format to runtime format */
+                entries[*actual_count].date = flash_entries[i].date;
+                entries[*actual_count].temperature.min = flash_entries[i].temp_min_x100 / 100.0f;
+                entries[*actual_count].temperature.max = flash_entries[i].temp_max_x100 / 100.0f;
+                entries[*actual_count].temperature.avg = flash_entries[i].temp_avg_x100 / 100.0f;
+                entries[*actual_count].humidity.min = flash_entries[i].humid_min_x100 / 100.0f;
+                entries[*actual_count].humidity.max = flash_entries[i].humid_max_x100 / 100.0f;
+                entries[*actual_count].humidity.avg = flash_entries[i].humid_avg_x100 / 100.0f;
+                entries[*actual_count].pressure.min = flash_entries[i].press_min_x10 / 10.0f;
+                entries[*actual_count].pressure.max = flash_entries[i].press_max_x10 / 10.0f;
+                entries[*actual_count].pressure.avg = flash_entries[i].press_avg_x10 / 10.0f;
+                entries[*actual_count].total_rainfall_mm = flash_entries[i].total_rainfall_mm_x100 / 100.0f;
+                entries[*actual_count].watering_events = flash_entries[i].watering_events;
+                entries[*actual_count].total_volume_ml = flash_entries[i].total_volume_ml;
+                entries[*actual_count].sample_count = flash_entries[i].sample_count;
+                entries[*actual_count].active_channels_bitmap = flash_entries[i].active_channels;
+                (*actual_count)++;
+            }
+        }
+        offset += read_count;
+    }
+#else
     // Search through daily ring buffer
     for (uint16_t i = 0; i < g_env_history.daily_count && *actual_count < max_entries; i++) {
         daily_history_entry_t entry;
@@ -643,6 +828,7 @@ int env_history_get_daily_range(uint32_t start_timestamp,
             (*actual_count)++;
         }
     }
+#endif
     
     return 0;
 }
@@ -662,7 +848,45 @@ int env_history_get_monthly_range(uint32_t start_timestamp,
     }
     
     *actual_count = 0;
+
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    /* Read from flash and filter */
+    history_env_monthly_t flash_entries[12];
+    uint16_t total_count = g_env_history.monthly_count;
+    uint16_t offset = 0;
     
+    while (offset < total_count && *actual_count < max_entries) {
+        uint16_t chunk_size = MIN(12, total_count - offset);
+        uint16_t read_count = 0;
+        
+        int rc = history_flash_read_env_monthly(offset, flash_entries, chunk_size, &read_count);
+        if (rc != 0 || read_count == 0) {
+            break;
+        }
+        
+        for (uint16_t i = 0; i < read_count && *actual_count < max_entries; i++) {
+            if (flash_entries[i].year_month >= start_timestamp && 
+                flash_entries[i].year_month <= end_timestamp) {
+                entries[*actual_count].year_month = flash_entries[i].year_month;
+                entries[*actual_count].temperature.min = flash_entries[i].temp_min_x100 / 100.0f;
+                entries[*actual_count].temperature.max = flash_entries[i].temp_max_x100 / 100.0f;
+                entries[*actual_count].temperature.avg = flash_entries[i].temp_avg_x100 / 100.0f;
+                entries[*actual_count].humidity.min = flash_entries[i].humid_min_x100 / 100.0f;
+                entries[*actual_count].humidity.max = flash_entries[i].humid_max_x100 / 100.0f;
+                entries[*actual_count].humidity.avg = flash_entries[i].humid_avg_x100 / 100.0f;
+                entries[*actual_count].pressure.min = flash_entries[i].press_min_x10 / 10.0f;
+                entries[*actual_count].pressure.max = flash_entries[i].press_max_x10 / 10.0f;
+                entries[*actual_count].pressure.avg = flash_entries[i].press_avg_x10 / 10.0f;
+                entries[*actual_count].total_rainfall_mm = flash_entries[i].total_rainfall_mm_x100 / 100.0f;
+                entries[*actual_count].watering_events = flash_entries[i].watering_events;
+                entries[*actual_count].total_volume_ml = flash_entries[i].total_volume_ml;
+                entries[*actual_count].days_active = flash_entries[i].days_active;
+                (*actual_count)++;
+            }
+        }
+        offset += read_count;
+    }
+#else
     // Search through monthly ring buffer
     for (uint8_t i = 0; i < g_env_history.monthly_count && *actual_count < max_entries; i++) {
         monthly_history_entry_t entry;
@@ -681,6 +905,7 @@ int env_history_get_monthly_range(uint32_t start_timestamp,
             (*actual_count)++;
         }
     }
+#endif
     
     return 0;
 }
@@ -697,26 +922,35 @@ int env_history_get_stats(env_history_stats_t *stats)
     
     memset(stats, 0, sizeof(env_history_stats_t));
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    history_flash_stats_t flash_stats;
+    if (history_flash_get_stats(&flash_stats) == 0) {
+        stats->hourly_entries_used = flash_stats.env_hourly.entry_count;
+        stats->daily_entries_used = flash_stats.env_daily.entry_count;
+        stats->monthly_entries_used = flash_stats.env_monthly.entry_count;
+    }
+#else
     stats->hourly_entries_used = g_env_history.hourly_count;
     stats->daily_entries_used = g_env_history.daily_count;
     stats->monthly_entries_used = g_env_history.monthly_count;
+#endif
     
     // Calculate oldest timestamps
-    if (g_env_history.hourly_count > 0) {
+    if (stats->hourly_entries_used > 0) {
         hourly_history_entry_t oldest_hourly;
         if (env_history_get_oldest_entry(ENV_HISTORY_TYPE_HOURLY, &oldest_hourly) == 0) {
             stats->oldest_hourly_timestamp = oldest_hourly.timestamp;
         }
     }
     
-    if (g_env_history.daily_count > 0) {
+    if (stats->daily_entries_used > 0) {
         daily_history_entry_t oldest_daily;
         if (env_history_get_oldest_entry(ENV_HISTORY_TYPE_DAILY, &oldest_daily) == 0) {
             stats->oldest_daily_timestamp = oldest_daily.date;
         }
     }
     
-    if (g_env_history.monthly_count > 0) {
+    if (stats->monthly_entries_used > 0) {
         monthly_history_entry_t oldest_monthly;
         if (env_history_get_oldest_entry(ENV_HISTORY_TYPE_MONTHLY, &oldest_monthly) == 0) {
             stats->oldest_monthly_timestamp = oldest_monthly.year_month;
@@ -724,7 +958,13 @@ int env_history_get_stats(env_history_stats_t *stats)
     }
     
     // Calculate total storage bytes
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    stats->total_storage_bytes = (stats->hourly_entries_used * HISTORY_ENV_HOURLY_SIZE) +
+                                 (stats->daily_entries_used * HISTORY_ENV_DAILY_SIZE) +
+                                 (stats->monthly_entries_used * HISTORY_ENV_MONTHLY_SIZE);
+#else
     stats->total_storage_bytes = sizeof(environmental_history_t);
+#endif
     
     // Calculate utilization percentage
     stats->storage_utilization_pct = env_history_calculate_utilization();
@@ -778,6 +1018,11 @@ int env_history_cleanup_old_entries(void)
     
     LOG_INF("Starting environmental history cleanup, utilization: %d%%", utilization);
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // External flash uses ring buffers that auto-overwrite oldest entries
+    // No explicit cleanup needed - LittleFS manages file size automatically
+    LOG_DBG("External flash uses auto-rotating ring buffers");
+#else
     // Calculate how many entries to remove to reach target utilization
     uint16_t hourly_to_remove = (g_env_history.hourly_count * 
                                 (utilization - ENV_HISTORY_CLEANUP_TARGET)) / 100;
@@ -801,6 +1046,7 @@ int env_history_cleanup_old_entries(void)
         g_env_history.monthly_count -= monthly_to_remove;
         LOG_DBG("Removed %d monthly entries", monthly_to_remove);
     }
+#endif
     
     LOG_INF("Environmental history cleanup completed");
     return 0;
@@ -812,6 +1058,16 @@ int env_history_reset_all(void)
         return -WATERING_ERROR_NOT_INITIALIZED;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // Reset external flash history
+    int ret = history_flash_clear(HISTORY_TYPE_ENV_HOURLY);
+    if (ret == 0) ret = history_flash_clear(HISTORY_TYPE_ENV_DAILY);
+    if (ret == 0) ret = history_flash_clear(HISTORY_TYPE_ENV_MONTHLY);
+    if (ret != 0) {
+        LOG_ERR("Failed to reset external flash history: %d", ret);
+        return ret;
+    }
+#else
     // Clear all data
     memset(&g_env_history, 0, sizeof(environmental_history_t));
     
@@ -822,6 +1078,7 @@ int env_history_reset_all(void)
     g_env_history.daily_count = 0;
     g_env_history.monthly_head = 0;
     g_env_history.monthly_count = 0;
+#endif
     
     // Reset timestamps
     g_env_history.last_hourly_update = 0;
@@ -838,6 +1095,11 @@ int env_history_save_to_nvs(void)
         return -WATERING_ERROR_NOT_INITIALIZED;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // Data is automatically persisted in external flash, no NVS needed
+    LOG_DBG("Environmental history uses external flash, NVS save skipped");
+    return 0;
+#else
     // Save hourly data
     int result = nvs_config_write_blob(NVS_KEY_ENV_HISTORY_HOURLY, 
                                       g_env_history.hourly, 
@@ -891,6 +1153,7 @@ int env_history_save_to_nvs(void)
     
     LOG_DBG("Environmental history saved to NVS");
     return 0;
+#endif
 }
 
 int env_history_load_from_nvs(void)
@@ -899,6 +1162,11 @@ int env_history_load_from_nvs(void)
         return -WATERING_ERROR_NOT_INITIALIZED;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // Data is stored in external flash, no NVS load needed
+    LOG_DBG("Environmental history uses external flash, NVS load skipped");
+    return 0;
+#else
     // Load metadata first
     struct {
         uint16_t hourly_head, hourly_count;
@@ -956,6 +1224,7 @@ int env_history_load_from_nvs(void)
             g_env_history.hourly_count, g_env_history.daily_count, g_env_history.monthly_count);
     
     return 0;
+#endif
 }
 
 uint8_t env_history_calculate_utilization(void)
@@ -964,11 +1233,21 @@ uint8_t env_history_calculate_utilization(void)
         return 0;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    history_flash_stats_t stats;
+    if (history_flash_get_stats(&stats) != 0) {
+        return 0;
+    }
+    uint32_t total_used = stats.env_hourly.entry_count + stats.env_daily.entry_count + stats.env_monthly.entry_count;
+    uint32_t total_capacity = ENV_HISTORY_HOURLY_ENTRIES + ENV_HISTORY_DAILY_ENTRIES + ENV_HISTORY_MONTHLY_ENTRIES;
+    return (uint8_t)((total_used * 100) / total_capacity);
+#else
     // Calculate utilization based on entry counts
     uint32_t total_used = g_env_history.hourly_count + g_env_history.daily_count + g_env_history.monthly_count;
     uint32_t total_capacity = ENV_HISTORY_HOURLY_ENTRIES + ENV_HISTORY_DAILY_ENTRIES + ENV_HISTORY_MONTHLY_ENTRIES;
     
     return (uint8_t)((total_used * 100) / total_capacity);
+#endif
 }
 
 int env_history_check_aggregation_needed(uint32_t current_timestamp,
@@ -1009,6 +1288,80 @@ int env_history_get_latest_entry(env_history_data_type_t data_type, void *entry)
         return -WATERING_ERROR_INVALID_PARAM;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    uint16_t count = 1;
+    int ret;
+    
+    switch (data_type) {
+        case ENV_HISTORY_TYPE_HOURLY: {
+            history_env_hourly_t flash_entry;
+            ret = history_flash_get_latest(HISTORY_TYPE_ENV_HOURLY, &flash_entry, &count);
+            if (ret == 0 && count > 0) {
+                hourly_history_entry_t *out = (hourly_history_entry_t *)entry;
+                out->timestamp = flash_entry.timestamp;
+                out->environmental.temperature = flash_entry.temperature_x100 / 100.0f;
+                out->environmental.humidity = flash_entry.humidity_x100 / 100.0f;
+                out->environmental.pressure = flash_entry.pressure_x100 / 100.0f;
+                out->environmental.valid = true;
+                out->rainfall_mm = flash_entry.rainfall_mm_x100 / 100.0f;
+                out->watering_events = flash_entry.watering_events;
+                out->total_volume_ml = flash_entry.total_volume_ml;
+                out->active_channels = flash_entry.active_channels;
+                return 0;
+            }
+            return (count == 0) ? -WATERING_ERROR_NO_MEMORY : ret;
+        }
+        case ENV_HISTORY_TYPE_DAILY: {
+            history_env_daily_t flash_entry;
+            ret = history_flash_get_latest(HISTORY_TYPE_ENV_DAILY, &flash_entry, &count);
+            if (ret == 0 && count > 0) {
+                daily_history_entry_t *out = (daily_history_entry_t *)entry;
+                out->date = flash_entry.date;
+                out->temperature.min = flash_entry.temp_min_x100 / 100.0f;
+                out->temperature.max = flash_entry.temp_max_x100 / 100.0f;
+                out->temperature.avg = flash_entry.temp_avg_x100 / 100.0f;
+                out->humidity.min = flash_entry.humid_min_x100 / 100.0f;
+                out->humidity.max = flash_entry.humid_max_x100 / 100.0f;
+                out->humidity.avg = flash_entry.humid_avg_x100 / 100.0f;
+                out->pressure.min = flash_entry.press_min_x10 / 10.0f;
+                out->pressure.max = flash_entry.press_max_x10 / 10.0f;
+                out->pressure.avg = flash_entry.press_avg_x10 / 10.0f;
+                out->total_rainfall_mm = flash_entry.total_rainfall_mm_x100 / 100.0f;
+                out->watering_events = flash_entry.watering_events;
+                out->total_volume_ml = flash_entry.total_volume_ml;
+                out->sample_count = flash_entry.sample_count;
+                out->active_channels_bitmap = flash_entry.active_channels;
+                return 0;
+            }
+            return (count == 0) ? -WATERING_ERROR_NO_MEMORY : ret;
+        }
+        case ENV_HISTORY_TYPE_MONTHLY: {
+            history_env_monthly_t flash_entry;
+            ret = history_flash_get_latest(HISTORY_TYPE_ENV_MONTHLY, &flash_entry, &count);
+            if (ret == 0 && count > 0) {
+                monthly_history_entry_t *out = (monthly_history_entry_t *)entry;
+                out->year_month = flash_entry.year_month;
+                out->temperature.min = flash_entry.temp_min_x100 / 100.0f;
+                out->temperature.max = flash_entry.temp_max_x100 / 100.0f;
+                out->temperature.avg = flash_entry.temp_avg_x100 / 100.0f;
+                out->humidity.min = flash_entry.humid_min_x100 / 100.0f;
+                out->humidity.max = flash_entry.humid_max_x100 / 100.0f;
+                out->humidity.avg = flash_entry.humid_avg_x100 / 100.0f;
+                out->pressure.min = flash_entry.press_min_x10 / 10.0f;
+                out->pressure.max = flash_entry.press_max_x10 / 10.0f;
+                out->pressure.avg = flash_entry.press_avg_x10 / 10.0f;
+                out->total_rainfall_mm = flash_entry.total_rainfall_mm_x100 / 100.0f;
+                out->watering_events = flash_entry.watering_events;
+                out->total_volume_ml = flash_entry.total_volume_ml;
+                out->days_active = flash_entry.days_active;
+                return 0;
+            }
+            return (count == 0) ? -WATERING_ERROR_NO_MEMORY : ret;
+        }
+        default:
+            return -WATERING_ERROR_INVALID_PARAM;
+    }
+#else
     switch (data_type) {
         case ENV_HISTORY_TYPE_HOURLY:
             if (g_env_history.hourly_count == 0) {
@@ -1055,6 +1408,7 @@ int env_history_get_latest_entry(env_history_data_type_t data_type, void *entry)
         default:
             return -WATERING_ERROR_INVALID_PARAM;
     }
+#endif
 }
 
 int env_history_get_oldest_entry(env_history_data_type_t data_type, void *entry)
@@ -1067,6 +1421,80 @@ int env_history_get_oldest_entry(env_history_data_type_t data_type, void *entry)
         return -WATERING_ERROR_INVALID_PARAM;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    uint16_t count = 0;
+    int ret;
+    
+    switch (data_type) {
+        case ENV_HISTORY_TYPE_HOURLY: {
+            history_env_hourly_t flash_entry;
+            ret = history_flash_read_env_hourly(0, &flash_entry, 1, &count);
+            if (ret == 0 && count > 0) {
+                hourly_history_entry_t *out = (hourly_history_entry_t *)entry;
+                out->timestamp = flash_entry.timestamp;
+                out->environmental.temperature = flash_entry.temperature_x100 / 100.0f;
+                out->environmental.humidity = flash_entry.humidity_x100 / 100.0f;
+                out->environmental.pressure = flash_entry.pressure_x100 / 100.0f;
+                out->environmental.valid = true;
+                out->rainfall_mm = flash_entry.rainfall_mm_x100 / 100.0f;
+                out->watering_events = flash_entry.watering_events;
+                out->total_volume_ml = flash_entry.total_volume_ml;
+                out->active_channels = flash_entry.active_channels;
+                return 0;
+            }
+            return (count == 0) ? -WATERING_ERROR_NO_MEMORY : ret;
+        }
+        case ENV_HISTORY_TYPE_DAILY: {
+            history_env_daily_t flash_entry;
+            ret = history_flash_read_env_daily(0, &flash_entry, 1, &count);
+            if (ret == 0 && count > 0) {
+                daily_history_entry_t *out = (daily_history_entry_t *)entry;
+                out->date = flash_entry.date;
+                out->temperature.min = flash_entry.temp_min_x100 / 100.0f;
+                out->temperature.max = flash_entry.temp_max_x100 / 100.0f;
+                out->temperature.avg = flash_entry.temp_avg_x100 / 100.0f;
+                out->humidity.min = flash_entry.humid_min_x100 / 100.0f;
+                out->humidity.max = flash_entry.humid_max_x100 / 100.0f;
+                out->humidity.avg = flash_entry.humid_avg_x100 / 100.0f;
+                out->pressure.min = flash_entry.press_min_x10 / 10.0f;
+                out->pressure.max = flash_entry.press_max_x10 / 10.0f;
+                out->pressure.avg = flash_entry.press_avg_x10 / 10.0f;
+                out->total_rainfall_mm = flash_entry.total_rainfall_mm_x100 / 100.0f;
+                out->watering_events = flash_entry.watering_events;
+                out->total_volume_ml = flash_entry.total_volume_ml;
+                out->sample_count = flash_entry.sample_count;
+                out->active_channels_bitmap = flash_entry.active_channels;
+                return 0;
+            }
+            return (count == 0) ? -WATERING_ERROR_NO_MEMORY : ret;
+        }
+        case ENV_HISTORY_TYPE_MONTHLY: {
+            history_env_monthly_t flash_entry;
+            ret = history_flash_read_env_monthly(0, &flash_entry, 1, &count);
+            if (ret == 0 && count > 0) {
+                monthly_history_entry_t *out = (monthly_history_entry_t *)entry;
+                out->year_month = flash_entry.year_month;
+                out->temperature.min = flash_entry.temp_min_x100 / 100.0f;
+                out->temperature.max = flash_entry.temp_max_x100 / 100.0f;
+                out->temperature.avg = flash_entry.temp_avg_x100 / 100.0f;
+                out->humidity.min = flash_entry.humid_min_x100 / 100.0f;
+                out->humidity.max = flash_entry.humid_max_x100 / 100.0f;
+                out->humidity.avg = flash_entry.humid_avg_x100 / 100.0f;
+                out->pressure.min = flash_entry.press_min_x10 / 10.0f;
+                out->pressure.max = flash_entry.press_max_x10 / 10.0f;
+                out->pressure.avg = flash_entry.press_avg_x10 / 10.0f;
+                out->total_rainfall_mm = flash_entry.total_rainfall_mm_x100 / 100.0f;
+                out->watering_events = flash_entry.watering_events;
+                out->total_volume_ml = flash_entry.total_volume_ml;
+                out->days_active = flash_entry.days_active;
+                return 0;
+            }
+            return (count == 0) ? -WATERING_ERROR_NO_MEMORY : ret;
+        }
+        default:
+            return -WATERING_ERROR_INVALID_PARAM;
+    }
+#else
     switch (data_type) {
         case ENV_HISTORY_TYPE_HOURLY:
             if (g_env_history.hourly_count == 0) {
@@ -1113,6 +1541,7 @@ int env_history_get_oldest_entry(env_history_data_type_t data_type, void *entry)
         default:
             return -WATERING_ERROR_INVALID_PARAM;
     }
+#endif
 }
 
 int env_history_validate_integrity(bool repair_if_needed)
@@ -1123,6 +1552,16 @@ int env_history_validate_integrity(bool repair_if_needed)
     
     bool corruption_detected = false;
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // External flash validation is handled by LittleFS checksums
+    // Just verify we can read stats
+    history_flash_stats_t stats;
+    if (history_flash_get_stats(&stats) != 0) {
+        LOG_ERR("External flash history access error");
+        corruption_detected = true;
+    }
+    (void)repair_if_needed; // LittleFS handles repairs internally
+#else
     // Validate ring buffer pointers
     if (g_env_history.hourly_head >= ENV_HISTORY_HOURLY_ENTRIES ||
         g_env_history.hourly_count > ENV_HISTORY_HOURLY_ENTRIES) {
@@ -1166,6 +1605,7 @@ int env_history_validate_integrity(bool repair_if_needed)
         LOG_WRN("Timestamp inconsistency detected in environmental history");
         // This is not necessarily corruption, just a warning
     }
+#endif
     
     return corruption_detected ? -WATERING_ERROR_ENV_DATA_CORRUPT : 0;
 }
@@ -1176,6 +1616,11 @@ int env_history_get_head_position(env_history_data_type_t data_type)
         return -1;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // External flash uses file-based ring buffers, head position is managed internally
+    (void)data_type;
+    return 0; // Always 0 for external flash
+#else
     switch (data_type) {
         case ENV_HISTORY_TYPE_HOURLY:
             return g_env_history.hourly_head;
@@ -1186,6 +1631,7 @@ int env_history_get_head_position(env_history_data_type_t data_type)
         default:
             return -1;
     }
+#endif
 }
 
 int env_history_get_entry_count(env_history_data_type_t data_type)
@@ -1194,6 +1640,22 @@ int env_history_get_entry_count(env_history_data_type_t data_type)
         return -1;
     }
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    history_flash_stats_t stats;
+    if (history_flash_get_stats(&stats) != 0) {
+        return -1;
+    }
+    switch (data_type) {
+        case ENV_HISTORY_TYPE_HOURLY:
+            return stats.env_hourly.entry_count;
+        case ENV_HISTORY_TYPE_DAILY:
+            return stats.env_daily.entry_count;
+        case ENV_HISTORY_TYPE_MONTHLY:
+            return stats.env_monthly.entry_count;
+        default:
+            return -1;
+    }
+#else
     switch (data_type) {
         case ENV_HISTORY_TYPE_HOURLY:
             return g_env_history.hourly_count;
@@ -1204,6 +1666,7 @@ int env_history_get_entry_count(env_history_data_type_t data_type)
         default:
             return -1;
     }
+#endif
 }
 
 /* Internal helper function implementations */
@@ -1285,6 +1748,10 @@ static int env_history_find_hourly_entries_for_day(uint32_t day_timestamp,
     uint32_t day_start = day_timestamp * ENV_HISTORY_DAILY_INTERVAL_SEC;
     uint32_t day_end = day_start + ENV_HISTORY_DAILY_INTERVAL_SEC - 1;
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // Use env_history_get_hourly_range for flash storage
+    return env_history_get_hourly_range(day_start, day_end, entries, 24, count);
+#else
     // Search through hourly entries
     for (uint16_t i = 0; i < g_env_history.hourly_count && *count < 24; i++) {
         hourly_history_entry_t entry;
@@ -1305,6 +1772,7 @@ static int env_history_find_hourly_entries_for_day(uint32_t day_timestamp,
     }
     
     return 0;
+#endif
 }
 
 static int env_history_find_daily_entries_for_month(uint32_t month_timestamp,
@@ -1319,6 +1787,10 @@ static int env_history_find_daily_entries_for_month(uint32_t month_timestamp,
     uint32_t month_start = month_timestamp * ENV_HISTORY_MONTHLY_INTERVAL_SEC;
     uint32_t month_end = month_start + ENV_HISTORY_MONTHLY_INTERVAL_SEC - 1;
     
+#ifdef CONFIG_HISTORY_EXTERNAL_FLASH
+    // Use env_history_get_daily_range for flash storage
+    return env_history_get_daily_range(month_start, month_end, entries, 31, count);
+#else
     // Search through daily entries
     for (uint16_t i = 0; i < g_env_history.daily_count && *count < 31; i++) {
         daily_history_entry_t entry;
@@ -1339,6 +1811,7 @@ static int env_history_find_daily_entries_for_month(uint32_t month_timestamp,
     }
     
     return 0;
+#endif
 }
 
 /**
