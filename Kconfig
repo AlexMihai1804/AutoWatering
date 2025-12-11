@@ -9,4 +9,18 @@ config AUTOWATERING_PM_SUPPORT
     default y
     select HAS_PM
 
+config HISTORY_EXTERNAL_FLASH
+    bool "Store history data on external flash"
+    default n
+    depends on FLASH_MAP && SPI_NOR
+    help
+      When enabled, environmental and rain history data is stored on
+      external SPI flash using LittleFS instead of RAM buffers.
+      This saves approximately 74KB of RAM but requires an external
+      flash chip (W25Q128 or similar) to be configured.
+
+      Affected modules:
+      - environmental_history: ~46KB RAM saved
+      - rain_history: ~28KB RAM saved
+
 endmenu
