@@ -103,6 +103,7 @@ Bit `n` indicates channel `n` has a schedule configured with `auto_enabled = tru
 - **Purpose**: Track whether user has completed configuration for each feature
 - **Reset**: All flags reset to `false` only on factory reset
 - **Auto-set**: `SYSTEM_FLAG_INITIAL_SETUP_DONE` is automatically set when minimum requirements are met
+- **Implementation note**: Channel flags are derived from persisted configuration (for example, `plant_db_index != UINT16_MAX`). Firmware must initialize defaults before merging NVS data and should validate/repair corrupted enhanced configs on load to avoid false-positive onboarding progress.
 
 ## Notification Format
 Notifications always include the unified 8-byte header so clients can reuse the existing history reassembly logic:

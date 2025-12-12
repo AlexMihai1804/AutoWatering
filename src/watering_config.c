@@ -36,15 +36,17 @@ watering_error_t config_init(void) {
     
     printk("Initializing configuration storage...\n");
     
-    // Always set default values first to ensure we have something to work with
-    using_default_settings = true;
+    /* Always load defaults first so any missing NVS entries don't leave
+     * zero-initialized channel structs (which later get persisted and
+     * incorrectly trip onboarding flags for all channels).
+     */
+    load_default_config();
     
     // Initialize NVS for configuration storage
     rc = nvs_config_init();
     if (rc != 0) {
         printk("Failed to initialize NVS: %d\n", rc);
         printk("Using default configuration values\n");
-        load_default_config();
         return WATERING_SUCCESS;  // Continue with default settings
     }
     
@@ -52,11 +54,7 @@ watering_error_t config_init(void) {
     rc = watering_load_config();
     if (rc != WATERING_SUCCESS) {
         printk("Failed to load configuration: %d\n", rc);
-        printk("Using default configuration values\n");
-        load_default_config();
-    } else {
-        // Mark that we're not using defaults anymore
-        using_default_settings = false;
+        printk("Keeping default configuration values\n");
     }
     
     return WATERING_SUCCESS;
@@ -108,6 +106,18 @@ watering_error_t load_default_config(void) {
         // Default to area-based coverage with 1 square meter
         watering_channels[i].use_area_based = true;
         watering_channels[i].coverage.area_m2 = 1.0f;
+
+        /* Enhanced defaults aligned with DEFAULT_ENHANCED_CHANNEL_CONFIG */
+        watering_channels[i].auto_mode = WATERING_BY_DURATION; /* disabled/manual */
+        watering_channels[i].max_volume_limit_l = 10.0f;
+        watering_channels[i].enable_cycle_soak = false;
+        watering_channels[i].planting_date_unix = 0;
+        watering_channels[i].days_after_planting = 0;
+        watering_channels[i].latitude_deg = 0.0f;
+        watering_channels[i].longitude_deg = 0.0f;
+        watering_channels[i].last_calculation_time = 0;
+        watering_channels[i].last_auto_check_julian_day = 0;
+        watering_channels[i].auto_check_ran_today = false;
         
         // Initialize custom plant configuration
         memset(&watering_channels[i].custom_plant, 0, sizeof(watering_channels[i].custom_plant));

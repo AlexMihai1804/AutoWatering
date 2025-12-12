@@ -285,6 +285,22 @@ int nvs_load_enhanced_channel_config(uint8_t ch, enhanced_channel_config_t *conf
             return write_ret;
         }
         ret = sizeof(*config);
+    } else {
+        /* Validate loaded config to avoid propagating corrupted/zeroed structs
+         * (which can later get persisted and incorrectly trigger onboarding flags).
+         */
+        int valid = nvs_validate_enhanced_config(config);
+        if (valid < 0) {
+            printk("Enhanced channel config invalid for channel %u (err=%d). Resetting defaults.\n",
+                   ch, valid);
+            enhanced_channel_config_t default_config = DEFAULT_ENHANCED_CHANNEL_CONFIG;
+            *config = default_config;
+            int write_ret = nvs_save_enhanced_channel_config(ch, config);
+            if (write_ret < 0) {
+                return write_ret;
+            }
+            ret = sizeof(*config);
+        }
     }
     return ret;
 }
