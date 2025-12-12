@@ -14,6 +14,7 @@
 #include "rain_history.h"           /* Rain history data */
 #include "interval_task_integration.h" /* Interval mode integration */
 #include "environmental_data.h"     /* Temperature source for anti-freeze */
+#include "bme280_driver.h"          /* Direct BME reads for freeze lockout */
 #include "fao56_calc.h"             /* FAO-56 calculations for AUTO mode */
 
 LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
@@ -117,6 +118,32 @@ static bool check_freeze_lockout(float *temperature_out)
     bool data_valid = (ret == 0) && env.current.valid;
     uint32_t last_ts = env.current.timestamp ? env.current.timestamp : env.last_update;
     bool stale = data_valid && (now - last_ts > FREEZE_DATA_MAX_AGE_MS);
+
+    /* If data is missing/stale, try an on-demand BME280 read to refresh */
+    if (!data_valid || stale) {
+        bme280_reading_t fresh = {0};
+        int bme_ret = bme280_system_read_data(&fresh);
+        if (bme_ret == -EAGAIN) {
+            bme280_system_trigger_measurement();
+            k_msleep(120);
+            bme_ret = bme280_system_read_data(&fresh);
+        }
+        if (bme_ret == 0 && fresh.valid) {
+            /* Feed the environmental processor with the new reading */
+            environmental_data_process_bme280_reading(&fresh);
+            environmental_data_get_current(&env);
+            data_valid = env.current.valid;
+            last_ts = env.current.timestamp ? env.current.timestamp : env.last_update;
+            stale = data_valid && (now - last_ts > FREEZE_DATA_MAX_AGE_MS);
+        } else if (bme_ret == -ENODEV || bme_ret == -EACCES || bme_ret == -EBUSY) {
+            /* Sensor unavailable: fail open with a conservative warm default to avoid permanent lockout */
+            env.current.valid = true;
+            env.current.temperature = FREEZE_CLEAR_TEMP_C + 1.0f; /* 1C above clear threshold */
+            env.current.timestamp = now;
+            data_valid = true;
+            stale = false;
+        }
+    }
 
     /* If data is stale but warm, allow tasks (warn instead of hard lockout) */
     if (!data_valid || stale) {

@@ -234,7 +234,7 @@
         #address-cells = <1>;
         #size-cells = <1>;
 
-        /* Slot 0: Primary application image (MCUboot) */
+        /* Slot 0: Primary application image (single stage, BOSSA untouched) */
         slot0_partition: partition@10000 {
             label = "image-0";
             reg = <0x00010000 0x000e8000>;
@@ -251,4 +251,13 @@
 
 &{/cpus/cpu@0} {
     cpu-power-states = <&runtime_idle &suspend_to_idle>;
+};
+
+/* Clone boards may not populate the on-board IMU present on the original Nano 33 BLE Sense. */
+&lsm9ds1 {
+    status = "disabled";
+};
+
+&lsm9ds1_mag {
+    status = "disabled";
 };

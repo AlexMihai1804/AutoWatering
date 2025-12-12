@@ -12,6 +12,7 @@
 #include <zephyr/logging/log.h>
 #include <errno.h>
 #include <string.h>
+#include "database_flash.h"
 
 LOG_MODULE_REGISTER(history_flash, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -363,6 +364,13 @@ int history_flash_init(void)
         return 0;
     }
     
+    /* Ensure LittleFS is mounted before touching /lfs */
+    ret = db_flash_mount();
+    if (ret < 0) {
+        LOG_ERR("Failed to mount history filesystem: %d", ret);
+        return ret;
+    }
+
     k_mutex_init(&history_mutex);
     memset(&cached_stats, 0, sizeof(cached_stats));
     memset(history_state, 0, sizeof(history_state));
@@ -376,6 +384,9 @@ int history_flash_init(void)
             return ret;
         }
         LOG_INF("Created history directory: %s", HISTORY_DIR);
+    } else if (ret < 0) {
+        LOG_ERR("Failed to access history directory %s: %d", HISTORY_DIR, ret);
+        return ret;
     }
     
     /* Initialize each history file */
