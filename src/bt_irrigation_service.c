@@ -1529,8 +1529,8 @@ static ssize_t write_environmental_history(struct bt_conn *conn, const struct bt
     hdr->data_type = resp.data_type;
     hdr->status = resp.status;
     hdr->entry_count = sys_cpu_to_le16(resp.record_count);
-    hdr->fragment_index = resp.fragment_id;
-    hdr->total_fragments = resp.total_fragments;
+    hdr->fragment_index = req->fragment_id;
+    hdr->total_fragments = resp.total_fragments ? resp.total_fragments : 1;
     uint16_t copy_sz = fragment_size > ENVHIST_MAX_PAYLOAD ? ENVHIST_MAX_PAYLOAD : fragment_size;
     hdr->fragment_size = (uint8_t)copy_sz;
     hdr->reserved = 0;
@@ -10060,53 +10060,61 @@ ssize_t read_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 }
 
 ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-                                 const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
+                                  const void *buf, uint16_t len, uint16_t offset, uint8_t flags) {
     if (!conn || !attr || !buf) {
         LOG_ERR("Invalid parameters for rain history write");
-        return -EINVAL;
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
     }
-    
+
     if (offset != 0) {
         LOG_ERR("Rain history write with non-zero offset not supported");
-        return -EINVAL;
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
     }
-    
+
     if (len != sizeof(struct rain_history_cmd_data)) {
-        LOG_ERR("Invalid rain history command length: %u, expected: %zu", 
+        LOG_ERR("Invalid rain history command length: %u, expected: %zu",
                 len, sizeof(struct rain_history_cmd_data));
-        return -EINVAL;
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
+
+    const struct rain_history_cmd_data *cmd = (const struct rain_history_cmd_data *)buf;
 
     /* Only one rain history command at a time to keep BT host responsive */
     if (rain_history_cmd_state.command_active) {
         LOG_WRN("Rain history command already in progress");
         rain_history_send_error_response(conn, 0x01); /* Busy error */
-        return -EBUSY;
+        return len;
     }
-    
-    const struct rain_history_cmd_data *cmd = (const struct rain_history_cmd_data *)buf;
-
-    /* Echo command into value buffer for read-back */
-    memcpy(rain_history_value, cmd, sizeof(struct rain_history_cmd_data));
 
     LOG_INF("Rain history cmd=0x%02X start=%u end=%u max=%u type=%u",
             cmd->command, cmd->start_timestamp, cmd->end_timestamp,
             cmd->max_entries, cmd->data_type);
 
     /* Basic validation */
-    if (cmd->data_type > 1 && cmd->data_type != 0xFE) {
-        rain_history_send_error_response(conn, 0xFE); /* Invalid parameters */
-        return len;
-    }
     if (cmd->start_timestamp && cmd->end_timestamp &&
         cmd->start_timestamp > cmd->end_timestamp) {
         rain_history_send_error_response(conn, 0xFE);
         return len;
     }
-    if (cmd->max_entries == 0 && cmd->command <= 0x03) {
-        rain_history_send_error_response(conn, 0xFE);
-        return len;
+    switch (cmd->command) {
+        case 0x01: /* RAIN_CMD_GET_HOURLY */
+        case 0x02: /* RAIN_CMD_GET_DAILY */
+            if (cmd->max_entries == 0) {
+                rain_history_send_error_response(conn, 0xFE);
+                return len;
+            }
+            break;
+        case 0x03: /* RAIN_CMD_GET_RECENT */
+        case 0x10: /* RAIN_CMD_RESET_DATA */
+        case 0x20: /* RAIN_CMD_CALIBRATE */
+            break;
+        default:
+            rain_history_send_error_response(conn, 0xFF); /* Invalid command */
+            return len;
     }
+
+    /* Echo accepted command into value buffer for read-back */
+    memcpy(rain_history_value, cmd, sizeof(struct rain_history_cmd_data));
 
     /* Setup state */
     rain_history_cmd_state.command_active = true;
@@ -10190,7 +10198,8 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
         rain_history_cmd_state.command_active = false;
         break;
     default:
-        rain_history_send_error_response(conn, 0xFF); /* Invalid command */
+        rain_history_send_error_response(conn, 0xFF); /* Invalid command (should be caught earlier) */
+        rain_history_cmd_state.command_active = false;
         break;
     }
 

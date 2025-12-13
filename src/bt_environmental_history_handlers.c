@@ -5,7 +5,9 @@
 #include "enhanced_error_handling.h"
 #include <string.h>
 #include <time.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(bt_env_history, LOG_LEVEL_DBG);
 
@@ -75,18 +77,23 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
     }
     if (is_trends_cmd) {
         /* Build a single trends record from last 24h hourly data */
-        hourly_history_entry_t hourly[48]; /* allocate up to 48 just in case */
+        hourly_history_entry_t *hourly = k_malloc(sizeof(*hourly) * 48);
         uint16_t actual = 0;
         uint32_t end_ts = request->end_time ? request->end_time : (uint32_t)time(NULL);
         uint32_t start_ts = end_ts - 24 * 3600;
-        int rc2 = env_history_get_hourly_range(start_ts, end_ts, hourly, ARRAY_SIZE(hourly), &actual);
         memset(response, 0, sizeof(*response));
         response->data_type = 0x03; /* trends */
+        if (!hourly) {
+            response->status = 0x05; /* Storage error (OOM) */
+            return 0;
+        }
+        int rc2 = env_history_get_hourly_range(start_ts, end_ts, hourly, 48, &actual);
         if (rc2 != 0 || actual < 2) {
             response->status = 0x03; /* No data */
             response->record_count = 0;
             response->fragment_id = 0;
             response->total_fragments = 0;
+            k_free(hourly);
             return 0;
         }
         /* Compute metrics */
@@ -142,6 +149,7 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
         response->fragment_id = 0;
         response->total_fragments = 1;
         response->status = 0;
+        k_free(hourly);
         return 0;
     }
     if (request->start_time > request->end_time) {
@@ -168,8 +176,8 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
     uint16_t max_req = (request->max_records == 0) ? 100 : request->max_records;
     if (max_req > 100) max_req = 100;
 
-    hourly_history_entry_t hourly[168]; /* up to 7 days hourly use-case */
-    daily_history_entry_t  daily[50];
+    hourly_history_entry_t *hourly = NULL;
+    daily_history_entry_t *daily = NULL;
     uint16_t actual = 0;
 
     cleanup_transfer();
@@ -177,37 +185,57 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
     g_transfer.api_data_type = request->data_type;
 
     if (request->data_type == 0 /* detailed */ || request->data_type == 1 /* hourly */) {
+        hourly = k_malloc(sizeof(*hourly) * max_req);
+        if (!hourly) {
+            memset(response, 0, sizeof(*response));
+            response->status = 0x05; /* Storage error (OOM) */
+            response->data_type = request->data_type;
+            return 0;
+        }
         rc = env_history_get_hourly_range(request->start_time, request->end_time,
-                                          hourly, MIN((uint16_t)ARRAY_SIZE(hourly), max_req), &actual);
+                                          hourly, max_req, &actual);
         if (rc != 0) {
             memset(response, 0, sizeof(*response));
             response->status = 0x05; /* Storage error */
             response->data_type = request->data_type;
+            k_free(hourly);
             return 0;
         }
         if (actual == 0) {
             memset(response, 0, sizeof(*response));
             response->status = 0x03; /* No data */
             response->data_type = request->data_type;
+            k_free(hourly);
             return 0;
         }
         rc = prepare_transfer_buffer(request->data_type, hourly, actual);
+        k_free(hourly);
     } else if (request->data_type == 2 /* daily */) {
+        daily = k_malloc(sizeof(*daily) * max_req);
+        if (!daily) {
+            memset(response, 0, sizeof(*response));
+            response->status = 0x05; /* Storage error (OOM) */
+            response->data_type = request->data_type;
+            return 0;
+        }
         rc = env_history_get_daily_range(request->start_time, request->end_time,
-                                         daily, MIN((uint16_t)ARRAY_SIZE(daily), max_req), &actual);
+                                         daily, max_req, &actual);
         if (rc != 0) {
             memset(response, 0, sizeof(*response));
             response->status = 0x05; /* Storage error */
             response->data_type = request->data_type;
+            k_free(daily);
             return 0;
         }
         if (actual == 0) {
             memset(response, 0, sizeof(*response));
             response->status = 0x03; /* No data */
             response->data_type = request->data_type;
+            k_free(daily);
             return 0;
         }
         rc = prepare_transfer_buffer(request->data_type, daily, actual);
+        k_free(daily);
     }
     if (rc != 0) {
         memset(response, 0, sizeof(*response));
