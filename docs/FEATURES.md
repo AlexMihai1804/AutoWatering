@@ -1,7 +1,7 @@
 ## AutoWatering - Key Features (Code-Verified Summary)
 
 Focused, externally facing list. All items map to existing modules or confirmed limits.
-*Last updated: December 2025*
+*Last updated: 2025-12-13*
 
 ---
 
@@ -39,13 +39,14 @@ Focused, externally facing list. All items map to existing modules or confirmed 
 - Environmental, rain, and watering history with multi-resolution aggregation.
 - Current task progress & completion notifications via BLE.
 
-### Data & Persistence (NVS)
+### Data & Persistence (NVS + LittleFS)
 - Channel configuration, calibration, schedules, custom soil, compensation settings stored in NVS.
 - Plant database: 223 entries (`PLANT_FULL_SPECIES_COUNT`).
 - Soil database: 15 enhanced soils (`SOIL_ENHANCED_TYPES_COUNT`).
 - Irrigation methods database: 15 entries (`IRRIGATION_METHODS_COUNT`).
-- Histories: watering (30 events/channel + 90 daily + 36 monthly + 10 annual), rain (720 hourly + 1825 daily), environmental (720 hourly + 372 daily + 60 monthly).
-- Automatic storage cleanup (80/90% thresholds, target 70%).
+- Watering history (NVS): 30 events/channel + 90 daily + 36 monthly + 10 annual.
+- Rain + environmental history (external flash via LittleFS when `CONFIG_HISTORY_EXTERNAL_FLASH=y`): rain (720 hourly + 1825 daily), environmental (720 hourly + 372 daily + 60 monthly).
+- Automatic NVS storage cleanup (80/90% thresholds, target 70%); LittleFS provides wear levelling for flash-backed history files.
 
 ### Master Valve
 - Optional master valve with pre-start (default +3 s) and post-stop delays (default +2 s).
@@ -91,7 +92,7 @@ Focused, externally facing list. All items map to existing modules or confirmed 
 ### Extensibility
 - Modular C sources (watering, tasks, history, sensors, FAO calc, rain integration).
 - Generated databases (plant, soil, irrigation methods) via Python scripts (`tools/build_database.py`).
-- Hardware targets: nRF52840 (promicro_52840, arduino_nano_33_ble) and native_sim.
+- Hardware targets: nRF52840 (promicro_nrf52840, arduino_nano_33_ble) and native_sim.
 
 ### Not Implemented (Removed From Marketing)
 - Background FAO thread (calculations are on-demand).
