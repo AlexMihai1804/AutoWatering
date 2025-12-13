@@ -46,6 +46,8 @@ Focused, externally facing list. All items map to existing modules or confirmed 
 - Irrigation methods database: 15 entries (`IRRIGATION_METHODS_COUNT`).
 - Watering history (NVS): 30 events/channel + 90 daily + 36 monthly + 10 annual.
 - Rain + environmental history (external flash via LittleFS when `CONFIG_HISTORY_EXTERNAL_FLASH=y`): rain (720 hourly + 1825 daily), environmental (720 hourly + 372 daily + 60 monthly).
+- Hourly rain history is recorded on UTC hour rollover (including 0.00 mm hours); daily summaries are derived from hourly records.
+- Environmental history is auto-aggregated hourly/daily/monthly from BME280 snapshots + rain/watering history.
 - Automatic NVS storage cleanup (80/90% thresholds, target 70%); LittleFS provides wear levelling for flash-backed history files.
 
 ### Master Valve

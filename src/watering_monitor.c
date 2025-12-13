@@ -266,20 +266,23 @@ watering_error_t check_flow_anomalies(void)
         
         /* Run rain-related checks only when sensor is initialized/enabled */
         if (rain_sensor_is_enabled()) {
+            /* Update hourly tracking and persist completed hours to history */
+            rain_sensor_update_hourly();
+
             /* Check rain integration system health */
-            if (rain_integration_is_enabled()) {
-                /* Perform periodic maintenance on rain history system */
-                watering_error_t rain_maintenance_result = rain_history_maintenance();
-                if (rain_maintenance_result != WATERING_SUCCESS) {
-                    printk("WARNING: Rain history maintenance failed: %d\n", rain_maintenance_result);
-                }
+            /* Perform periodic maintenance on rain history system (independent of integration) */
+            watering_error_t rain_maintenance_result = rain_history_maintenance();
+            if (rain_maintenance_result != WATERING_SUCCESS) {
+                printk("WARNING: Rain history maintenance failed: %d\n", rain_maintenance_result);
             }
             
             /* Run comprehensive rain sensor diagnostics */
             rain_sensor_periodic_diagnostics();
             
             /* Run rain integration health check */
-            rain_integration_periodic_health_check();
+            if (rain_integration_is_enabled()) {
+                rain_integration_periodic_health_check();
+            }
             
             /* Check for critical health conditions */
             if (rain_sensor_is_health_critical()) {

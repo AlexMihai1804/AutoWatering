@@ -145,7 +145,9 @@ int env_history_add_hourly_entry(const hourly_history_entry_t *entry)
     
     int result = history_flash_add_env_hourly(&flash_entry);
     if (result == 0) {
-        g_env_history.hourly_count++;
+        if (g_env_history.hourly_count < ENV_HISTORY_HOURLY_ENTRIES) {
+            g_env_history.hourly_count++;
+        }
         g_env_history.last_hourly_update = entry->timestamp;
         LOG_DBG("Added hourly entry to flash at timestamp %u", entry->timestamp);
     }
@@ -355,6 +357,12 @@ int env_history_aggregate_daily(uint32_t current_timestamp)
         return -WATERING_ERROR_NOT_INITIALIZED;
     }
 
+    if (g_env_history.last_daily_update == 0U) {
+        /* Seed on first run to avoid getting stuck on 1970-01-01 */
+        g_env_history.last_daily_update = current_timestamp;
+        return 0;
+    }
+
     // Check if daily aggregation is needed
     uint32_t current_day = env_history_timestamp_to_day(current_timestamp);
     uint32_t last_day = env_history_timestamp_to_day(g_env_history.last_daily_update);
@@ -364,7 +372,7 @@ int env_history_aggregate_daily(uint32_t current_timestamp)
     }
 
     // Find all hourly entries for the previous day
-    hourly_history_entry_t hourly_entries[24];
+    static hourly_history_entry_t hourly_entries[24];
     uint16_t hourly_count = 0;
     
     int result = env_history_find_hourly_entries_for_day(last_day, hourly_entries, &hourly_count);
@@ -469,6 +477,9 @@ int env_history_aggregate_daily(uint32_t current_timestamp)
 #endif
 
     if (result == 0) {
+        if (g_env_history.daily_count < ENV_HISTORY_DAILY_ENTRIES) {
+            g_env_history.daily_count++;
+        }
         g_env_history.last_daily_update = current_timestamp;
         LOG_INF("Performed daily aggregation for day %u, %d hourly entries processed", 
                 last_day, hourly_count);
@@ -483,6 +494,12 @@ int env_history_aggregate_monthly(uint32_t current_timestamp)
         return -WATERING_ERROR_NOT_INITIALIZED;
     }
 
+    if (g_env_history.last_monthly_update == 0U) {
+        /* Seed on first run to avoid getting stuck on 1970-01 */
+        g_env_history.last_monthly_update = current_timestamp;
+        return 0;
+    }
+
     // Check if monthly aggregation is needed
     uint32_t current_month = env_history_timestamp_to_month(current_timestamp);
     uint32_t last_month = env_history_timestamp_to_month(g_env_history.last_monthly_update);
@@ -492,7 +509,7 @@ int env_history_aggregate_monthly(uint32_t current_timestamp)
     }
 
     // Find all daily entries for the previous month
-    daily_history_entry_t daily_entries[31];
+    static daily_history_entry_t daily_entries[31];
     uint16_t daily_count = 0;
     
     int result = env_history_find_daily_entries_for_month(last_month, daily_entries, &daily_count);
@@ -601,6 +618,9 @@ int env_history_aggregate_monthly(uint32_t current_timestamp)
 #endif
 
     if (result == 0) {
+        if (g_env_history.monthly_count < ENV_HISTORY_MONTHLY_ENTRIES) {
+            g_env_history.monthly_count++;
+        }
         g_env_history.last_monthly_update = current_timestamp;
         LOG_INF("Performed monthly aggregation for month %u, %d daily entries processed", 
                 last_month, daily_count);
@@ -609,10 +629,14 @@ int env_history_aggregate_monthly(uint32_t current_timestamp)
     return result;
 }
 
-static __attribute__((unused)) watering_error_t _history_auto_aggregate(uint32_t current_timestamp)
+int env_history_auto_aggregate(uint32_t current_timestamp)
 {
     if (!g_env_history_initialized) {
         return -WATERING_ERROR_NOT_INITIALIZED;
+    }
+
+    if (current_timestamp == 0U) {
+        return 0;
     }
 
     int result = 0;

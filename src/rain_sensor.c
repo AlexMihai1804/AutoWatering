@@ -2,6 +2,8 @@
 #include "rain_config.h"
 #include "nvs_config.h"
 #include <zephyr/kernel.h>
+#include "rain_history.h"
+#include "timezone.h"
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/atomic.h>
@@ -267,7 +269,7 @@ int rain_sensor_init(void)
     
     /* Initialize timing */
     uint32_t current_time = k_uptime_get_32() / 1000;
-    rain_sensor_state.hour_start_time = current_time;
+    rain_sensor_state.hour_start_time = 0U; /* initialize when RTC time becomes available */
     rain_sensor_state.rate_calc_time = current_time;
     
     /* Initialize atomic variables */
@@ -385,7 +387,7 @@ void rain_sensor_reset_counters(void)
     rain_sensor_state.last_hour_pulses = 0;
     
     uint32_t current_time = k_uptime_get_32() / 1000;
-    rain_sensor_state.hour_start_time = current_time;
+    rain_sensor_state.hour_start_time = 0U; /* re-init on next update */
     rain_sensor_state.rate_calc_time = current_time;
     
     k_mutex_unlock(&rain_sensor_state.mutex);
@@ -461,40 +463,71 @@ bool rain_sensor_is_integration_enabled(void)
 
 void rain_sensor_update_hourly(void)
 {
-    uint32_t current_time = k_uptime_get_32() / 1000;
+    uint32_t uptime_s = k_uptime_get_32() / 1000;
     uint32_t current_pulses = atomic_get(&rain_sensor_state.total_pulses);
+    uint32_t current_unix = timezone_get_unix_utc();
+
+    rain_sensor_update_status();
     
     k_mutex_lock(&rain_sensor_state.mutex, K_FOREVER);
-    
-    /* Check if we've moved to a new hour */
-    if (current_time - rain_sensor_state.hour_start_time >= 3600) {
-        /* Calculate rainfall for the completed hour */
-        uint32_t hour_pulses = current_pulses - rain_sensor_state.last_hour_pulses;
-        float completed_hour_mm = hour_pulses * rain_sensor_state.config.mm_per_pulse;
-        
-    LOG_INF("Hour completed: %.2f mm rainfall", (double)completed_hour_mm);
-        
-        /* Reset for new hour */
-        rain_sensor_state.hour_start_time = current_time;
-        rain_sensor_state.last_hour_pulses = current_pulses;
-        rain_sensor_state.current_hour_mm = 0.0f; // Reset current hour counter
-        
-        /* Save state to NVS periodically */
-        rain_nvs_state_t state;
-        state.total_pulses = current_pulses;
-        state.last_pulse_time = atomic_get(&rain_sensor_state.last_pulse_time);
-        state.current_hour_mm = rain_sensor_state.current_hour_mm;
-        state.today_total_mm = 0.0f; // Will be calculated from history
-        state.hour_start_time = rain_sensor_state.hour_start_time;
-        state.day_start_time = rain_sensor_state.hour_start_time; // Simplified for now
-        memset(state.reserved, 0, sizeof(state.reserved));
-        
-        rain_state_save(&state);
+
+    if (current_unix != 0U) {
+        uint32_t current_hour_epoch = (current_unix / 3600U) * 3600U;
+
+        if (rain_sensor_state.hour_start_time == 0U) {
+            rain_sensor_state.hour_start_time = current_hour_epoch;
+            rain_sensor_state.last_hour_pulses = current_pulses;
+        }
+
+        if (current_hour_epoch < rain_sensor_state.hour_start_time) {
+            LOG_WRN("RTC hour moved backwards (%u -> %u), resetting rain hour tracking",
+                    rain_sensor_state.hour_start_time, current_hour_epoch);
+            rain_sensor_state.hour_start_time = current_hour_epoch;
+            rain_sensor_state.last_hour_pulses = current_pulses;
+            rain_sensor_state.current_hour_mm = 0.0f;
+        }
+
+        /* Check if we've moved to a new hour (or multiple hours due to delayed calls) */
+        if (current_hour_epoch > rain_sensor_state.hour_start_time) {
+            uint32_t completed_hour_epoch = rain_sensor_state.hour_start_time;
+            uint32_t hour_pulses = current_pulses - rain_sensor_state.last_hour_pulses;
+            float completed_hour_mm = hour_pulses * rain_sensor_state.config.mm_per_pulse;
+            uint8_t pulse_count = (hour_pulses > UINT8_MAX) ? UINT8_MAX : (uint8_t)hour_pulses;
+            uint8_t quality = rain_sensor_state.data_quality;
+
+            LOG_INF("Hour completed (%u): %.2f mm rainfall", completed_hour_epoch, (double)completed_hour_mm);
+
+            /* Persist to rain history (store even 0.0mm to keep a continuous timeline) */
+            watering_error_t hist_ret = rain_history_record_hourly_full(
+                completed_hour_epoch, completed_hour_mm, pulse_count, quality);
+            if (hist_ret != WATERING_SUCCESS) {
+                LOG_WRN("Failed to record rain history for hour %u: %d", completed_hour_epoch, hist_ret);
+            }
+
+            /* Reset for new hour */
+            rain_sensor_state.hour_start_time = current_hour_epoch;
+            rain_sensor_state.last_hour_pulses = current_pulses;
+            rain_sensor_state.current_hour_mm = 0.0f;
+
+            /* Save state to NVS periodically (best-effort; not used for history queries) */
+            rain_nvs_state_t state;
+            state.total_pulses = current_pulses;
+            state.last_pulse_time = atomic_get(&rain_sensor_state.last_pulse_time);
+            state.current_hour_mm = rain_sensor_state.current_hour_mm;
+            state.today_total_mm = 0.0f; /* Will be calculated from history */
+            state.hour_start_time = rain_sensor_state.hour_start_time;
+            state.day_start_time = (current_unix / 86400U) * 86400U;
+            memset(state.reserved, 0, sizeof(state.reserved));
+            (void)rain_state_save(&state);
+        } else {
+            /* Update current hour rainfall */
+            uint32_t hour_pulses = current_pulses - rain_sensor_state.last_hour_pulses;
+            rain_sensor_state.current_hour_mm = hour_pulses * rain_sensor_state.config.mm_per_pulse;
+        }
     } else {
-        /* Update current hour rainfall */
+        /* RTC not available: keep updating current hour estimate without recording history */
         uint32_t hour_pulses = current_pulses - rain_sensor_state.last_hour_pulses;
-        rain_sensor_state.current_hour_mm = 
-            hour_pulses * rain_sensor_state.config.mm_per_pulse;
+        rain_sensor_state.current_hour_mm = hour_pulses * rain_sensor_state.config.mm_per_pulse;
     }
     
     k_mutex_unlock(&rain_sensor_state.mutex);
@@ -509,7 +542,7 @@ void rain_sensor_update_hourly(void)
     /* Check for sensor disconnection */
     uint32_t last_pulse = atomic_get(&rain_sensor_state.last_pulse_time);
     if (rain_sensor_state.config.sensor_enabled && 
-        last_pulse == 0 && current_time > 7200) { /* 2 hours after startup */
+        last_pulse == 0 && uptime_s > 7200) { /* 2 hours after startup */
         rain_sensor_handle_error(RAIN_ERROR_SENSOR_DISCONNECTED);
     }
 }

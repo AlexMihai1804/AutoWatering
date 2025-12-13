@@ -143,14 +143,15 @@ No soil moisture probes are present in this build; related fields remain reserve
   - `WATERING_STATUS_UNEXPECTED_FLOW` when ≥10 pulses arrive while all valves closed
 
 ### Rain Sensor (Tipping Bucket)
-- **Hardware interface**: `rain_sensor_config_t.debounce_ms` (default 5 ms).
+- **Hardware interface**: `rain_sensor_config_t.debounce_ms` (default 50 ms).
 - **Configuration** (`rain_nvs_config_t`):
   - `mm_per_pulse` (default 0.2 mm)
   - `sensor_enabled`, `integration_enabled`
   - `rain_sensitivity_pct`, `skip_threshold_mm`
   - `last_reset_time`
 - **Data products**:
-  - Hourly and daily accumulators: rainfall in 0.01 mm increments, pulse counts, data-quality scores
+  - Hourly rain history is flushed on UTC hour rollover via `rain_sensor_update_hourly()` into `rain_history` (LittleFS ring when external flash enabled).
+  - Daily summaries are derived from hourly history (maintenance-driven aggregation).
   - BLE characteristics: 18-rain-sensor-config, 19-rain-sensor-data, 20-rain-history-control
   - Persistent counters (`rain_nvs_state_t`): total pulses, last pulse time, current hour/day totals
 - **Health & diagnostics**:
@@ -383,6 +384,7 @@ When `CONFIG_HISTORY_EXTERNAL_FLASH=y`, a LittleFS volume is mounted on `databas
 
 ### Rain History
 - Stored in LittleFS via `history_flash` when `CONFIG_HISTORY_EXTERNAL_FLASH=y` (default); otherwise stored in NVS blobs.
+- Hourly entries are appended on UTC hour rollover (rain sensor updater) and retained as a 30-day ring (720 hours).
 - **Hourly records** (720 entries, 8 bytes):
   - Hour epoch, rainfall in 0.01 mm units
   - Raw pulse count, data quality (0-100)
@@ -406,6 +408,7 @@ When `CONFIG_HISTORY_EXTERNAL_FLASH=y`, a LittleFS volume is mounted on `databas
   - YYYYMM, aggregated stats
   - Total rainfall, watering events, total volume
   - Active days
+- Aggregation is scheduler-driven via `env_history_auto_aggregate()` (runs each scheduler tick, emits the last completed hour and rolls up daily/monthly on boundary changes).
 
 ### Storage Health
 - `nvs_storage_monitor`:

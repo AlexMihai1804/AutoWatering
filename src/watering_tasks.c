@@ -14,6 +14,7 @@
 #include "rain_history.h"           /* Rain history data */
 #include "interval_task_integration.h" /* Interval mode integration */
 #include "environmental_data.h"     /* Temperature source for anti-freeze */
+#include "environmental_history.h"  /* Environmental history aggregation */
 #include "bme280_driver.h"          /* Direct BME reads for freeze lockout */
 #include "fao56_calc.h"             /* FAO-56 calculations for AUTO mode */
 
@@ -1010,11 +1011,13 @@ static void scheduler_task_fn(void *p1, void *p2, void *p3) {
     
     while (!exit_tasks) {
         bool rtc_read_success = false;
+        uint32_t utc_timestamp_for_history = 0U;
         
         if (rtc_status == 0) {
             if (rtc_datetime_get(&now) == 0) {
                 /* TIMEZONE FIX: Convert RTC time (UTC) to local time for scheduling */
                 uint32_t utc_timestamp = timezone_rtc_to_unix_utc(&now);
+                utc_timestamp_for_history = utc_timestamp;
                 rtc_datetime_t local_time;
                 
                 /* Convert UTC to local time using timezone configuration */
@@ -1065,11 +1068,20 @@ static void scheduler_task_fn(void *p1, void *p2, void *p3) {
         } else {
             update_system_time();
             rtc_read_success = true;
+            utc_timestamp_for_history = timezone_get_unix_utc();
         }
         
         if (rtc_read_success) {
             watering_scheduler_run();
-            
+
+            /* Aggregate hourly/daily environmental history (once per scheduler tick) */
+            if (utc_timestamp_for_history != 0U && env_history_get_storage() != NULL) {
+                int env_rc = env_history_auto_aggregate(utc_timestamp_for_history);
+                if (env_rc != 0 && env_rc != (-WATERING_ERROR_NOT_INITIALIZED)) {
+                    LOG_WRN("Environmental history auto-aggregate failed: %d", env_rc);
+                }
+            }
+             
             // Run automatic irrigation calculations periodically
             uint32_t current_time = k_uptime_get_32();
             if (auto_calc_enabled && 
