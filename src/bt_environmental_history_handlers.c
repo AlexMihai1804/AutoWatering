@@ -20,9 +20,8 @@ LOG_MODULE_REGISTER(bt_env_history, LOG_LEVEL_DBG);
  */
 
 /* BLE fragmentation constants per documentation */
-#define BLE_FRAGMENT_MAX_SIZE           240     /* 8B header + 232B payload */
-#define BLE_FRAGMENT_HEADER_SIZE        8
-#define BLE_FRAGMENT_DATA_SIZE          (BLE_FRAGMENT_MAX_SIZE - BLE_FRAGMENT_HEADER_SIZE) /* 232 */
+#define BLE_FRAGMENT_DATA_MAX           RAIN_HISTORY_FRAGMENT_SIZE /* 232 */
+#define ENV_HISTORY_STATUS_MTU_TOO_SMALL 0x08
 
 /* Global state for fragmented transfers */
 /* Transfer cache for current query (paged by client via fragment_id) */
@@ -32,6 +31,7 @@ static struct {
     uint8_t api_data_type;       /* 0=detailed,1=hourly,2=daily */
     uint16_t total_fragments;    /* total fragments available */
     uint16_t total_records;      /* total records in request range */
+    uint16_t fragment_bytes;     /* bytes per fragment (<=BLE_FRAGMENT_DATA_MAX) */
     uint8_t buffer[8192];        /* packed records storage */
     size_t total_data_size;      /* bytes packed in buffer */
 } g_transfer = {0};
@@ -39,7 +39,8 @@ static struct {
 /* Internal helper functions */
 static int prepare_transfer_buffer(uint8_t api_data_type,
                                   const void *entries,
-                                  uint16_t count);
+                                  uint16_t count,
+                                  uint16_t fragment_bytes);
 static size_t pack_hourly_records(const hourly_history_entry_t *entries, uint16_t count,
                                   uint8_t *out, size_t out_cap);
 static size_t pack_daily_records(const daily_history_entry_t *entries, uint16_t count,
@@ -55,7 +56,31 @@ static size_t pack_detailed_records(const hourly_history_entry_t *entries, uint1
                                     uint8_t *out, size_t out_cap);
 static void cleanup_transfer(void);
 
-int bt_env_history_request_handler(const ble_history_request_t *request, 
+static uint16_t env_history_fragment_bytes(uint16_t payload_max, uint8_t api_data_type)
+{
+    uint16_t max_payload = payload_max;
+    if (max_payload > BLE_FRAGMENT_DATA_MAX) {
+        max_payload = BLE_FRAGMENT_DATA_MAX;
+    }
+
+    uint16_t rec_size = 0;
+    switch (api_data_type) {
+        case 0: rec_size = 12; break; /* detailed */
+        case 1: rec_size = 16; break; /* hourly */
+        case 2: rec_size = 22; break; /* daily */
+        default: rec_size = 0; break;
+    }
+
+    if (rec_size == 0U) {
+        return max_payload;
+    }
+
+    /* Round down so fragments always contain whole records */
+    return (uint16_t)((max_payload / rec_size) * rec_size);
+}
+
+int bt_env_history_request_handler(const ble_history_request_t *request,
+                                  uint16_t payload_max,
                                   ble_history_response_t *response)
 {
     if (!request || !response) {
@@ -76,6 +101,14 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
         return 0;
     }
     if (is_trends_cmd) {
+        if (payload_max < 24U) {
+            memset(response, 0, sizeof(*response));
+            response->status = ENV_HISTORY_STATUS_MTU_TOO_SMALL;
+            response->data_type = 0x03; /* trends */
+            response->fragment_id = 0;
+            response->total_fragments = 1;
+            return 0;
+        }
         /* Build a single trends record from last 24h hourly data */
         hourly_history_entry_t *hourly = k_malloc(sizeof(*hourly) * 48);
         uint16_t actual = 0;
@@ -171,6 +204,17 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
         return 0;
     }
 
+    /* Determine per-fragment payload based on negotiated MTU (caller passes payload_max). */
+    uint16_t frag_bytes = env_history_fragment_bytes(payload_max, request->data_type);
+    if (frag_bytes == 0U) {
+        memset(response, 0, sizeof(*response));
+        response->status = ENV_HISTORY_STATUS_MTU_TOO_SMALL;
+        response->data_type = request->data_type;
+        response->fragment_id = request->fragment_id;
+        response->total_fragments = 1;
+        return 0;
+    }
+
     /* Gather raw entries according to type */
     int rc = 0;
     uint16_t max_req = (request->max_records == 0) ? 100 : request->max_records;
@@ -208,7 +252,7 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
             k_free(hourly);
             return 0;
         }
-        rc = prepare_transfer_buffer(request->data_type, hourly, actual);
+        rc = prepare_transfer_buffer(request->data_type, hourly, actual, frag_bytes);
         k_free(hourly);
     } else if (request->data_type == 2 /* daily */) {
         daily = k_malloc(sizeof(*daily) * max_req);
@@ -234,7 +278,7 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
             k_free(daily);
             return 0;
         }
-        rc = prepare_transfer_buffer(request->data_type, daily, actual);
+        rc = prepare_transfer_buffer(request->data_type, daily, actual, frag_bytes);
         k_free(daily);
     }
     if (rc != 0) {
@@ -260,12 +304,13 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
     response->status = 0;
     response->data_type = request->data_type;
     response->fragment_id = frag;
-    response->total_fragments = g_transfer.total_fragments;
+    response->total_fragments = (g_transfer.total_fragments > UINT8_MAX) ? UINT8_MAX : (uint8_t)g_transfer.total_fragments;
 
-    /* Copy up to 232 bytes for this fragment */
-    size_t offset = (size_t)frag * BLE_FRAGMENT_DATA_SIZE;
+    /* Copy fragment slice */
+    uint16_t chunk = g_transfer.fragment_bytes ? g_transfer.fragment_bytes : BLE_FRAGMENT_DATA_MAX;
+    size_t offset = (size_t)frag * chunk;
     size_t remaining = (g_transfer.total_data_size > offset) ? (g_transfer.total_data_size - offset) : 0;
-    size_t to_copy = remaining > BLE_FRAGMENT_DATA_SIZE ? BLE_FRAGMENT_DATA_SIZE : remaining;
+    size_t to_copy = remaining > chunk ? chunk : remaining;
     if (to_copy > 0) {
         memcpy(response->data, &g_transfer.buffer[offset], to_copy);
     }
@@ -357,10 +402,13 @@ void bt_env_history_cancel_transfer(void)
 
 static int prepare_transfer_buffer(uint8_t api_data_type,
                                   const void *entries,
-                                  uint16_t count)
+                                  uint16_t count,
+                                  uint16_t fragment_bytes)
 {
     memset(&g_transfer, 0, sizeof(g_transfer));
     g_transfer.api_data_type = api_data_type;
+    g_transfer.fragment_bytes = fragment_bytes;
+    g_transfer.total_records = count;
 
     size_t written = 0;
     if (api_data_type == 0) {
@@ -377,7 +425,10 @@ static int prepare_transfer_buffer(uint8_t api_data_type,
         return -WATERING_ERROR_INVALID_DATA;
     }
     g_transfer.total_data_size = written;
-    g_transfer.total_fragments = (uint16_t)((written + BLE_FRAGMENT_DATA_SIZE - 1) / BLE_FRAGMENT_DATA_SIZE);
+    if (fragment_bytes == 0U) {
+        return -WATERING_ERROR_INVALID_PARAM;
+    }
+    g_transfer.total_fragments = (uint16_t)((written + fragment_bytes - 1U) / fragment_bytes);
     g_transfer.prepared = true;
     return 0;
 }

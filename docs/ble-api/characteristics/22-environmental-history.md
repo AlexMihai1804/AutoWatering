@@ -1,6 +1,6 @@
 # Environmental History Characteristic (UUID: 12345678-1234-5678-1234-56789abcde16)
 
-This characteristic shares the unified 8-byte `history_fragment_header_t` envelope used by the watering history endpoints. Clients send 20-byte `ble_history_request_t` commands and receive responses in 232-byte payload windows (8-byte header + up to 232 bytes of packed records). A "detailed" request simply re-packs hourly retention entries; higher-frequency sensor samples are not exposed. Monthly history remains internal to the firmware.
+This characteristic shares the unified 8-byte `history_fragment_header_t` envelope used by the watering history endpoints. Clients send 20-byte `ble_history_request_t` commands and receive responses in up-to-232-byte payload windows (8-byte header + up to 232 bytes of packed records) and may be smaller to fit the negotiated MTU. A "detailed" request simply re-packs hourly retention entries; higher-frequency sensor samples are not exposed. Monthly history remains internal to the firmware.
 
 > Operation Summary
 | Operation | Payload | Size | Fragmentation | Notes |
@@ -48,13 +48,14 @@ Rate-limited writes respond with `status = 0x07`, `fragment_size = 0`, and no pa
 - `0x05` storage/packing failure
 - `0x06` invalid fragment id
 - `0x07` rate limited (command accepted but response suppressed)
+- `0x08` MTU too small (cannot fit one record in a fragment)
 
 ## Rate Limiting
 - Firmware enforces >=50 ms between accepted commands. Earlier writes receive a `status=0x07` header (no payload).
 - After any accepted request the latest header + payload persist in the attribute value for long reads.
 
 ## Command Notes
-1. `GET_DETAILED` / `GET_HOURLY` / `GET_DAILY`: honour `data_type`; firmware clamps `max_records` to 100 and fragments in 232 B pages.<br>2. `GET_TRENDS`: ignores `data_type` and `fragment_id`; returns either one trend record (`total_fragments=1`) or `status=0x03` when fewer than two hourly samples exist.<br>3. `CLEAR_HISTORY`: calls `env_history_reset_all()`, responds with metadata only (`entry_count=0`).
+1. `GET_DETAILED` / `GET_HOURLY` / `GET_DAILY`: honour `data_type`; firmware clamps `max_records` to 100 and fragments with up to 232B payload per fragment (may be lower on small MTU).<br>2. `GET_TRENDS`: ignores `data_type` and `fragment_id`; returns either one trend record (`total_fragments=1`) or `status=0x03` when fewer than two hourly samples exist.<br>3. `CLEAR_HISTORY`: calls `env_history_reset_all()`, responds with metadata only (`entry_count=0`).
 
 ## Client Guidance
 - Start multi-fragment downloads with `fragment_id=0` and iterate sequentially; any invalid index replies with `status=0x06` including the expected `total_fragments`.

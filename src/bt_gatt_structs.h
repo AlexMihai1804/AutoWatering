@@ -5,7 +5,8 @@
 #include <zephyr/types.h>
 #include <zephyr/sys/util.h> /* BUILD_ASSERT */
 
-#define RAIN_HISTORY_FRAGMENT_SIZE 240  /* Maximum fragment size for BLE */
+/* Max history payload bytes per fragment (header is 8B; total = 8 + payload <= 240B @ MTU=247). */
+#define RAIN_HISTORY_FRAGMENT_SIZE 232
 
 /* Valve Control structure - matches BLE API documentation */
 struct valve_control_data {

@@ -68,7 +68,7 @@ int bt_irrigation_onboarding_status_notify(void);
 int bt_irrigation_reset_control_notify(void);
 
 /* Rain history fragmentation support */
-#define RAIN_HISTORY_MAX_FRAGMENTS 20   /* Maximum number of fragments */
+#define RAIN_HISTORY_MAX_FRAGMENTS 255   /* Maximum number of fragments */
 
 /* ------------------------------------------------------------------ */
 /* TIMING STRATEGY DOCUMENTATION                                      */
@@ -761,6 +761,26 @@ static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr
     return err;
 }
 
+/* Max payload bytes for unified history fragments (ATT payload is MTU-3). */
+static uint16_t history_fragment_max_payload(struct bt_conn *conn)
+{
+    if (!conn) {
+        return 0;
+    }
+
+    uint16_t mtu = bt_gatt_get_mtu(conn);
+    uint16_t att_max = (mtu > 3U) ? (uint16_t)(mtu - 3U) : 0U;
+    if (att_max <= sizeof(history_fragment_header_t)) {
+        return 0;
+    }
+
+    uint16_t payload = (uint16_t)(att_max - sizeof(history_fragment_header_t));
+    if (payload > RAIN_HISTORY_FRAGMENT_SIZE) {
+        payload = RAIN_HISTORY_FRAGMENT_SIZE;
+    }
+    return payload;
+}
+
 /* ------------------------------------------------------------------ */
 /* NEW: forward declarations needed before first use                  */
 /* ------------------------------------------------------------------ */
@@ -1031,8 +1051,7 @@ static uint8_t timezone_value[sizeof(timezone_config_t)];
 /* Rain sensor static values - using types from headers */
 /* Removed legacy rain_history_cmd_value and rain_fragment_value (unused after unified fragmentation) */
 
-/* Rain history response structure */
-#define RAIN_HISTORY_FRAGMENT_SIZE 240  // Maximum BLE data payload
+/* Rain history fragments use history_fragment_header_t + up to RAIN_HISTORY_FRAGMENT_SIZE bytes payload. */
 
 /* Rain sensor characteristic value handles */
 static uint8_t rain_config_value[sizeof(struct rain_config_data)];
@@ -1064,6 +1083,7 @@ static struct {
     bool active;
     uint8_t *buf;
     size_t len;
+    uint8_t chunk_size;
     uint8_t total_frags;
     uint8_t next_frag;
     uint8_t history_type;
@@ -1506,7 +1526,8 @@ static ssize_t write_environmental_history(struct bt_conn *conn, const struct bt
     ble_history_response_t resp;
     memset(&resp, 0, sizeof(resp));
 
-    int rc = bt_env_history_request_handler(req, &resp);
+    uint16_t payload_max = history_fragment_max_payload(conn);
+    int rc = bt_env_history_request_handler(req, payload_max, &resp);
     if (rc != 0) {
         return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
     }
@@ -1522,16 +1543,14 @@ static ssize_t write_environmental_history(struct bt_conn *conn, const struct bt
     }
     uint16_t fragment_size = (uint16_t)(resp.record_count * rec_size);
 
-    /* Use max payload 232B to match environmental history fragment size */
-    #define ENVHIST_MAX_PAYLOAD 232
-    uint8_t notify_buf[sizeof(history_fragment_header_t) + ENVHIST_MAX_PAYLOAD] = {0};
+    uint8_t notify_buf[sizeof(history_fragment_header_t) + RAIN_HISTORY_FRAGMENT_SIZE] = {0};
     history_fragment_header_t *hdr = (history_fragment_header_t *)notify_buf;
     hdr->data_type = resp.data_type;
     hdr->status = resp.status;
     hdr->entry_count = sys_cpu_to_le16(resp.record_count);
     hdr->fragment_index = req->fragment_id;
     hdr->total_fragments = resp.total_fragments ? resp.total_fragments : 1;
-    uint16_t copy_sz = fragment_size > ENVHIST_MAX_PAYLOAD ? ENVHIST_MAX_PAYLOAD : fragment_size;
+    uint16_t copy_sz = fragment_size > RAIN_HISTORY_FRAGMENT_SIZE ? RAIN_HISTORY_FRAGMENT_SIZE : fragment_size;
     hdr->fragment_size = (uint8_t)copy_sz;
     hdr->reserved = 0;
     if (fragment_size > 0) {
@@ -3988,7 +4007,7 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
             for (uint8_t ch = ch_start; ch <= ch_end; ch++) {
                 /* Function not exposed: implement a simple page query loop until no more */
                 for (uint16_t page=0; page<5; page++) { /* heuristic pages */
-                    history_event_t temp_events[10];
+                    static history_event_t temp_events[10];
                     uint16_t pc=0; 
                     watering_error_t er = watering_history_query_page(ch, page, temp_events, &pc, NULL);
                     if (er != WATERING_SUCCESS || pc==0) break;
@@ -4008,6 +4027,10 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
         header.data_type = 0xFF; /* clear response */
         header.status = 0x00; /* success */
         header.entry_count = sys_cpu_to_le16(0);
+        header.fragment_index = 0;
+        header.total_fragments = 1;
+        header.fragment_size = 0;
+        header.reserved = 0;
         if (notification_state.history_notifications_enabled) {
             bt_gatt_notify(conn, attr, &header, sizeof(header));
         }
@@ -4016,8 +4039,8 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
 
     switch (history_type) {
         case 0: { /* detailed */
-            history_event_t events[50];
-            uint32_t timestamps[50];
+            static history_event_t events[50];
+            static uint32_t timestamps[50];
             uint16_t page_count = 0;
             ret = watering_history_query_page((channel_id==0xFF)?0:channel_id, entry_index, events, &page_count, timestamps);
             if (ret == WATERING_SUCCESS && page_count > 0) {
@@ -4042,7 +4065,7 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
             }
             break; }
         case 1: { /* daily */
-            daily_stats_t stats_arr[50];
+            static daily_stats_t stats_arr[50];
             uint16_t got = 0;
             uint16_t current_year = get_current_year();
             uint16_t current_day = get_current_day_of_year();
@@ -4071,7 +4094,7 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
             }
             break; }
         case 2: { /* monthly */
-            monthly_stats_t mstats[12];
+            static monthly_stats_t mstats[12];
             uint16_t got = 0;
             uint16_t year = get_current_year();
             uint8_t current_month = get_current_month();
@@ -4145,7 +4168,7 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
             }
             break; }
         case 3: { /* annual */
-            annual_stats_t astats[5];
+            static annual_stats_t astats[5];
             uint16_t got = 0;
             uint16_t year = get_current_year() - entry_index;
             uint8_t effective_channel = (channel_id==0xFF)?0:channel_id;
@@ -4217,13 +4240,28 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
         header.data_type = history_type;
         header.status = 0; /* success but empty */
         header.entry_count = sys_cpu_to_le16(0);
+        header.fragment_index = 0;
+        header.total_fragments = 1;
+        header.fragment_size = 0;
+        header.reserved = 0;
         if (notification_state.history_notifications_enabled) {
             bt_gatt_notify(conn, attr, &header, sizeof(header));
         }
         return len;
     }
 
-    uint8_t total_frags = (total_payload + RAIN_HISTORY_FRAGMENT_SIZE - 1) / RAIN_HISTORY_FRAGMENT_SIZE;
+    uint16_t chunk_size = history_fragment_max_payload(conn);
+    if (chunk_size == 0U) {
+        LOG_ERR("History notify MTU too small");
+        return -EMSGSIZE;
+    }
+
+    uint16_t total_frags_u16 = (uint16_t)((total_payload + chunk_size - 1U) / chunk_size);
+    if (total_frags_u16 == 0U || total_frags_u16 > UINT8_MAX) {
+        LOG_ERR("History notify requires %u fragments (max %u)", total_frags_u16, UINT8_MAX);
+        return -E2BIG;
+    }
+    uint8_t total_frags = (uint8_t)total_frags_u16;
 
     /* Send fragments asynchronously to avoid blocking BT host thread */
     if (history_frag_state.active) {
@@ -4239,6 +4277,7 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
     history_frag_state.active = true;
     history_frag_state.buf = heap_copy;
     history_frag_state.len = total_payload;
+    history_frag_state.chunk_size = (uint8_t)chunk_size;
     history_frag_state.total_frags = total_frags;
     history_frag_state.next_frag = 0;
     history_frag_state.history_type = history_type;
@@ -4304,9 +4343,14 @@ static void history_frag_work_handler(struct k_work *work) {
     const uint16_t header_sz = sizeof(history_fragment_header_t);
     uint8_t notify_buf[sizeof(history_fragment_header_t) + RAIN_HISTORY_FRAGMENT_SIZE];
 
-    size_t frag_offset = history_frag_state.next_frag * RAIN_HISTORY_FRAGMENT_SIZE;
+    uint8_t chunk_size = history_frag_state.chunk_size ? history_frag_state.chunk_size : RAIN_HISTORY_FRAGMENT_SIZE;
+    size_t frag_offset = (size_t)history_frag_state.next_frag * chunk_size;
+    if (frag_offset >= history_frag_state.len) {
+        LOG_ERR("History fragment offset out of range");
+        goto cleanup;
+    }
     size_t remain = history_frag_state.len - frag_offset;
-    size_t frag_size = (remain > RAIN_HISTORY_FRAGMENT_SIZE) ? RAIN_HISTORY_FRAGMENT_SIZE : remain;
+    size_t frag_size = (remain > chunk_size) ? chunk_size : remain;
 
     history_fragment_header_t *hdr = (history_fragment_header_t *)notify_buf;
     hdr->data_type = history_frag_state.history_type;
@@ -9351,6 +9395,7 @@ static struct {
     uint16_t current_entry;
     uint8_t current_fragment;
     uint8_t total_fragments;
+    uint8_t chunk_size;
     uint8_t *fragment_buffer;
     bool fragment_buffer_owned;
     struct bt_conn *requesting_conn;
@@ -9374,6 +9419,7 @@ static void rain_history_reset_state(void) {
     rain_history_cmd_state.current_entry = 0;
     rain_history_cmd_state.current_fragment = 0;
     rain_history_cmd_state.total_fragments = 0;
+    rain_history_cmd_state.chunk_size = 0;
     rain_history_cmd_state.fragment_buffer = NULL;
     rain_history_cmd_state.fragment_buffer_owned = false;
     rain_history_cmd_state.requesting_conn = NULL;
@@ -9450,16 +9496,24 @@ static int process_rain_history_hourly_request(uint32_t start_time, uint32_t end
         return 0;
     }
     
-    /* Calculate fragmentation */
+    /* Calculate fragmentation (MTU-aware payload) */
     size_t total_data_size = actual_count * sizeof(rain_hourly_data_t);
-    uint8_t total_fragments = (total_data_size + RAIN_HISTORY_FRAGMENT_SIZE - 1) / RAIN_HISTORY_FRAGMENT_SIZE;
-    
-    if (total_fragments > RAIN_HISTORY_MAX_FRAGMENTS) {
-        LOG_ERR("Too many fragments required: %u (max %u)", total_fragments, RAIN_HISTORY_MAX_FRAGMENTS);
+    uint16_t chunk_size = rain_history_cmd_state.chunk_size;
+    if (chunk_size == 0U) {
+        LOG_ERR("Rain history MTU payload is zero");
+        k_free(hourly_data);
+        rain_history_send_error_response(rain_history_cmd_state.requesting_conn, 0x03);
+        return -EMSGSIZE;
+    }
+
+    uint16_t total_fragments_u16 = (uint16_t)((total_data_size + chunk_size - 1U) / chunk_size);
+    if (total_fragments_u16 == 0U || total_fragments_u16 > RAIN_HISTORY_MAX_FRAGMENTS) {
+        LOG_ERR("Too many fragments required: %u (max %u)", total_fragments_u16, RAIN_HISTORY_MAX_FRAGMENTS);
         k_free(hourly_data);
         rain_history_send_error_response(rain_history_cmd_state.requesting_conn, 0x07); /* Too much data */
         return -E2BIG;
     }
+    uint8_t total_fragments = (uint8_t)total_fragments_u16;
     
     rain_history_cmd_state.total_entries = actual_count;
     rain_history_cmd_state.total_fragments = total_fragments;
@@ -9517,16 +9571,24 @@ static int process_rain_history_daily_request(uint32_t start_time, uint32_t end_
         return 0;
     }
     
-    /* Calculate fragmentation */
+    /* Calculate fragmentation (MTU-aware payload) */
     size_t total_data_size = actual_count * sizeof(rain_daily_data_t);
-    uint8_t total_fragments = (total_data_size + RAIN_HISTORY_FRAGMENT_SIZE - 1) / RAIN_HISTORY_FRAGMENT_SIZE;
-    
-    if (total_fragments > RAIN_HISTORY_MAX_FRAGMENTS) {
-        LOG_ERR("Too many fragments required: %u (max %u)", total_fragments, RAIN_HISTORY_MAX_FRAGMENTS);
+    uint16_t chunk_size = rain_history_cmd_state.chunk_size;
+    if (chunk_size == 0U) {
+        LOG_ERR("Rain history MTU payload is zero");
+        k_free(daily_data);
+        rain_history_send_error_response(rain_history_cmd_state.requesting_conn, 0x03);
+        return -EMSGSIZE;
+    }
+
+    uint16_t total_fragments_u16 = (uint16_t)((total_data_size + chunk_size - 1U) / chunk_size);
+    if (total_fragments_u16 == 0U || total_fragments_u16 > RAIN_HISTORY_MAX_FRAGMENTS) {
+        LOG_ERR("Too many fragments required: %u (max %u)", total_fragments_u16, RAIN_HISTORY_MAX_FRAGMENTS);
         k_free(daily_data);
         rain_history_send_error_response(rain_history_cmd_state.requesting_conn, 0x07); /* Too much data */
         return -E2BIG;
     }
+    uint8_t total_fragments = (uint8_t)total_fragments_u16;
     
     rain_history_cmd_state.total_entries = actual_count;
     rain_history_cmd_state.total_fragments = total_fragments;
@@ -9551,14 +9613,27 @@ static int send_rain_history_fragment(struct bt_conn *conn, uint8_t fragment_id)
     response.header.total_fragments = (uint8_t)rain_history_cmd_state.total_fragments;
     response.header.status = 0; /* Success */
     response.header.data_type = rain_history_cmd_state.data_type;
+    response.header.entry_count = sys_cpu_to_le16(rain_history_cmd_state.total_entries);
     
-    /* Calculate fragment data */
+    /* Calculate fragment data (MTU-aware payload) */
     size_t entry_size = (rain_history_cmd_state.data_type == 0) ? 
                        sizeof(rain_hourly_data_t) : sizeof(rain_daily_data_t);
-    size_t fragment_offset = fragment_id * RAIN_HISTORY_FRAGMENT_SIZE;
-    size_t remaining_data = (rain_history_cmd_state.total_entries * entry_size) - fragment_offset;
-    size_t fragment_data_size = (remaining_data > RAIN_HISTORY_FRAGMENT_SIZE) ? 
-                               RAIN_HISTORY_FRAGMENT_SIZE : remaining_data;
+    uint16_t chunk_size = rain_history_cmd_state.chunk_size;
+    if (chunk_size == 0U) {
+        return -EMSGSIZE;
+    }
+
+    size_t total_bytes = (size_t)rain_history_cmd_state.total_entries * entry_size;
+    size_t fragment_offset = (size_t)fragment_id * chunk_size;
+    if (fragment_offset >= total_bytes) {
+        return -EINVAL;
+    }
+
+    size_t remaining_data = total_bytes - fragment_offset;
+    size_t fragment_data_size = (remaining_data > chunk_size) ? chunk_size : remaining_data;
+    if (fragment_data_size > sizeof(response.data)) {
+        fragment_data_size = sizeof(response.data);
+    }
     
     response.header.fragment_size = (uint8_t)fragment_data_size;
     
@@ -10116,6 +10191,12 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
     /* Echo accepted command into value buffer for read-back */
     memcpy(rain_history_value, cmd, sizeof(struct rain_history_cmd_data));
 
+    uint16_t chunk_size = history_fragment_max_payload(conn);
+    if (chunk_size == 0U) {
+        rain_history_send_error_response(conn, 0x03); /* MTU too small */
+        return len;
+    }
+
     /* Setup state */
     rain_history_cmd_state.command_active = true;
     rain_history_cmd_state.requesting_conn = bt_conn_ref(conn);
@@ -10128,6 +10209,7 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
     rain_history_cmd_state.total_entries = 0;
     rain_history_cmd_state.current_fragment = 0;
     rain_history_cmd_state.total_fragments = 0;
+    rain_history_cmd_state.chunk_size = (uint8_t)chunk_size;
     rain_history_cmd_state.fragment_buffer = NULL;
     rain_history_cmd_state.fragment_buffer_owned = false;
 

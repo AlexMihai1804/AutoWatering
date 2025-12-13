@@ -99,7 +99,7 @@ uint8_t  total_fragments; // Total fragment count for this response
 uint8_t  fragment_size;   // Payload bytes following header in THIS fragment
 uint8_t  reserved;        // 0
 ```
-Payload immediately follows (<=240 bytes for rain/history domain; environmental history <=232). Clients reassemble by concatenation in `fragment_index` order until `fragment_index == total_fragments-1`.
+Payload immediately follows (<=232 bytes payload after the 8B header at MTU=247). Firmware also clamps payload to the negotiated MTU, so `fragment_size` may be smaller on constrained links. Clients reassemble by concatenation in `fragment_index` order until `fragment_index == total_fragments-1`.
 
 ### 4-Byte Write Fragment Header (First Fragment Only)
 Applied to large write-path structs (Channel Config, Growing Env, Enhanced System Config, etc.). Formats:
@@ -110,7 +110,7 @@ Applied to large write-path structs (Channel Config, Growing Env, Enhanced Syste
 frag_type: 1=name only (Channel Config), 2=full struct (BE size decode), 3=full struct (LE, preferred). Subsequent continuation fragments omit header; each write <=20 bytes data portion.
 
 ### Buffering & Flow
-The stack handles ATT TX buffering; application does not maintain a custom pool beyond static packing buffers (e.g. 1212-byte history pack, 240-byte fragment slices). Backpressure manifests as transient `bt_gatt_notify` errors - clients should retry after a short delay (>= base interval).
+The stack handles ATT TX buffering; application does not maintain a custom pool beyond static packing buffers (e.g. 1212-byte history pack, 240-byte total history fragments = 8B header + up to 232B payload). Backpressure manifests as transient `bt_gatt_notify` errors - clients should retry after a short delay (>= base interval).
 
 ### Client Configuration Characteristic Descriptor (CCCD)
 
@@ -233,7 +233,7 @@ Implementation uses direct `bt_gatt_notify` calls with local throttle bookkeepin
 ##  Performance & Limits (Informational)
 Concrete timing varies by controller + central stack. Application does not guarantee fixed latencies; below are design intents rather than hard specs:
 - **Notification Burst**: High priority bursts spaced >=50 ms (subject to adaptive changes)
-- **Fragment Payload Sizes**: History/Rain up to 240 bytes per fragment after 8B header; Environmental History up to 232.
+- **Fragment Payload Sizes**: Unified history payloads up to 232 bytes after the 8B header (total <=240 bytes at MTU=247); smaller MTU yields smaller `fragment_size`.
 - **Max Packed History Build**: ~1212 bytes (12B header + 50x24B detailed) in static buffer.
 - **Concurrent Fragments**: Application sends fragments sequentially with 50 ms inter-fragment delay.
 - **MTU Dependence**: Larger negotiated MTU benefits single-frame fixed-size characteristics but write fragmentation still observes <=20B payload rule.

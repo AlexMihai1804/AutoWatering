@@ -68,8 +68,8 @@ typedef enum {
 static task_state_t current_task_state = W_TASK_STATE_IDLE;
 
 /** Stack sizes for watering threads */
-#define WATERING_STACK_SIZE 2048
-#define SCHEDULER_STACK_SIZE 2048
+#define WATERING_STACK_SIZE 4096
+#define SCHEDULER_STACK_SIZE 4096
 
 /** Thread stacks */
 K_THREAD_STACK_DEFINE(watering_task_stack, WATERING_STACK_SIZE);

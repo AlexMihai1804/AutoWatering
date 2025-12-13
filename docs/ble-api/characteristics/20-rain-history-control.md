@@ -5,10 +5,10 @@
 |-----------|---------|------|---------------|-------|
 | Read | `struct rain_history_cmd_data` | 16 B | None | Echoes the last command that was accepted |
 | Write | `struct rain_history_cmd_data` | 16 B | None | Triggers processing (hourly, daily, recent, reset, calibration) |
-| Notify | `history_fragment_header_t` + payload | 8 B + <=240 B | Unified history header | Multi-fragment responses spaced ~50 ms apart |
+| Notify | `history_fragment_header_t` + payload | 8 B + <=232 B | Unified history header | Multi-fragment responses (payload may be smaller for small MTU) |
 | Error Notify | `history_fragment_header_t` + 1 B | 9 B | Unified history header | `data_type = 0xFF`, `status = error`, payload[0] = code |
 
-Provides on-demand access to rainfall history. Clients issue a 16-byte command and receive results via notifications that reuse the shared 8-byte `history_fragment_header_t`. Hourly and daily responses are auto-fragmented up to 240-byte payloads; recent totals, reset acknowledgements, and calibration acknowledgements fit in a single fragment.
+Provides on-demand access to rainfall history. Clients issue a 16-byte command and receive results via notifications that reuse the shared 8-byte `history_fragment_header_t`. Hourly and daily responses are auto-fragmented up to 232-byte payloads (and may be smaller to fit negotiated MTU); recent totals, reset acknowledgements, and calibration acknowledgements fit in a single fragment.
 
 ## Characteristic Metadata
 | Item | Value |
@@ -17,9 +17,9 @@ Provides on-demand access to rainfall history. Clients issue a 16-byte command a
 | Permissions | Read, Write |
 | Command Size | 16 bytes (packed) |
 | Fragment Header | 8 bytes (`history_fragment_header_t`) |
-| Max Fragment Payload | 240 bytes (`RAIN_HISTORY_FRAGMENT_SIZE`) |
-| Notification Priority | Normal (`bt_gatt_notify` with ~50 ms pacing) |
-| Internal Guard | One active command per controller (`rain_history_state.command_active`) |
+| Max Fragment Payload | 232 bytes (`RAIN_HISTORY_FRAGMENT_SIZE`) |
+| Notification Priority | Normal (`bt_gatt_notify` paced by a 5 ms work delay + stack backpressure) |
+| Internal Guard | One active command per controller (`rain_history_cmd_state.command_active`) |
 
 ## Command Payload (`struct rain_history_cmd_data`)
 | Offset | Field | Type | Notes |
@@ -56,26 +56,24 @@ Any other opcode returns error `0x04` (unknown command).
 |-------|---------|
 | `data_type` | `0` hourly, `1` daily, `0xFE` recent totals, `0xFD` reset ack, `0xFC` calibration ack, `0xFF` error |
 | `status` | `0` success, non-zero error code (see table) |
-| `entry_count` | Reserved for future batching (currently 0) |
+| `entry_count` | Total entries in this response (LE16, echoed each fragment for hourly/daily; 0 for non-stream responses) |
 | `fragment_index` | 0-based index |
 | `total_fragments` | Total fragments for this command |
-| `fragment_size` | Payload bytes in this fragment (<=240) |
+| `fragment_size` | Payload bytes in this fragment (<=232, and may be lower for small MTU) |
 | `reserved` | 0 |
 
-Entries are sent sequentially; clients know the transfer is complete when `fragment_index + 1 == total_fragments`. Successive fragments are scheduled roughly 50 ms apart. The firmware enforces `RAIN_HISTORY_MAX_FRAGMENTS = 20`; exceeding that cap produces error code `0x07`.
+Entries are sent sequentially; clients know the transfer is complete when `fragment_index + 1 == total_fragments`. Successive fragments are scheduled via a short (~5 ms) work delay; the controller/stack may add further backpressure. The firmware caps `total_fragments` to 255; exceeding that cap produces error code `0x07`.
 
 ## Error Codes (`status` and payload[0])
 | Code | Description | Emission Point |
 |------|-------------|----------------|
 | `0x01` | Busy - another connection already owns the command slot | Early validation |
-| `0x02` | Invalid parameter - bad `data_type`, inverted timestamps, etc. | Early validation |
-| `0x03` | Operation failed - storage clear error | Reset command |
-| `0x04` | Unknown command | Early validation |
+| `0x03` | Transport/fragmentation error (e.g., MTU too small or notify failed) | Pre-flight / fragment send |
 | `0x05` | Memory error - allocation failed for history buffer | Hourly/Daily retrieval |
-| `0x06` | Data error - backend could not supply entries | Hourly/Daily retrieval |
+| `0x06` | Data error - backend could not supply entries | Hourly/Daily retrieval / reset clear |
 | `0x07` | Too much data - fragment count would exceed limit | Hourly/Daily retrieval |
-| `0xFE` | Invalid parameters - `max_entries == 0` or disallowed `data_type` | Pre-flight checks |
-| `0xFF` | Invalid command (legacy guard) | Never emitted in current path |
+| `0xFE` | Invalid parameters - `max_entries == 0` or inverted timestamps | Pre-flight checks |
+| `0xFF` | Invalid command | Early validation |
 
 All errors are transmitted as a single 9-byte notification (`header` + 1 byte payload) and reset the active-command flag.
 
@@ -89,7 +87,7 @@ All errors are transmitted as a single 9-byte notification (`header` + 1 byte pa
 
 ## Client Guidance
 - Always send the full 16-byte command at offset 0; partial writes are rejected.
-- Use realistic `max_entries` values so that `actual_count * entry_size` stays below `RAIN_HISTORY_MAX_FRAGMENTS * 240` (e.g., <=480 entries for hourly data).
+- Use realistic `max_entries` values; if the response would require >255 fragments the firmware replies with `status=0x07`.
 - Expect little-endian floats/integers; convert `*_mm_x100` by dividing by 100.
 - Subscribe to notifications before issuing commands; the firmware does not retry when notifications are disabled.
 - Treat errors as terminal for the in-flight command; resend a new command once the previous one reports an error or completion.

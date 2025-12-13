@@ -6,7 +6,7 @@
 | Write | 12 B query header | 12 B | None | Triggers query or clear command |
 | Write | 12 B header (`history_type=0xFF`) | 12 B | None | Clears stored history (best effort) |
 | Read | `struct history_data` | 32 B | None | Returns the cached 32-byte `history_value` buffer (query header + latest detailed snapshot) |
-| Notify | `history_fragment_header_t` + payload | 8 B + <=240 B | Unified | Multi-fragment responses for queries |
+| Notify | `history_fragment_header_t` + payload | 8 B + <=232 B | Unified | Multi-fragment responses for queries |
 | Notify | `struct history_data` | 32 B | None | Real-time event notifications from watering tasks |
 
 History Management exposes watering history in four aggregation levels. Queries are issued through a compact 12-byte header and responses are delivered asynchronously as one or more fragments. Real-time watering events reuse the same `struct history_data` snapshot that backs the read buffer and are sent independently from queued queries.
@@ -19,7 +19,7 @@ History Management exposes watering history in four aggregation levels. Queries 
 | Permissions | Read, Write |
 | Query Header Size | 12 bytes |
 | Response Fragment Header | `history_fragment_header_t` (8 bytes) |
-| Max Fragment Payload | 240 bytes (`RAIN_HISTORY_FRAGMENT_SIZE`) |
+| Max Fragment Payload | 232 bytes (`RAIN_HISTORY_FRAGMENT_SIZE`) |
 | Notification Priority | Low (>=1 s throttle between accepted queries; individual fragments spaced 5 ms) |
 
 Handlers: `read_history`, `write_history`, `history_ccc_changed`, `bt_irrigation_history_notify_event` in `src/bt_irrigation_service.c`.
@@ -55,7 +55,7 @@ Each fragment sent after a successful query has:
 
 ```
 history_fragment_header_t header;  // 8 bytes
-uint8_t payload[fragment_size];    // Up to 240 bytes
+uint8_t payload[fragment_size];    // Up to 232 bytes (may be smaller for small MTU)
 ```
 
 `header` fields:

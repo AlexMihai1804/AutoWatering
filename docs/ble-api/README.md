@@ -53,7 +53,7 @@ The firmware keeps 20-byte payload compatibility for writes even when a larger M
 
 - **Channel Configuration / Growing Environment:** First fragment carries `[channel_id][frag_type][len_lo][len_hi]`. Fragment types 1 (name-only), 2 (big-endian struct), and 3 (little-endian struct) are supported; new tooling should prefer type 3.
 - **Auto Calc Status:** Uses the generic `[0x00][frag_type][len_lo][len_hi]` header because it is not channel-scoped.
-- **History responses (irrigation, rain, environmental):** Every fragment starts with the packed 8-byte `history_fragment_header_t` followed by up to 240 bytes of payload (`RAIN_HISTORY_FRAGMENT_SIZE`). Digest fields expose `fragment_index`, `total_fragments`, entry count, and status codes.
+- **History responses (irrigation, rain, environmental):** Every fragment starts with the packed 8-byte `history_fragment_header_t` followed by up to 232 bytes of payload (`RAIN_HISTORY_FRAGMENT_SIZE`) and may be smaller to fit the negotiated MTU. Digest fields expose `fragment_index`, `total_fragments`, entry count, and status codes.
 - **Notifications:** Managed through `SMART_NOTIFY`, `CRITICAL_NOTIFY`, and `CHANNEL_CONFIG_NOTIFY`. Adaptive throttling widens or shrinks the per-priority interval (critical 0 ms, high 50 ms, normal 200 ms, low 1000 ms) based on success and congestion counters. Channel name notifications are additionally rate-limited (maximum three within one second per channel).
 
 ## ATT Error Behaviour

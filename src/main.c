@@ -106,6 +106,55 @@ static void print_stack_info(void) {
 #endif
 }
 
+static void print_reset_reason(uint32_t resetreas)
+{
+    if (resetreas == 0U) {
+        printk("Reset reason: (none/unknown)\n");
+        return;
+    }
+
+    printk("Reset reason:");
+    if (resetreas & NRF_POWER_RESETREAS_RESETPIN_MASK) {
+        printk(" RESETPIN");
+    }
+    if (resetreas & NRF_POWER_RESETREAS_DOG_MASK) {
+        printk(" WATCHDOG");
+    }
+    if (resetreas & NRF_POWER_RESETREAS_SREQ_MASK) {
+        printk(" SREQ");
+    }
+    if (resetreas & NRF_POWER_RESETREAS_LOCKUP_MASK) {
+        printk(" LOCKUP");
+    }
+    if (resetreas & NRF_POWER_RESETREAS_OFF_MASK) {
+        printk(" OFF");
+    }
+#ifdef NRF_POWER_RESETREAS_LPCOMP_MASK
+    if (resetreas & NRF_POWER_RESETREAS_LPCOMP_MASK) {
+        printk(" LPCOMP");
+    }
+#endif
+    if (resetreas & NRF_POWER_RESETREAS_DIF_MASK) {
+        printk(" DIF");
+    }
+#ifdef NRF_POWER_RESETREAS_NFC_MASK
+    if (resetreas & NRF_POWER_RESETREAS_NFC_MASK) {
+        printk(" NFC");
+    }
+#endif
+#ifdef NRF_POWER_RESETREAS_VBUS_MASK
+    if (resetreas & NRF_POWER_RESETREAS_VBUS_MASK) {
+        printk(" VBUS");
+    }
+#endif
+#ifdef NRF_POWER_RESETREAS_CTRLAP_MASK
+    if (resetreas & NRF_POWER_RESETREAS_CTRLAP_MASK) {
+        printk(" CTRLAP");
+    }
+#endif
+    printk("\n");
+}
+
 static int setup_usb_cdc_acm(void) {
     if (!ENABLE_USB) {
         return -ENODEV;
@@ -330,6 +379,7 @@ int main(void) {
     printk("SERIAL PORT FIX BUILD\n");
     printk("==============================\n\n");
     printk("Reset reason bits: 0x%08lx\n", (unsigned long)resetreas);
+    print_reset_reason(resetreas);
     critical_section_active = true;
     printk("Starting USB init with port release safeguards...\n");
     int usb_ret = setup_usb_cdc_acm();

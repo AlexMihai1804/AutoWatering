@@ -44,7 +44,7 @@ typedef struct {
     uint8_t fragment_id;       /* Current fragment index */
     uint8_t total_fragments;   /* Total fragments for this request */
     uint8_t reserved[3];       /* Reserved */
-    uint8_t data[232];         /* Packed records */
+    uint8_t data[RAIN_HISTORY_FRAGMENT_SIZE]; /* Packed records (max payload) */
 } __attribute__((packed)) ble_history_response_t;
 
 /* Environmental history statistics structure */
@@ -68,10 +68,12 @@ typedef struct {
 /**
  * @brief Handle environmental history data request
  * @param request Pointer to history request structure
+ * @param payload_max Max payload bytes for this connection (<=RAIN_HISTORY_FRAGMENT_SIZE)
  * @param response Pointer to response structure to fill
  * @return 0 on success, negative error code on failure
  */
 int bt_env_history_request_handler(const ble_history_request_t *request, 
+                                  uint16_t payload_max,
                                   ble_history_response_t *response);
 
 /**
