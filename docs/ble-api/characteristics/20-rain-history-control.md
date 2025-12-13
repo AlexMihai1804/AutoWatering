@@ -83,6 +83,7 @@ All errors are transmitted as a single 9-byte notification (`header` + 1 byte pa
 - **One command at a time**: A new request from another connection while a command is active returns `0x01`.
 - **Reads are diagnostic only**: A read returns the last accepted 16-byte command; data delivery always happens via notifications.
 - **Hourly / Daily retrieval**: The handler allocates a buffer with `k_malloc`, fills it with `rain_history_get_hourly()` or `rain_history_get_daily()`, then iterates fragments (`bt_gatt_notify`) with ~50 ms spacing. Buffers are freed after the last fragment.
+- **Empty results**: When the requested range contains no entries, the firmware responds with a single header-only fragment (`total_fragments = 1`, `fragment_size = 0`, `status = 0`) and then releases the command slot.
 - **Recent totals**: Built on-the-fly and sent immediately in one fragment.
 - **Reset / Calibrate**: Trigger subsystem actions (`rain_history_clear_all()`, `rain_sensor_reset_*()`), then emit a zero-length acknowledgement fragment. Failures surface as `0x03`.
 

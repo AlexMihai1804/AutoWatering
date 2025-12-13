@@ -473,7 +473,7 @@ When `CONFIG_HISTORY_EXTERNAL_FLASH=y`, a LittleFS volume is mounted on `databas
 
 ### History Streaming
 - TLV-framed characteristics with fragment sequencing.
-- Client acknowledgements required.
+- History transfers are client-driven (write triggers streaming) and do not require acknowledgements.
 - Rain history caps each transfer at 20 fragments.
 
 ### Configuration Portals

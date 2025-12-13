@@ -1046,7 +1046,8 @@ static uint8_t  rain_last_status_sent = 0xFF; /* invalid at boot to force first 
 
 /* Environmental data characteristic value handles */
 static uint8_t environmental_data_value[sizeof(struct environmental_data_ble)];
-static uint8_t environmental_history_value[256]; // Fixed size buffer for history response
+static uint8_t environmental_history_value[256]; /* Header + payload cache (max 240B, padded) */
+static uint16_t environmental_history_value_len = sizeof(history_fragment_header_t);
 /* Async fragmentation state for environmental data notifications */
 static struct {
     bool active;
@@ -1452,16 +1453,19 @@ static ssize_t read_environmental_history(struct bt_conn *conn, const struct bt_
     }
 
     /* Return current response buffer (may be large; long read supported) */
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, environmental_history_value, sizeof(environmental_history_value));
+    uint16_t value_len = environmental_history_value_len;
+    if (value_len == 0 || value_len > sizeof(environmental_history_value)) {
+        value_len = sizeof(environmental_history_value);
+    }
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, environmental_history_value, value_len);
 }
 
 /* Environmental history write callback */
 static ssize_t write_environmental_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                           const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
 {
-    /* Rate limiting: minimum 1s between commands, 500ms between notifications */
+    /* Rate limiting: keep fragment downloads responsive */
     static int64_t last_cmd_ms = -2000;
-    static int64_t last_notify_ms = -2000;
     int64_t now_ms = k_uptime_get();
     if (!conn || !attr || !buf) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
@@ -1469,35 +1473,36 @@ static ssize_t write_environmental_history(struct bt_conn *conn, const struct bt
     if (offset != 0) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
     }
-    if (len != sizeof(ble_history_request_t)) {
+    if (len != 12 && len != 19 && len != sizeof(ble_history_request_t)) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
     }
 
-    /* Removed unused early request peek variable to reduce warnings */
+    ble_history_request_t req_local = {0};
+    memcpy(&req_local, buf, len);
 
-    /* Enforce 1s minimum between commands */
-    if ((now_ms - last_cmd_ms) < 1000) {
+    const ble_history_request_t *req = &req_local;
+    const int64_t ENV_HISTORY_MIN_CMD_INTERVAL_MS = 50;
+
+    if ((now_ms - last_cmd_ms) < ENV_HISTORY_MIN_CMD_INTERVAL_MS) {
         /* Always build unified 8B header (no payload) with Rate Limited status */
         history_fragment_header_t hdr = (history_fragment_header_t){0};
-        hdr.data_type = 0; /* unspecified */
+        hdr.data_type = req->data_type;
         hdr.status = 0x07; /* Rate limited */
-        hdr.entry_count = 0;
-        hdr.fragment_index = 0;
-        hdr.total_fragments = 0;
+        hdr.entry_count = sys_cpu_to_le16(0);
+        hdr.fragment_index = req->fragment_id;
+        hdr.total_fragments = 1;
         hdr.fragment_size = 0;
         hdr.reserved = 0;
+        memset(environmental_history_value, 0, sizeof(environmental_history_value));
         memcpy(environmental_history_value, &hdr, sizeof(hdr));
+        environmental_history_value_len = sizeof(hdr);
         if (notification_state.environmental_history_notifications_enabled && default_conn) {
-            if ((now_ms - last_notify_ms) >= 500) {
-                const struct bt_gatt_attr *eh_attr = &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_HISTORY_VALUE];
-                bt_gatt_notify(default_conn, eh_attr, &hdr, sizeof(hdr));
-                last_notify_ms = now_ms;
-            }
+            const struct bt_gatt_attr *eh_attr = &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_HISTORY_VALUE];
+            bt_gatt_notify(default_conn, eh_attr, &hdr, sizeof(hdr));
         }
         return len; /* Accept write but indicate throttling via status */
     }
 
-    const ble_history_request_t *req = (const ble_history_request_t *)buf;
     ble_history_response_t resp;
     memset(&resp, 0, sizeof(resp));
 
@@ -1523,31 +1528,27 @@ static ssize_t write_environmental_history(struct bt_conn *conn, const struct bt
     history_fragment_header_t *hdr = (history_fragment_header_t *)notify_buf;
     hdr->data_type = resp.data_type;
     hdr->status = resp.status;
-    hdr->entry_count = resp.record_count;
+    hdr->entry_count = sys_cpu_to_le16(resp.record_count);
     hdr->fragment_index = resp.fragment_id;
     hdr->total_fragments = resp.total_fragments;
-    hdr->fragment_size = (uint8_t)(fragment_size > 255 ? 255 : fragment_size);
+    uint16_t copy_sz = fragment_size > ENVHIST_MAX_PAYLOAD ? ENVHIST_MAX_PAYLOAD : fragment_size;
+    hdr->fragment_size = (uint8_t)copy_sz;
     hdr->reserved = 0;
     if (fragment_size > 0) {
-        uint16_t copy_sz = fragment_size > ENVHIST_MAX_PAYLOAD ? ENVHIST_MAX_PAYLOAD : fragment_size;
         memcpy(&notify_buf[sizeof(history_fragment_header_t)], resp.data, copy_sz);
     }
     /* Update read buffer with header + payload slice */
     {
-        uint16_t copy_sz = fragment_size > ENVHIST_MAX_PAYLOAD ? ENVHIST_MAX_PAYLOAD : fragment_size;
+        memset(environmental_history_value, 0, sizeof(environmental_history_value));
         memcpy(environmental_history_value, notify_buf, sizeof(history_fragment_header_t) + copy_sz);
+        environmental_history_value_len = sizeof(history_fragment_header_t) + copy_sz;
     }
-    /* Notify if enabled (500ms min interval) */
+    /* Notify if enabled */
     if (notification_state.environmental_history_notifications_enabled && default_conn) {
-        if ((now_ms - last_notify_ms) >= 500) {
-            const struct bt_gatt_attr *eh_attr = &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_HISTORY_VALUE];
-            uint16_t copy_sz = fragment_size > ENVHIST_MAX_PAYLOAD ? ENVHIST_MAX_PAYLOAD : fragment_size;
-            int nerr = bt_gatt_notify(default_conn, eh_attr, notify_buf, sizeof(history_fragment_header_t) + copy_sz);
-            if (nerr) {
-                LOG_WRN("Environmental history notify (unified) failed: %d", nerr);
-            } else {
-                last_notify_ms = now_ms;
-            }
+        const struct bt_gatt_attr *eh_attr = &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_HISTORY_VALUE];
+        int nerr = bt_gatt_notify(default_conn, eh_attr, notify_buf, sizeof(history_fragment_header_t) + copy_sz);
+        if (nerr) {
+            LOG_WRN("Environmental history notify (unified) failed: %d", nerr);
         }
     }
     last_cmd_ms = now_ms;
@@ -3914,10 +3915,15 @@ static ssize_t write_history(struct bt_conn *conn, const struct bt_gatt_attr *at
         history_fragment_header_t header = {0};
         header.data_type = 0xFE; /* rate limit indicator */
         header.status = 0x07;    /* reuse generic rate limit code */
+        header.entry_count = sys_cpu_to_le16(0);
+        header.fragment_index = 0;
+        header.total_fragments = 1;
+        header.fragment_size = 0;
+        header.reserved = 0;
         if (notification_state.history_notifications_enabled) {
             bt_gatt_notify(conn, attr, &header, sizeof(header));
         }
-        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        return len;
     }
 
     /* Parse query */
@@ -9355,6 +9361,9 @@ static void rain_history_reset_state(void) {
     if (rain_history_cmd_state.fragment_buffer_owned && rain_history_cmd_state.fragment_buffer) {
         k_free(rain_history_cmd_state.fragment_buffer);
     }
+    if (rain_history_cmd_state.requesting_conn) {
+        bt_conn_unref(rain_history_cmd_state.requesting_conn);
+    }
     rain_history_cmd_state.command_active = false;
     rain_history_cmd_state.current_command = 0;
     rain_history_cmd_state.start_timestamp = 0;
@@ -9388,7 +9397,6 @@ static void rain_history_send_error_response(struct bt_conn *conn, uint8_t error
     error_response.data[0] = error_code;
     
     size_t notify_len = sizeof(error_response.header) + error_response.header.fragment_size;
-    memcpy(rain_history_value, &error_response, notify_len);
     if (notification_state.rain_history_notifications_enabled) {
         bt_gatt_notify(conn, &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE], 
                       &error_response, notify_len);
@@ -9423,6 +9431,24 @@ static int process_rain_history_hourly_request(uint32_t start_time, uint32_t end
     }
     
     LOG_INF("Retrieved %u hourly entries", actual_count);
+    if (actual_count == 0) {
+        /* Empty success response: 1 fragment, header only */
+        rain_history_response_t response = {0};
+        response.header.fragment_index = 0;
+        response.header.total_fragments = 1;
+        response.header.status = 0;
+        response.header.data_type = rain_history_cmd_state.data_type;
+        response.header.fragment_size = 0;
+
+        if (notification_state.rain_history_notifications_enabled) {
+            bt_gatt_notify(rain_history_cmd_state.requesting_conn,
+                           &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE],
+                           &response, sizeof(response.header));
+        }
+        k_free(hourly_data);
+        rain_history_reset_state();
+        return 0;
+    }
     
     /* Calculate fragmentation */
     size_t total_data_size = actual_count * sizeof(rain_hourly_data_t);
@@ -9472,6 +9498,24 @@ static int process_rain_history_daily_request(uint32_t start_time, uint32_t end_
     }
     
     LOG_INF("Retrieved %u daily entries", actual_count);
+    if (actual_count == 0) {
+        /* Empty success response: 1 fragment, header only */
+        rain_history_response_t response = {0};
+        response.header.fragment_index = 0;
+        response.header.total_fragments = 1;
+        response.header.status = 0;
+        response.header.data_type = rain_history_cmd_state.data_type;
+        response.header.fragment_size = 0;
+
+        if (notification_state.rain_history_notifications_enabled) {
+            bt_gatt_notify(rain_history_cmd_state.requesting_conn,
+                           &irrigation_svc.attrs[ATTR_IDX_RAIN_HISTORY_VALUE],
+                           &response, sizeof(response.header));
+        }
+        k_free(daily_data);
+        rain_history_reset_state();
+        return 0;
+    }
     
     /* Calculate fragmentation */
     size_t total_data_size = actual_count * sizeof(rain_daily_data_t);
@@ -9525,9 +9569,7 @@ static int send_rain_history_fragment(struct bt_conn *conn, uint8_t fragment_id)
         memset(response.data, 0, fragment_data_size); /* Fallback (should not happen) */
     }
 
-    /* Update global value buffer */
     size_t notify_len = sizeof(response.header) + response.header.fragment_size;
-    memcpy(rain_history_value, &response, notify_len);
     
     /* Send notification if enabled */
     if (notification_state.rain_history_notifications_enabled) {
@@ -10068,7 +10110,7 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
 
     /* Setup state */
     rain_history_cmd_state.command_active = true;
-    rain_history_cmd_state.requesting_conn = conn;
+    rain_history_cmd_state.requesting_conn = bt_conn_ref(conn);
     rain_history_cmd_state.current_command = cmd->command;
     rain_history_cmd_state.start_timestamp = cmd->start_timestamp;
     rain_history_cmd_state.end_timestamp = cmd->end_timestamp;
@@ -10153,6 +10195,10 @@ ssize_t write_rain_history(struct bt_conn *conn, const struct bt_gatt_attr *attr
     }
 
     if (result < 0) {
+        rain_history_reset_state();
+    }
+    if (!rain_history_cmd_state.command_active) {
+        /* Synchronous commands (recent/reset/calibrate) complete immediately. */
         rain_history_reset_state();
     }
 
@@ -11066,6 +11112,3 @@ int bt_irrigation_interval_mode_phase_notify(uint8_t channel_id, bool is_waterin
 
 
 #endif /* CONFIG_BT */
-
-
-

@@ -20,7 +20,7 @@ History Management exposes watering history in four aggregation levels. Queries 
 | Query Header Size | 12 bytes |
 | Response Fragment Header | `history_fragment_header_t` (8 bytes) |
 | Max Fragment Payload | 240 bytes (`RAIN_HISTORY_FRAGMENT_SIZE`) |
-| Notification Priority | Low (>=1 s throttle between accepted queries; individual fragments spaced 50 ms) |
+| Notification Priority | Low (>=1 s throttle between accepted queries; individual fragments spaced 5 ms) |
 
 Handlers: `read_history`, `write_history`, `history_ccc_changed`, `bt_irrigation_history_notify_event` in `src/bt_irrigation_service.c`.
 
@@ -44,7 +44,7 @@ All integers little-endian.
 | 4-7 | `start_timestamp` | Optional UTC filter (currently echoed only). |
 | 8-11 | `end_timestamp` | Optional UTC filter (currently echoed only). |
 
-The handler rejects payloads that are not exactly 12 bytes or writes with non-zero offset. Accepted queries update the on-characteristic buffer so a subsequent read returns the header that generated the current response.
+The handler rejects payloads that are not exactly 12 bytes or writes with non-zero offset. Accepted queries are answered via fragment notifications; the 32-byte read buffer (`history_value`) is not updated by query responses.
 
 ### Clear Command (`history_type = 0xFF`)
 - Invokes `watering_history_cleanup_expired()` and emits a single 8-byte header notification (`data_type = 0xFF`, `status = 0`).
@@ -130,7 +130,7 @@ Data is obtained through `watering_history_get_daily_stats()` and limited to a s
 `entry_index` selects the year offset from the current year.
 
 ## Rate Limiting & Errors
-- Queries are limited to one per second (`HISTORY_QUERY_MIN_INTERVAL_MS`). Flooding results in `BT_ATT_ERR_VALUE_NOT_ALLOWED` and a standalone notification with `data_type = 0xFE`, `status = 0x07` when notifications are enabled.
+- Queries are limited to one per second (`HISTORY_QUERY_MIN_INTERVAL_MS`). Flooding emits a standalone notification with `data_type = 0xFE`, `status = 0x07` (no payload) and the write is accepted without running the query.
 - Invalid length -> `BT_ATT_ERR_INVALID_ATTRIBUTE_LEN`.
 - Non-zero offset writes -> `BT_ATT_ERR_INVALID_OFFSET`.
 - Unsupported history type (other than `0-3, 0xFF`) or channel out of range -> `BT_ATT_ERR_VALUE_NOT_ALLOWED`.

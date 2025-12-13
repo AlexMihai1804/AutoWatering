@@ -62,7 +62,7 @@ Focused, externally facing list. All items map to existing modules or confirmed 
 - Custom irrigation service: **27 documented characteristics** (`docs/ble-api/`).
 - Notification scheduler: 8×23-byte buffer pool, priority throttling (critical 0 ms, normal 200 ms, low 1 s).
 - Fragmentation for large payloads (TLV-framed, sequence-numbered).
-- History streaming with client acknowledgements.
+- History streaming via write-triggered fragment notifications (no client ACK).
 
 ### Time Handling
 - DS3231 RTC integration using UTC timestamps for scheduling and history.

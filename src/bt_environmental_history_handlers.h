@@ -28,8 +28,10 @@ typedef struct {
     uint8_t  data_type;       /* 0=detailed, 1=hourly, 2=daily */
     uint8_t  max_records;     /* Max records to return (1-100) */
     uint8_t  fragment_id;     /* Fragment index to request (0-based) */
-    uint8_t  reserved[7];     /* Reserved */
+    uint8_t  reserved[8];     /* Reserved */
 } __attribute__((packed)) ble_history_request_t;
+
+_Static_assert(sizeof(ble_history_request_t) == 20, "ble_history_request_t must be 20 bytes");
 
 /*
  * Environmental History Response Header (matches BLE API docs)

@@ -6,8 +6,8 @@ This characteristic shares the unified 8-byte `history_fragment_header_t` envelo
 | Operation | Payload | Size | Fragmentation | Notes |
 |-----------|---------|------|---------------|-------|
 | Read | `history_fragment_header_t + payload` | 8 B + <=232 B | Unified 8-byte header | Returns the most recent response slice |
-| Write | `ble_history_request_t` | 20 B | None | Enforces ≥1 s between accepted commands |
-| Notify | `history_fragment_header_t + payload` | 8 B + <=232 B | Unified 8-byte header | 500 ms throttle when CCC enabled; mirrors read buffer |
+| Write | `ble_history_request_t` | 20 B | None | Enforces >=50 ms between accepted commands |
+| Notify | `history_fragment_header_t + payload` | 8 B + <=232 B | Unified 8-byte header | Mirrors read buffer for each accepted write |
 
 ## Request Format (`ble_history_request_t`)
 | Offset | Field | Type | Meaning |
@@ -18,7 +18,7 @@ This characteristic shares the unified 8-byte `history_fragment_header_t` envelo
 | 9 | `data_type` | `uint8_t` | 0 detailed, 1 hourly, 2 daily (ignored for 0x04/0x05) |
 | 10 | `max_records` | `uint8_t` | 1-100 (0 treated as 100) |
 | 11 | `fragment_id` | `uint8_t` | 0-based fragment selector |
-| 12 | `reserved[7]` | `uint8_t[7]` | Must be 0 |
+| 12 | `reserved[8]` | `uint8_t[8]` | Must be 0 |
 
 ## Response Envelope
 Every read or notification begins with the shared 8-byte header below, followed by `fragment_size` bytes of packed records (<=232 bytes).
@@ -27,7 +27,7 @@ Every read or notification begins with the shared 8-byte header below, followed 
 |--------|-------|------|-------|
 | 0 | `data_type` | `uint8_t` | Mirrors handler response; trends set 0x03 |
 | 1 | `status` | `uint8_t` | 0 success, non-zero per Status Codes |
-| 2 | `entry_count` | `uint16_t` (LE) | Records present in this fragment (≤232 / record size) |
+| 2 | `entry_count` | `uint16_t` (LE) | Records present in this fragment (<=232 / record size) |
 | 4 | `fragment_index` | `uint8_t` | Echo of requested fragment index |
 | 5 | `total_fragments` | `uint8_t` | Total fragments available for this cached response |
 | 6 | `fragment_size` | `uint8_t` | Payload bytes appended (0 for header-only, max 232) |
@@ -35,7 +35,7 @@ Every read or notification begins with the shared 8-byte header below, followed 
 
 The characteristic's internal buffer is updated with this header and payload slice so repeated reads deliver identical bytes.
 
-Rate-limited writes respond with `status = 0x07`, `fragment_size = 0`, and all other fields cleared (aside from `data_type = 0`). Invalid fragment requests return `status = 0x06` and populate `total_fragments` to help clients resynchronise.
+Rate-limited writes respond with `status = 0x07`, `fragment_size = 0`, and no payload. Invalid fragment requests return `status = 0x06` and populate `total_fragments` to help clients resynchronise.
 
 ## Data Records
 - **Detailed (`data_type=0`)**: 12 B each -> `uint32_t timestamp`, `int16_t temperature_c_x100`, `uint16_t humidity_pct_x100`, `uint32_t pressure_pa` (hPa ×100).<br>- **Hourly (`data_type=1`)**: 16 B each -> `uint32_t timestamp`, temperature avg/min/max (×100), average humidity (×100), average pressure in Pa.<br>- **Daily (`data_type=2`)**: 22 B each -> `uint32_t date_code` (YYYYMMDD as stored), temperature avg/min/max (×100), humidity avg/min/max (×100), average pressure in Pa, `uint16_t sample_count` (defaults to 24 when metadata missing).<br>- **Trends (`command=0x04`)**: single 24 B record summarising last 24 h deltas and slopes; firmware sets `data_type=0x03` and `entry_count=1` when available.
@@ -50,9 +50,7 @@ Rate-limited writes respond with `status = 0x07`, `fragment_size = 0`, and all o
 - `0x07` rate limited (command accepted but response suppressed)
 
 ## Rate Limiting
-- Firmware enforces >=1 s between accepted commands. Earlier writes receive a `status=0x07` header (no payload).
-- Notifications share a dedicated throttle of 500 ms; excess responses remain available via read.
-- With a 247-byte MTU the firmware emits 232-byte payloads (8-byte header + 232 data) and spaces fragments by ~50 ms, so downloading the maximum 20 fragments completes in just over one second.
+- Firmware enforces >=50 ms between accepted commands. Earlier writes receive a `status=0x07` header (no payload).
 - After any accepted request the latest header + payload persist in the attribute value for long reads.
 
 ## Command Notes
@@ -61,7 +59,7 @@ Rate-limited writes respond with `status = 0x07`, `fragment_size = 0`, and all o
 ## Client Guidance
 - Start multi-fragment downloads with `fragment_id=0` and iterate sequentially; any invalid index replies with `status=0x06` including the expected `total_fragments`.
 - Treat `fragment_size` as authoritative when copying payload bytes; do not assume `entry_count * record_size` fits without truncation.
-- Respect throttle windows; back off for at least 1 s on status `0x07` before retrying.
+- Respect throttle windows; back off for at least 50 ms on status `0x07` before retrying.
 - Enable notifications to receive responses proactively; otherwise poll via read after each write.
 
 ## Related Interfaces
@@ -81,7 +79,7 @@ function parseEnvironmentalHistoryResponse(value) {
     const header = {
         dataType: dv.getUint8(0),
         status: dv.getUint8(1),
-        recordCount: dv.getUint16(2, true), // LE16 entry count (≤232 / record size)
+        recordCount: dv.getUint16(2, true), // LE16 entry count (<=232 / record size)
         fragmentIndex: dv.getUint8(4),
         totalFragments: dv.getUint8(5),
         fragmentSize: dv.getUint8(6)
