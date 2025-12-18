@@ -4,6 +4,20 @@ This document inventories every capability exposed by the current firmware. It i
 
 ---
 
+## Future (Roadmap)
+
+Planned and in-progress changes are tracked in the GitHub roadmap project:
+- https://github.com/users/AlexMihai1804/projects/2
+
+Key upcoming firmware work (by batch):
+- **B0 Core correctness fixes (FAO/ET0)**: https://github.com/AlexMihai1804/AutoWatering/issues/1, https://github.com/AlexMihai1804/AutoWatering/issues/2, https://github.com/AlexMihai1804/AutoWatering/issues/3, https://github.com/AlexMihai1804/AutoWatering/issues/4, https://github.com/AlexMihai1804/AutoWatering/issues/5
+- **B1–B2 Packs on external flash (LittleFS + BLE install/list + built-in DB pack)**: https://github.com/AlexMihai1804/AutoWatering/issues/10, https://github.com/AlexMihai1804/AutoWatering/issues/6, https://github.com/AlexMihai1804/AutoWatering/issues/7, https://github.com/AlexMihai1804/AutoWatering/issues/8, https://github.com/AlexMihai1804/AutoWatering/issues/12
+- **B4 Updates (atomic replace + rollback)**: https://github.com/AlexMihai1804/AutoWatering/issues/13
+- **B5 Custom plants integration (channel references custom plant_id)**: https://github.com/AlexMihai1804/AutoWatering/issues/9
+- **B7 Cycle & soak support (firmware settings + BLE)**: https://github.com/AlexMihai1804/AutoWatering/issues/14
+
+---
+
 ## Core Control Model
 
 ### Channel Matrix
@@ -139,7 +153,7 @@ No soil moisture probes are present in this build; related fields remain reserve
   - ISR schedules work item every 25 pulses
 - **Configuration**: Calibration persisted under NVS key 1000, settable via `set_flow_calibration()` or Calibration Management characteristic. Accepted range: 100–10,000 pulses/liter (default from devicetree, fallback 450).
 - **Safety & diagnostics**: `check_flow_anomalies()` runs ~1/sec. Raises:
-  - `WATERING_STATUS_NO_FLOW` after three consecutive 3 s stalls with open valve
+  - `WATERING_STATUS_NO_FLOW` when a valve is open but pulses do not appear (≈5 s start grace) or stall for ≈3 s; performs up to 3 open/close recovery toggles, then aborts and retries after 1 hour up to 5 times, then enters `WATERING_STATUS_FAULT` until reset
   - `WATERING_STATUS_UNEXPECTED_FLOW` when ≥10 pulses arrive while all valves closed
 
 ### Rain Sensor (Tipping Bucket)
@@ -571,7 +585,7 @@ Subsystems exposing detailed diagnostics and statistics:
 - Environmental sensors
 - Storage monitor
 - Task manager
-
+vezi
 BLE mirrors many diagnostics so field tools can pull them without serial access.
 
 ### Maintenance Hooks
