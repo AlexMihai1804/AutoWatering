@@ -22,6 +22,7 @@ LOG_MODULE_REGISTER(bt_env_history, LOG_LEVEL_DBG);
 /* BLE fragmentation constants per documentation */
 #define BLE_FRAGMENT_DATA_MAX           RAIN_HISTORY_FRAGMENT_SIZE /* 232 */
 #define ENV_HISTORY_STATUS_MTU_TOO_SMALL 0x08
+#define ENV_HISTORY_CACHE_TIMEOUT_MS    30000  /* Cache valid for 30 seconds */
 
 /* Global state for fragmented transfers */
 /* Transfer cache for current query (paged by client via fragment_id) */
@@ -34,6 +35,11 @@ static struct {
     uint16_t fragment_bytes;     /* bytes per fragment (<=BLE_FRAGMENT_DATA_MAX) */
     uint8_t buffer[8192];        /* packed records storage */
     size_t total_data_size;      /* bytes packed in buffer */
+    /* THROUGHPUT FIX: Cache key for reuse between fragment requests */
+    uint32_t cache_start_time;   /* Query start_time for cache validation */
+    uint32_t cache_end_time;     /* Query end_time for cache validation */
+    uint16_t cache_max_records;  /* Query max_records for cache validation */
+    uint32_t cache_timestamp;    /* When cache was populated (k_uptime_get_32) */
 } g_transfer = {0};
 
 /* Internal helper functions */
@@ -215,7 +221,24 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
         return 0;
     }
 
-    /* Gather raw entries according to type */
+    /* THROUGHPUT FIX: Check if we can reuse cached transfer buffer */
+    /* Reuse cache if: same query params, cache is prepared, and not expired */
+    uint32_t now = k_uptime_get_32();
+    bool cache_valid = g_transfer.prepared &&
+                       g_transfer.cmd == request->command &&
+                       g_transfer.api_data_type == request->data_type &&
+                       g_transfer.cache_start_time == request->start_time &&
+                       g_transfer.cache_end_time == request->end_time &&
+                       g_transfer.cache_max_records == request->max_records &&
+                       (now - g_transfer.cache_timestamp) < ENV_HISTORY_CACHE_TIMEOUT_MS;
+
+    if (cache_valid && request->fragment_id > 0) {
+        /* Fast path: reuse cached buffer for subsequent fragments */
+        LOG_DBG("Env history cache HIT for fragment %u (saved flash I/O)", request->fragment_id);
+        goto serve_fragment;
+    }
+
+    /* Cache miss or new query - gather raw entries according to type */
     int rc = 0;
     uint16_t max_req = (request->max_records == 0) ? 100 : request->max_records;
     if (max_req > 100) max_req = 100;
@@ -227,6 +250,11 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
     cleanup_transfer();
     g_transfer.cmd = request->command;
     g_transfer.api_data_type = request->data_type;
+    /* Store cache key for future reuse */
+    g_transfer.cache_start_time = request->start_time;
+    g_transfer.cache_end_time = request->end_time;
+    g_transfer.cache_max_records = request->max_records;
+    g_transfer.cache_timestamp = now;
 
     if (request->data_type == 0 /* detailed */ || request->data_type == 1 /* hourly */) {
         hourly = k_malloc(sizeof(*hourly) * max_req);
@@ -288,6 +316,7 @@ int bt_env_history_request_handler(const ble_history_request_t *request,
         return 0;
     }
 
+serve_fragment:
     /* Compute which fragment to return (client provided fragment_id) */
     uint8_t frag = request->fragment_id;
     if (frag >= g_transfer.total_fragments) {

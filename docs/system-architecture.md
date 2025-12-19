@@ -97,6 +97,28 @@ All module initializations log warnings on failure but keep the system running u
 - Large payloads (channel config, histories) use the shared fragmentation helpers with 3-byte headers.
 - History control/insights characteristics mirror the structures defined in the history modules; settings persist through NVS.
 
+#### BLE Performance Optimizations (v3.1.0+)
+
+**Connection-Level Optimizations:**
+- **PHY 2M**: Automatically requested at connection for ~2x raw throughput (1 Mbps → 2 Mbps)
+- **Data Length Extension (DLE)**: Requests 251-byte packets (may fail on some controllers, gracefully handled)
+- **Buffer Configuration**: Increased TX/RX buffer counts for sustained throughput
+
+**History Query Optimizations:**
+- **Binary Search**: `history_flash_query_range()` uses O(log n) binary search instead of linear scan
+- **Early Exit**: Range queries stop immediately when timestamp exceeds end boundary
+- **Transfer Caching**: 30-second cache for `g_transfer` avoids re-reading flash between fragments
+
+**Fragment Streaming Optimizations:**
+- **Reduced Delays**: Inter-fragment delay reduced from 5ms to 2ms
+- **Retry Logic**: Exponential backoff (20ms → 640ms, 5 retries) in all fragment work handlers
+- **Rate-Limit Bypass**: Sequential fragment requests bypass the 100ms rate-limit check
+
+**Bulk Sync Snapshot (UUID 0xde60):**
+- Single 60-byte READ replaces 10+ individual queries at connection
+- Contains: system status, environmental data, rain totals, compensation, channel states
+- Reduces initial sync latency from ~500ms to ~50ms
+
 #### BLE Notification Priority System
 - **Priority Classes**:
   - `NOTIFY_PRIORITY_CRITICAL` (0ms): Alarms, errors - immediate delivery.
@@ -166,6 +188,8 @@ graph LR
 - Plant database holds 223 entries (44-byte structs).
 - History retention: detailed last 30 events/channel, daily 90 days, monthly 36 months, annual 10 years.
 - Insights data exists but requires external producers (`history_insights_update`).
+- PHY 2M requires central support; DLE may fail on some BLE controllers (error -13 is normal).
+- Binary search assumes monotonically increasing timestamps in flash history files.
 
 ## Open Follow-Ups
 

@@ -44,8 +44,49 @@ All characteristics live under the irrigation primary service. Properties come d
 | 25 | Onboarding Status | `12345678-1234-5678-1234-56789abcde20` | 29 bytes | R / N | Read-only progress flags for onboarding workflows. |
 | 26 | Reset Control | `12345678-1234-5678-1234-56789abcde21` | 16 bytes | R / W / N | Two-step reset interface (code generate + confirmation). Notifies result and refreshed confirmation code. |
 | 27 | Channel Compensation Config | `12345678-1234-5678-1234-56789abcde19` | 44 bytes | R / W / N | Per-channel rain/temp compensation settings. 1-byte write selects channel; 44-byte write updates config. |
+| 28 | Bulk Sync Snapshot | `12345678-1234-5678-1234-56789abcde60` | 60 bytes | R | **NEW** Single-read aggregate of system state, environmental data, rain totals, compensation status, and channel states. Use at connection to replace multiple queries. |
 
 Legend: R = Read, W = Write, N = Notify.
+
+## Performance Optimizations (v2.1+)
+
+The following optimizations have been implemented to maximize BLE throughput:
+
+### PHY 2M and Data Length Extension
+- PHY is upgraded to 2M (2 Mbps) at connection when supported
+- Data Length Extension (DLE) is requested to 251 bytes
+- Combined effect: ~2x faster raw data transfer
+
+### Binary Search for Flash History
+- History queries now use O(log n) binary search instead of O(n) linear scan
+- Applies to: environmental hourly/daily, rain hourly/daily
+- Typical speedup: 10-30x for queries on 720+ entry history
+
+### Fragment Streaming Improvements
+- Inter-fragment delay reduced from 5ms to 2ms
+- Retry logic with exponential backoff (20ms → 640ms, 5 retries)
+- Rate-limit check interval reduced from 1000ms to 100ms
+- Query continuation bypasses rate-limit entirely
+
+### Buffer Configuration
+```
+CONFIG_BT_BUF_ACL_TX_COUNT=12
+CONFIG_BT_BUF_EVT_RX_COUNT=16
+CONFIG_BT_L2CAP_TX_BUF_COUNT=12
+CONFIG_BT_ATT_TX_COUNT=12
+CONFIG_BT_CONN_TX_MAX=24
+CONFIG_BT_CTLR_RX_BUFFERS=18
+CONFIG_BT_GATT_NOTIFY_MULTIPLE=y
+```
+
+### Bulk Sync Snapshot (UUID 0xde60)
+A single 60-byte READ replaces 10+ individual characteristic queries at connection:
+- System status, active channel, valve states
+- Environmental data (temperature, humidity, pressure, dew point, VPD)
+- Rain totals (today, week), skip status
+- Compensation status and adjustments
+- Task queue status and next scheduled task
+- Per-channel status byte array (8 channels)
 
 ## Fragmentation Rules
 

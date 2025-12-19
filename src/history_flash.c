@@ -605,6 +605,142 @@ int history_flash_read_rain_daily(uint16_t start_index,
 }
 
 /*******************************************************************************
+ * Private Helper - Read single entry timestamp for binary search
+ ******************************************************************************/
+
+/**
+ * @brief Read timestamp from a single entry at logical index
+ * @param type History type
+ * @param logical_idx Logical index (0 = oldest)
+ * @param[out] timestamp Entry timestamp
+ * @return 0 on success, negative errno on failure
+ */
+static int read_entry_timestamp(history_type_t type, uint16_t logical_idx, uint32_t *timestamp)
+{
+    struct fs_file_t file;
+    int ret;
+    
+    if (!history_state[type].valid) {
+        return -ENOENT;
+    }
+    
+    const history_file_header_t *hdr = &history_state[type].header;
+    
+    if (logical_idx >= hdr->entry_count) {
+        return -ENOENT;
+    }
+    
+    uint16_t phys_idx = logical_to_physical(type, logical_idx);
+    off_t offset = entry_offset(type, phys_idx);
+    
+    fs_file_t_init(&file);
+    
+    ret = fs_open(&file, history_files[type].path, FS_O_READ);
+    if (ret < 0) {
+        return ret;
+    }
+    
+    ret = fs_seek(&file, offset, FS_SEEK_SET);
+    if (ret < 0) {
+        fs_close(&file);
+        return ret;
+    }
+    
+    /* All history entry types have timestamp as first 4 bytes */
+    uint32_t ts;
+    ret = fs_read(&file, &ts, sizeof(ts));
+    fs_close(&file);
+    
+    if (ret != sizeof(ts)) {
+        return -EIO;
+    }
+    
+    *timestamp = ts;
+    return 0;
+}
+
+/**
+ * @brief Binary search to find first entry >= target_ts
+ * @param type History type
+ * @param target_ts Target timestamp to find
+ * @param[out] result_idx Resulting logical index (or entry_count if not found)
+ * @return 0 on success, negative errno on failure
+ */
+static int binary_search_lower_bound(history_type_t type, uint32_t target_ts, uint16_t *result_idx)
+{
+    const history_file_header_t *hdr = &history_state[type].header;
+    
+    if (hdr->entry_count == 0) {
+        *result_idx = 0;
+        return 0;
+    }
+    
+    uint16_t low = 0;
+    uint16_t high = hdr->entry_count;
+    
+    while (low < high) {
+        uint16_t mid = low + (high - low) / 2;
+        uint32_t mid_ts;
+        
+        int ret = read_entry_timestamp(type, mid, &mid_ts);
+        if (ret < 0) {
+            /* Fallback to linear scan on read error */
+            *result_idx = 0;
+            return 0;
+        }
+        
+        if (mid_ts < target_ts) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    
+    *result_idx = low;
+    return 0;
+}
+
+/**
+ * @brief Binary search to find first entry > target_ts (upper bound)
+ * @param type History type
+ * @param target_ts Target timestamp
+ * @param[out] result_idx Resulting logical index
+ * @return 0 on success, negative errno on failure
+ */
+static int binary_search_upper_bound(history_type_t type, uint32_t target_ts, uint16_t *result_idx)
+{
+    const history_file_header_t *hdr = &history_state[type].header;
+    
+    if (hdr->entry_count == 0) {
+        *result_idx = 0;
+        return 0;
+    }
+    
+    uint16_t low = 0;
+    uint16_t high = hdr->entry_count;
+    
+    while (low < high) {
+        uint16_t mid = low + (high - low) / 2;
+        uint32_t mid_ts;
+        
+        int ret = read_entry_timestamp(type, mid, &mid_ts);
+        if (ret < 0) {
+            *result_idx = hdr->entry_count;
+            return 0;
+        }
+        
+        if (mid_ts <= target_ts) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    
+    *result_idx = low;
+    return 0;
+}
+
+/*******************************************************************************
  * Public API - Query by Timestamp
  ******************************************************************************/
 
@@ -630,10 +766,32 @@ int history_flash_query_range(history_type_t type,
         return 0;
     }
     
-    /* For now, return all entries - caller can filter by timestamp */
-    /* TODO: Implement binary search for efficient range queries */
-    *start_idx = 0;
-    *count = hdr->entry_count;
+    /* Binary search for start position (first entry >= start_ts) */
+    uint16_t first_idx;
+    int ret = binary_search_lower_bound(type, start_ts, &first_idx);
+    if (ret < 0) {
+        return ret;
+    }
+    
+    /* Binary search for end position (first entry > end_ts) */
+    uint16_t last_idx;
+    ret = binary_search_upper_bound(type, end_ts, &last_idx);
+    if (ret < 0) {
+        return ret;
+    }
+    
+    if (first_idx >= last_idx) {
+        /* No entries in range */
+        *start_idx = first_idx;
+        *count = 0;
+        return 0;
+    }
+    
+    *start_idx = first_idx;
+    *count = last_idx - first_idx;
+    
+    LOG_DBG("query_range type=%d ts=%u-%u: idx=%u count=%u (total=%u)",
+            type, start_ts, end_ts, first_idx, *count, hdr->entry_count);
     
     return 0;
 }

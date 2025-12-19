@@ -722,21 +722,43 @@ int env_history_get_hourly_range(uint32_t start_timestamp,
     *actual_count = 0;
 
 #ifdef CONFIG_HISTORY_EXTERNAL_FLASH
-    /* Read from flash and filter by timestamp */
-    history_env_hourly_t flash_entries[24]; /* Read in chunks */
-    uint16_t total_count = g_env_history.hourly_count;
-    uint16_t offset = 0;
+    /* OPTIMIZED: Use binary search to find start position */
+    uint16_t start_idx = 0;
+    uint16_t range_count = 0;
     
-    while (offset < total_count && *actual_count < max_entries) {
-        uint16_t chunk_size = MIN(24, total_count - offset);
+    int rc = history_flash_query_range(HISTORY_TYPE_ENV_HOURLY,
+                                       start_timestamp, end_timestamp,
+                                       &start_idx, &range_count);
+    if (rc != 0) {
+        LOG_WRN("query_range failed: %d, falling back to linear scan", rc);
+        /* Fallback to linear scan */
+        start_idx = 0;
+        range_count = g_env_history.hourly_count;
+    }
+    
+    if (range_count == 0) {
+        return 0; /* No entries in range */
+    }
+    
+    /* Limit read count to what caller can accept */
+    uint16_t to_read = MIN(range_count, max_entries);
+    
+    /* Read entries in chunks starting from binary-searched position */
+    history_env_hourly_t flash_entries[24];
+    uint16_t offset = start_idx;
+    uint16_t remaining = to_read;
+    
+    while (remaining > 0 && *actual_count < max_entries) {
+        uint16_t chunk_size = MIN(24, remaining);
         uint16_t read_count = 0;
         
-        int rc = history_flash_read_env_hourly(offset, flash_entries, chunk_size, &read_count);
+        rc = history_flash_read_env_hourly(offset, flash_entries, chunk_size, &read_count);
         if (rc != 0 || read_count == 0) {
             break;
         }
         
         for (uint16_t i = 0; i < read_count && *actual_count < max_entries; i++) {
+            /* Double-check timestamp in range (binary search gives approximate bounds) */
             if (flash_entries[i].timestamp >= start_timestamp && 
                 flash_entries[i].timestamp <= end_timestamp) {
                 /* Convert flash format to runtime format */
@@ -750,9 +772,14 @@ int env_history_get_hourly_range(uint32_t start_timestamp,
                 entries[*actual_count].total_volume_ml = flash_entries[i].total_volume_ml;
                 entries[*actual_count].active_channels = flash_entries[i].active_channels;
                 (*actual_count)++;
+            } else if (flash_entries[i].timestamp > end_timestamp) {
+                /* Past end of range - early exit */
+                remaining = 0;
+                break;
             }
         }
         offset += read_count;
+        remaining -= read_count;
     }
 #else
     // Search through hourly ring buffer
@@ -795,16 +822,33 @@ int env_history_get_daily_range(uint32_t start_timestamp,
     *actual_count = 0;
 
 #ifdef CONFIG_HISTORY_EXTERNAL_FLASH
-    /* Read from flash and filter by timestamp */
-    history_env_daily_t flash_entries[16]; /* Read in chunks */
-    uint16_t total_count = g_env_history.daily_count;
-    uint16_t offset = 0;
+    /* OPTIMIZED: Use binary search to find start position */
+    uint16_t start_idx = 0;
+    uint16_t range_count = 0;
     
-    while (offset < total_count && *actual_count < max_entries) {
-        uint16_t chunk_size = MIN(16, total_count - offset);
+    int rc = history_flash_query_range(HISTORY_TYPE_ENV_DAILY,
+                                       start_timestamp, end_timestamp,
+                                       &start_idx, &range_count);
+    if (rc != 0) {
+        /* Fallback to linear scan */
+        start_idx = 0;
+        range_count = g_env_history.daily_count;
+    }
+    
+    if (range_count == 0) {
+        return 0;
+    }
+    
+    uint16_t to_read = MIN(range_count, max_entries);
+    history_env_daily_t flash_entries[16];
+    uint16_t offset = start_idx;
+    uint16_t remaining = to_read;
+    
+    while (remaining > 0 && *actual_count < max_entries) {
+        uint16_t chunk_size = MIN(16, remaining);
         uint16_t read_count = 0;
         
-        int rc = history_flash_read_env_daily(offset, flash_entries, chunk_size, &read_count);
+        rc = history_flash_read_env_daily(offset, flash_entries, chunk_size, &read_count);
         if (rc != 0 || read_count == 0) {
             break;
         }
@@ -829,9 +873,13 @@ int env_history_get_daily_range(uint32_t start_timestamp,
                 entries[*actual_count].sample_count = flash_entries[i].sample_count;
                 entries[*actual_count].active_channels_bitmap = flash_entries[i].active_channels;
                 (*actual_count)++;
+            } else if (flash_entries[i].date > end_timestamp) {
+                remaining = 0;
+                break;
             }
         }
         offset += read_count;
+        remaining -= read_count;
     }
 #else
     // Search through daily ring buffer

@@ -493,27 +493,36 @@ watering_error_t rain_history_get_hourly(uint32_t start_hour,
     *count = 0;
     
 #ifdef CONFIG_HISTORY_EXTERNAL_FLASH
-    /* Read from external flash in small chunks to avoid stack overflow */
-    history_flash_stats_t flash_stats;
-    int stats_ret = history_flash_get_stats(&flash_stats);
-    if (stats_ret < 0) {
-        LOG_ERR("Failed to get rain history stats from flash: %d", stats_ret);
-        return WATERING_ERROR_STORAGE;
+    /* OPTIMIZED: Use binary search to find start position */
+    uint16_t start_idx = 0;
+    uint16_t range_count = 0;
+    
+    int qr = history_flash_query_range(HISTORY_TYPE_RAIN_HOURLY,
+                                       start_hour, end_hour,
+                                       &start_idx, &range_count);
+    if (qr != 0) {
+        /* Fallback: get stats and scan all */
+        history_flash_stats_t flash_stats;
+        int stats_ret = history_flash_get_stats(&flash_stats);
+        if (stats_ret < 0) {
+            LOG_ERR("Failed to get rain history stats from flash: %d", stats_ret);
+            return WATERING_ERROR_STORAGE;
+        }
+        start_idx = 0;
+        range_count = flash_stats.rain_hourly.entry_count;
     }
-
-    uint16_t total_entries = flash_stats.rain_hourly.entry_count;
-    if (total_entries == 0 || max_entries == 0) {
+    
+    if (range_count == 0 || max_entries == 0) {
         return WATERING_SUCCESS;
     }
 
+    uint16_t to_read = MIN(range_count, max_entries);
     history_rain_hourly_t flash_chunk[32];
-    uint16_t offset = 0;
+    uint16_t offset = start_idx;
+    uint16_t remaining = to_read;
 
-    while (offset < total_entries && *count < max_entries) {
-        uint16_t remaining = (uint16_t)(total_entries - offset);
-        uint16_t chunk_size = remaining > (uint16_t)(sizeof(flash_chunk) / sizeof(flash_chunk[0]))
-                                  ? (uint16_t)(sizeof(flash_chunk) / sizeof(flash_chunk[0]))
-                                  : remaining;
+    while (remaining > 0 && *count < max_entries) {
+        uint16_t chunk_size = MIN(32, remaining);
         uint16_t read_count = 0;
 
         int ret = history_flash_read_rain_hourly(offset, flash_chunk, chunk_size, &read_count);
@@ -532,10 +541,15 @@ watering_error_t rain_history_get_hourly(uint32_t start_hour,
                 data[*count].pulse_count = flash_chunk[i].pulse_count;
                 data[*count].data_quality = flash_chunk[i].data_quality;
                 (*count)++;
+            } else if (flash_chunk[i].hour_epoch > end_hour) {
+                /* Past end of range - early exit */
+                remaining = 0;
+                break;
             }
         }
 
         offset = (uint16_t)(offset + read_count);
+        remaining -= read_count;
     }
     
     LOG_DBG("Retrieved %u hourly entries from flash for range %u-%u", *count, start_hour, end_hour);
@@ -572,27 +586,36 @@ watering_error_t rain_history_get_daily(uint32_t start_day,
     *count = 0;
     
 #ifdef CONFIG_HISTORY_EXTERNAL_FLASH
-    /* Read from external flash in small chunks to avoid stack overflow */
-    history_flash_stats_t flash_stats;
-    int stats_ret = history_flash_get_stats(&flash_stats);
-    if (stats_ret < 0) {
-        LOG_ERR("Failed to get rain history stats from flash: %d", stats_ret);
-        return WATERING_ERROR_STORAGE;
+    /* OPTIMIZED: Use binary search to find start position */
+    uint16_t start_idx = 0;
+    uint16_t range_count = 0;
+    
+    int qr = history_flash_query_range(HISTORY_TYPE_RAIN_DAILY,
+                                       start_day, end_day,
+                                       &start_idx, &range_count);
+    if (qr != 0) {
+        /* Fallback: get stats and scan all */
+        history_flash_stats_t flash_stats;
+        int stats_ret = history_flash_get_stats(&flash_stats);
+        if (stats_ret < 0) {
+            LOG_ERR("Failed to get rain history stats from flash: %d", stats_ret);
+            return WATERING_ERROR_STORAGE;
+        }
+        start_idx = 0;
+        range_count = flash_stats.rain_daily.entry_count;
     }
-
-    uint16_t total_entries = flash_stats.rain_daily.entry_count;
-    if (total_entries == 0 || max_entries == 0) {
+    
+    if (range_count == 0 || max_entries == 0) {
         return WATERING_SUCCESS;
     }
 
+    uint16_t to_read = MIN(range_count, max_entries);
     history_rain_daily_t flash_chunk[32];
-    uint16_t offset = 0;
+    uint16_t offset = start_idx;
+    uint16_t remaining = to_read;
 
-    while (offset < total_entries && *count < max_entries) {
-        uint16_t remaining = (uint16_t)(total_entries - offset);
-        uint16_t chunk_size = remaining > (uint16_t)(sizeof(flash_chunk) / sizeof(flash_chunk[0]))
-                                  ? (uint16_t)(sizeof(flash_chunk) / sizeof(flash_chunk[0]))
-                                  : remaining;
+    while (remaining > 0 && *count < max_entries) {
+        uint16_t chunk_size = MIN(32, remaining);
         uint16_t read_count = 0;
 
         int ret = history_flash_read_rain_daily(offset, flash_chunk, chunk_size, &read_count);
@@ -612,10 +635,15 @@ watering_error_t rain_history_get_daily(uint32_t start_day,
                 data[*count].active_hours = flash_chunk[i].active_hours;
                 data[*count].data_completeness = flash_chunk[i].data_completeness;
                 (*count)++;
+            } else if (flash_chunk[i].day_epoch > end_day) {
+                /* Past end of range - early exit */
+                remaining = 0;
+                break;
             }
         }
 
         offset = (uint16_t)(offset + read_count);
+        remaining -= read_count;
     }
     
     LOG_DBG("Retrieved %u daily entries from flash for range %u-%u", *count, start_day, end_day);
