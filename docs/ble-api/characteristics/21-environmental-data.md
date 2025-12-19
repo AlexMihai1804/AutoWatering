@@ -4,14 +4,14 @@
 | Operation | Payload | Size | Fragmentation | Notes |
 |-----------|---------|------|---------------|-------|
 | Read | `struct environmental_data_ble` | 24 B | None | Processed BME280 snapshot |
-| Notify | `struct environmental_data_ble` | 24 B | 3-byte `[seq,total,len]` header (see below) | Normal-priority queue (~=200 ms throttle) |
+| Notify | `struct environmental_data_ble` | 24 B | 3-byte `[seq,total,len]` header (see below) | Uses compatibility path when payload > 23 bytes |
 | Write | - | - | - | Interface is read/notify only |
 
 ## Characteristic Metadata
 - **Properties:** Read, Notify (no write)
 - **Payload Size:** 24 bytes, little-endian, IEEE-754 floats
-- **Notification Priority:** `NOTIFY_PRIORITY_NORMAL` (shared scheduler, inter-fragment delay 20 ms)
-- **Fragmentation:** Single frame is attempted when `sizeof(payload) <= ATT_MTU-3`, but the pooled notifier only accepts payloads up to 23 bytes. The firmware therefore falls back to the fragmenting path, where each fragment begins with `uint8_t seq`, `uint8_t total`, `uint8_t len` followed by payload bytes.
+- **Notification Priority:** `NOTIFY_PRIORITY_NORMAL`
+- **Fragmentation (notify path):** A single frame is attempted only when `sizeof(payload) <= ATT_MTU-3` **and** `sizeof(payload) <= 23`. For compatibility, the current firmware fragments 24-byte environmental notifications using a 3-byte `[seq,total,len]` header.
 
 ## Payload Layout (`struct environmental_data_ble`)
 | Offset | Field | Type | Meaning |
@@ -29,7 +29,12 @@ Reads rebuild the struct on demand using `environmental_data_get_current()`. Not
 
 > **Implementation note:** The pooled notifier currently caps payloads at 23 bytes. Because the environmental payload is 24 bytes, the firmware fragments every notification even when the negotiated MTU could carry the whole struct. Clients should therefore always expect the 3-byte `[seq,total,len]` header until the pool limit is raised.
 ## Notification Behaviour
-- Requires CCC enable. If notifications were previously disabled, no snapshot is pushed automatically.<br>- Because of the 23-byte limit mentioned above, current firmware always uses the fragmenting path. Assemble by concatenating payload slices in `seq` order until `seq + 1 == total` and `len` bytes have been copied for each fragment.<br>- Single-frame sends will become possible once the pooled notifier limit is raised; at that point the 3-byte header is omitted and the payload is delivered in one frame.<br>- Fragmented sends use direct `bt_gatt_notify` and respect a 20 ms sleep between fragments.
+Requires CCC enable. If notifications were previously disabled, no snapshot is pushed automatically.
+
+- Because the payload is 24 bytes and the compatibility single-frame path is capped at 23 bytes, current firmware uses the fragmentation header.
+- Assemble by concatenating payload slices in `seq` order until `seq + 1 == total`.
+- Fragmented sends use `bt_gatt_notify` and schedule the next fragment after ~2ms.
+- Transient `-ENOMEM/-EBUSY` notify failures are retried (up to 5 retries) with exponential backoff (approx. 20ms → 320ms).
 
 ### Minimal Fragment Reassembly
 ```javascript

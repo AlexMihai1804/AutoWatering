@@ -1,4 +1,6 @@
-# Rain History Control Characteristic (UUID: 12345678-1234-5678-9abcde14)
+# Rain History Control Characteristic (UUID: 12345678-1234-5678-1234-56789abcde14)
+
+Provides on-demand access to rainfall history. Clients issue a 16-byte command and receive results via notifications that reuse the shared 8-byte `history_fragment_header_t`.
 
 > Operation Summary
 | Operation | Payload | Size | Fragmentation | Notes |
@@ -8,8 +10,6 @@
 | Notify | `history_fragment_header_t` + payload | 8 B + <=232 B | Unified history header | Multi-fragment responses (payload may be smaller for small MTU) |
 | Error Notify | `history_fragment_header_t` + 1 B | 9 B | Unified history header | `data_type = 0xFF`, `status = error`, payload[0] = code |
 
-Provides on-demand access to rainfall history. Clients issue a 16-byte command and receive results via notifications that reuse the shared 8-byte `history_fragment_header_t`. Hourly and daily responses are auto-fragmented up to 232-byte payloads (and may be smaller to fit negotiated MTU); recent totals, reset acknowledgements, and calibration acknowledgements fit in a single fragment.
-
 ## Characteristic Metadata
 | Item | Value |
 |------|-------|
@@ -18,10 +18,13 @@ Provides on-demand access to rainfall history. Clients issue a 16-byte command a
 | Command Size | 16 bytes (packed) |
 | Fragment Header | 8 bytes (`history_fragment_header_t`) |
 | Max Fragment Payload | 232 bytes (`RAIN_HISTORY_FRAGMENT_SIZE`) |
-| Notification Priority | Normal (`bt_gatt_notify` paced by a 5 ms work delay + stack backpressure) |
+| Streaming | ~2 ms inter-fragment scheduling + stack backpressure |
+| Retry | Transient `-ENOMEM/-EBUSY` notify errors retried (max 5) with exponential backoff (approx. 20ms → 640ms) |
 | Internal Guard | One active command per controller (`rain_history_cmd_state.command_active`) |
 
 ## Command Payload (`struct rain_history_cmd_data`)
+Little-endian packing is required for all integer fields.
+
 | Offset | Field | Type | Notes |
 |--------|-------|------|-------|
 | 0 | `command` | `uint8_t` | See supported commands below |
@@ -31,18 +34,16 @@ Provides on-demand access to rainfall history. Clients issue a 16-byte command a
 | 11 | `data_type` | `uint8_t` | Must match command expectations (see table) |
 | 12 | `reserved[4]` | `uint8_t[4]` | Set to 0; echoed back on read |
 
-Little-endian packing is required for all integer fields.
-
 ### Supported Commands
 | Command | Value | `data_type` expectation | Result |
-|---------|-------|------------------------|--------|
+|---------|-------|--------------------------|--------|
 | `RAIN_CMD_GET_HOURLY` | `0x01` | Must be `0` | Streams hourly entries (`rain_hourly_data_t`, 8 bytes each) |
 | `RAIN_CMD_GET_DAILY` | `0x02` | Must be `1` | Streams daily entries (`rain_daily_data_t`, 12 bytes each) |
-| `RAIN_CMD_GET_RECENT` | `0x03` | Ignored (set to `0xFE` internally) | Single fragment with last hour / 24 h / 7 d totals |
+| `RAIN_CMD_GET_RECENT` | `0x03` | Ignored | Single fragment with last hour / 24 h / 7 d totals |
 | `RAIN_CMD_RESET_DATA` | `0x10` | Ignored | Single fragment acknowledgement (data_type `0xFD`) |
 | `RAIN_CMD_CALIBRATE` | `0x20` | Ignored | Single fragment acknowledgement (data_type `0xFC`) |
 
-Any other opcode returns error `0x04` (unknown command).
+Any other opcode returns error `0xFF`.
 
 ### Response Formats
 - **Hourly entry (8 bytes)**: `uint32_t hour_epoch`, `uint16_t rainfall_mm_x100`, `uint8_t pulse_count`, `uint8_t data_quality`.
@@ -62,7 +63,9 @@ Any other opcode returns error `0x04` (unknown command).
 | `fragment_size` | Payload bytes in this fragment (<=232, and may be lower for small MTU) |
 | `reserved` | 0 |
 
-Entries are sent sequentially; clients know the transfer is complete when `fragment_index + 1 == total_fragments`. Successive fragments are scheduled via a short (~5 ms) work delay; the controller/stack may add further backpressure. The firmware caps `total_fragments` to 255; exceeding that cap produces error code `0x07`.
+Entries are sent sequentially; clients know the transfer is complete when `fragment_index + 1 == total_fragments`. Successive fragments are scheduled with ~2 ms spacing under normal conditions; the controller/stack may add further backpressure.
+
+The firmware caps `total_fragments` to 255; exceeding that cap produces error code `0x07`.
 
 ## Error Codes (`status` and payload[0])
 | Code | Description | Emission Point |
@@ -79,18 +82,13 @@ All errors are transmitted as a single 9-byte notification (`header` + 1 byte pa
 
 ## Behaviour Summary
 - **One command at a time**: A new request from another connection while a command is active returns `0x01`.
-- **Reads are diagnostic only**: A read returns the last accepted 16-byte command; data delivery always happens via notifications.
-- **Hourly / Daily retrieval**: The handler allocates a buffer with `k_malloc`, fills it with `rain_history_get_hourly()` or `rain_history_get_daily()`, then iterates fragments (`bt_gatt_notify`) with ~50 ms spacing. Buffers are freed after the last fragment.
-- **Empty results**: When the requested range contains no entries, the firmware responds with a single header-only fragment (`total_fragments = 1`, `fragment_size = 0`, `status = 0`) and then releases the command slot.
-- **Recent totals**: Built on-the-fly and sent immediately in one fragment.
-- **Reset / Calibrate**: Trigger subsystem actions (`rain_history_clear_all()`, `rain_sensor_reset_*()`), then emit a zero-length acknowledgement fragment. Failures surface as `0x03`.
+- **Reads are diagnostic only**: A read returns the last accepted 16-byte command; data delivery happens via notifications.
+- **Empty results**: Responds with a single header-only fragment (`total_fragments = 1`, `fragment_size = 0`, `status = 0`).
 
 ## Client Guidance
 - Always send the full 16-byte command at offset 0; partial writes are rejected.
 - Use realistic `max_entries` values; if the response would require >255 fragments the firmware replies with `status=0x07`.
-- Expect little-endian floats/integers; convert `*_mm_x100` by dividing by 100.
-- Subscribe to notifications before issuing commands; the firmware does not retry when notifications are disabled.
-- Treat errors as terminal for the in-flight command; resend a new command once the previous one reports an error or completion.
+- Subscribe to notifications before issuing commands.
 
 ### Example - Request last 24 hourly entries
 ```javascript
@@ -102,39 +100,6 @@ cmd.setUint32(5, now, true);
 cmd.setUint16(9, 24, true);
 cmd.setUint8(11, 0);                   // Required for hourly
 await characteristic.writeValue(cmd.buffer);
-
-// Assemble notifications using the header metadata
-```
-
-### Example - Multi-Fragment Reassembly with TLV ACK
-```javascript
-function handleRainHistoryNotification(dataView) {
-  const header = {
-    dataType: dataView.getUint8(0),
-    status: dataView.getUint8(1),
-    entryCount: dataView.getUint16(2, true),
-    fragmentIndex: dataView.getUint8(4),
-    totalFragments: dataView.getUint8(5),
-    fragmentSize: dataView.getUint8(6)
-  };
-
-  if (header.status === 0x06) {
-    console.warn('Invalid fragment', header.fragmentIndex,
-                 'expected range 0..', header.totalFragments - 1);
-    return;
-  }
-  if (header.status === 0x07) {
-    setTimeout(resendLastCommand, 1000); // obey 1 s throttle
-    return;
-  }
-
-  const payload = new Uint8Array(dataView.buffer, dataView.byteOffset + 8, header.fragmentSize);
-  appendFragment(header.fragmentIndex, payload);
-
-  if (header.fragmentIndex + 1 === header.totalFragments) {
-    acknowledgeHistoryDownload(); // optional application-level ACK
-  }
-}
 ```
 
 ## Related Characteristics

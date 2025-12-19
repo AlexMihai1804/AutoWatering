@@ -65,7 +65,7 @@ The following optimizations have been implemented to maximize BLE throughput:
 ### Fragment Streaming Improvements
 - Inter-fragment delay reduced from 5ms to 2ms
 - Retry logic with exponential backoff (20ms → 640ms, 5 retries)
-- Rate-limit check interval reduced from 1000ms to 100ms
+- New-query rate-limit reduced from 1000ms to 100ms (continuation/fragment requests bypass the limiter)
 - Query continuation bypasses rate-limit entirely
 
 ### Buffer Configuration
@@ -87,6 +87,18 @@ A single 60-byte READ replaces 10+ individual characteristic queries at connecti
 - Compensation status and adjustments
 - Task queue status and next scheduled task
 - Per-channel status byte array (8 channels)
+
+## New Limits & Behavioral Changes (v3.1.0)
+
+These are the practical limits clients should follow for stable high-throughput operation:
+
+- **Bulk Sync Snapshot**: single 60-byte READ (`0xde60`), no notifications. Use it at connection to avoid multiple round-trips.
+- **History Management (watering history)**: new queries are accepted at most every **100ms**; fragment/continuation requests are **not** rate-limited.
+- **Environmental History**: accepted command rate is **>= 50ms** between requests.
+- **Rain History**: one in-flight command at a time; fragments stream via work queue with **~2ms spacing** between fragments.
+- **Fragment payload sizing**: history fragments carry an 8-byte `history_fragment_header_t` plus payload; payload is MTU-aware and capped at **232 bytes** (`RAIN_HISTORY_FRAGMENT_SIZE`).
+- **Retries**: history/rain/environment fragment streaming retries transient `-ENOMEM/-EBUSY` failures (up to **5 retries**) with exponential backoff.
+- **Transfer cache**: repeated history/environment range reads may hit a **30s cache** to avoid re-reading flash between fragment requests.
 
 ## Fragmentation Rules
 
