@@ -7230,8 +7230,19 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
         if (!d->irrigation_needed && d->etc_mm_day > 0.01f) {
             float hours_until = 0.0f;
             if (plant && calc_irrigation_timing(balance, d->etc_mm_day, plant, &hours_until) == WATERING_SUCCESS && hours_until > 0) {
-                uint32_t now_sec = k_uptime_get_32()/1000U;
-                d->next_irrigation_time = now_sec + (uint32_t)(hours_until * 3600.0f);
+                uint32_t now_sec = timezone_get_unix_utc();
+                if (now_sec != 0U) {
+                    double delta_sec = (double)hours_until * 3600.0;
+                    if (delta_sec < 0.0) {
+                        delta_sec = 0.0;
+                    }
+                    if (delta_sec > (double)(UINT32_MAX - now_sec)) {
+                        delta_sec = (double)(UINT32_MAX - now_sec);
+                    }
+                    d->next_irrigation_time = now_sec + (uint32_t)delta_sec;
+                } else {
+                    d->next_irrigation_time = 0;
+                }
             }
         }
     }
@@ -7350,8 +7361,19 @@ static ssize_t read_auto_calc_status(struct bt_conn *conn, const struct bt_gatt_
                 float hours_until = 0.0f;
                 if (calc_irrigation_timing(balance, read_value.etc_mm_day, plant, &hours_until) == WATERING_SUCCESS &&
                     hours_until > 0.0f) {
-                    uint32_t now_sec = k_uptime_get_32() / 1000U;
-                    read_value.next_irrigation_time = now_sec + (uint32_t)(hours_until * 3600.0f);
+                    uint32_t now_sec = timezone_get_unix_utc();
+                    if (now_sec != 0U) {
+                        double delta_sec = (double)hours_until * 3600.0;
+                        if (delta_sec < 0.0) {
+                            delta_sec = 0.0;
+                        }
+                        if (delta_sec > (double)(UINT32_MAX - now_sec)) {
+                            delta_sec = (double)(UINT32_MAX - now_sec);
+                        }
+                        read_value.next_irrigation_time = now_sec + (uint32_t)delta_sec;
+                    } else {
+                        read_value.next_irrigation_time = 0;
+                    }
                 }
             }
         }
