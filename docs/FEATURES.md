@@ -1,7 +1,7 @@
 ## AutoWatering - Key Features (Code-Verified Summary)
 
 Focused, externally facing list. All items map to existing modules or confirmed limits.
-*Last updated: 2025-12-13*
+*Last updated: 2025-12-21*
 
 ---
 
@@ -25,7 +25,7 @@ Implementation notes (where this lives in code):
 - Three schedule modes per channel:
   - **Daily (bitmask)**: Runs on selected days of the week.
   - **Periodic**: Runs every N days.
-  - **AUTO (Smart Schedule)**: FAO-56 based - evaluates soil water deficit daily, irrigates only when deficit exceeds plant's RAW threshold. Requires plant/soil/planting_date configuration.
+  - **AUTO (Smart Schedule)**: FAO-56 based - evaluates soil water deficit daily, irrigates only when deficit exceeds plant's RAW threshold. Requires plant/soil/planting_date and coverage configuration.
 - On-demand FAO-56 based irrigation requirement calculation (`watering_run_automatic_calculations()`).
 - AUTO mode features:
   - Daily deficit tracking with ETc (crop evapotranspiration) accumulation.
@@ -33,9 +33,9 @@ Implementation notes (where this lives in code):
   - Automatic rainfall integration (subtracts effective precipitation from deficit).
   - Multi-day offline gap handling: estimates missed ETc on power-up.
 - Rain integration: skip / reduction logic (channel-specific) using recent rainfall history.
-  - ⚠️ Rain Skip and Temperature Compensation apply **only to TIME and VOLUME modes**.
-  - FAO-56 modes (Quality/Eco/AUTO) already incorporate rain and temperature in ET₀ calculations.
-- Configurable auto-calculation interval (1–24 hours).
+  - Rain Skip and Temperature Compensation apply **only to TIME and VOLUME modes**.
+  - FAO-56 modes (Quality/Eco/AUTO) already incorporate rain and temperature in ET0 calculations.
+- Configurable auto-calculation interval (1-24 hours).
 
 Implementation notes:
 - Schedule storage and scheduling logic: `src/watering_config.c`, `src/watering_tasks.c`.
@@ -43,7 +43,7 @@ Implementation notes:
 - Time conversion (RTC + timezone rules): `src/rtc.c`, `src/timezone.c`.
 
 ### Sensing & Monitoring
-- **Flow sensor**: Pulse counting with calibration (100–10,000 pulses/liter; adjustable via BLE).
+- **Flow sensor**: Pulse counting with calibration (100-10,000 pulses/liter; adjustable via BLE).
 - **Rain gauge**: Tipping-bucket with 0.2 mm/pulse default, debounce, health monitoring.
 - **Environmental sensor** (BME280): Temperature, humidity, pressure; 15/60 min polling intervals.
 - Environmental, rain, and watering history with multi-resolution aggregation.
@@ -89,9 +89,10 @@ Implementation notes:
 
 ### Bluetooth Low Energy
 - Custom irrigation service: **27 documented characteristics** (`docs/ble-api/`).
-- Notification scheduler: 8×23-byte buffer pool, priority throttling (critical 0 ms, normal 200 ms, low 1 s).
+- Notification scheduler: 8-buffer pool, MTU-aware payloads (up to 250 bytes), adaptive throttling (critical 0 ms, high 50 ms, normal 200 ms, low 1 s).
 - Fragmentation for large payloads (TLV-framed, sequence-numbered).
 - History streaming via write-triggered fragment notifications (no client ACK).
+- Auto Calc Status characteristic: per-channel selection plus global mode (0xFF = earliest next irrigation across channels) and helper select (0xFE = first automatic channel).
 
 Implementation notes:
 - GATT service/characteristic table: `src/bt_irrigation_service.c`.
@@ -118,7 +119,7 @@ Implementation notes:
 - Error classification/recovery glue: `src/enhanced_error_handling.c`, plus per-module safety checks (flow/rain/etc.).
 
 ### Onboarding & Reset System
-- Configuration scoring per channel (0–100%, weighted groups).
+- Configuration scoring per channel (0-100%, weighted groups).
 - Onboarding flags: plant, soil, method, coverage, sun exposure, name, compensation, latitude, planting date.
 - Reset controller with confirmation codes (5 min validity): channel, schedule, system, calibration, history, factory.
 - Reset log (16 entries/channel) with timestamps and reasons.
@@ -133,7 +134,7 @@ Implementation notes:
   - Channel-specific sensitivity, skip threshold, lookback hours.
 - **Temperature compensation** (TIME/VOLUME modes only):
   - Base temperature, sensitivity factor, min/max factors.
-  - Default: 20°C base, 0.05 sensitivity, 0.5–2.0 factor range.
+  - Default: 20 C base, 0.05 sensitivity, 0.5-2.0 factor range.
 
   Implementation notes:
   - Rain compensation and integration: `src/rain_compensation.c`, `src/rain_integration.c`.

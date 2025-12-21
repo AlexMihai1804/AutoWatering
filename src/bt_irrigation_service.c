@@ -7138,6 +7138,110 @@ static void growing_env_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
     }
 }
 
+/* --- Helper: Calculate next irrigation time for a single channel --- */
+static uint32_t calc_channel_next_irrigation_time(watering_channel_t *channel) {
+    if (!channel) return 0;
+    
+    uint32_t next_time = 0;
+    
+    /* First check if water balance predicts irrigation needed NOW */
+    if (channel->water_balance) {
+        water_balance_t *balance = (water_balance_t *)channel->water_balance;
+        if (balance->irrigation_needed) {
+            /* Irrigation needed now */
+            return timezone_get_unix_utc();
+        }
+    }
+    
+    /* Use schedule to determine next time */
+    if (channel->watering_event.auto_enabled) {
+        uint32_t now_utc = timezone_get_unix_utc();
+        if (now_utc != 0U) {
+            rtc_datetime_t now_local;
+            if (timezone_unix_to_rtc_local(now_utc, &now_local) == 0) {
+                uint8_t current_hour = now_local.hour;
+                uint8_t current_minute = now_local.minute;
+                uint8_t current_day_of_week = now_local.day_of_week;
+                
+                uint8_t sched_hour = channel->watering_event.start_time.hour;
+                uint8_t sched_minute = channel->watering_event.start_time.minute;
+                
+                /* Handle solar timing */
+                if (channel->watering_event.use_solar_timing) {
+                    timezone_config_t tz_config;
+                    timezone_get_config(&tz_config);
+                    int8_t tz_offset = (int8_t)(tz_config.utc_offset_minutes / 60);
+                    
+                    static const uint16_t days_before_month[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+                    uint16_t day_of_year = now_local.day;
+                    if (now_local.month >= 1 && now_local.month <= 12) {
+                        day_of_year = days_before_month[now_local.month - 1] + now_local.day;
+                    }
+                    
+                    uint8_t eff_hour, eff_minute;
+                    watering_error_t err = fao56_get_effective_start_time(
+                        &channel->watering_event, channel->latitude_deg, 
+                        channel->longitude_deg, day_of_year, tz_offset, 
+                        &eff_hour, &eff_minute);
+                    if (err == WATERING_SUCCESS || err == WATERING_ERROR_SOLAR_FALLBACK) {
+                        sched_hour = eff_hour;
+                        sched_minute = eff_minute;
+                    }
+                }
+                
+                int32_t current_mins = current_hour * 60 + current_minute;
+                int32_t sched_mins = sched_hour * 60 + sched_minute;
+                int32_t mins_until = sched_mins - current_mins;
+                
+                /* Check if schedule runs today */
+                bool runs_today = false;
+                if (channel->watering_event.schedule_type == SCHEDULE_DAILY) {
+                    uint8_t day_mask = channel->watering_event.schedule.daily.days_of_week;
+                    runs_today = (day_mask & (1 << current_day_of_week)) != 0;
+                } else if (channel->watering_event.schedule_type == SCHEDULE_PERIODIC || 
+                           channel->watering_event.schedule_type == SCHEDULE_AUTO) {
+                    runs_today = true;
+                }
+                
+                if (runs_today && mins_until > 0) {
+                    next_time = now_utc + (uint32_t)(mins_until * 60);
+                } else {
+                    int32_t secs_until_tomorrow = (24 * 60 - current_mins + sched_mins) * 60;
+                    next_time = now_utc + (uint32_t)secs_until_tomorrow;
+                }
+            }
+        }
+    }
+    
+    return next_time;
+}
+
+/* --- Helper: Get global next irrigation time (earliest across all channels) --- */
+static uint32_t get_global_next_irrigation_time(uint8_t *out_channel_id) {
+    uint32_t earliest_time = UINT32_MAX;
+    uint8_t earliest_channel = 0xFF;
+    
+    for (uint8_t ch = 0; ch < WATERING_CHANNELS_COUNT; ch++) {
+        watering_channel_t *channel = NULL;
+        if (watering_get_channel(ch, &channel) == WATERING_SUCCESS && channel) {
+            /* Only consider channels with schedule enabled */
+            if (channel->watering_event.auto_enabled) {
+                uint32_t ch_next = calc_channel_next_irrigation_time(channel);
+                if (ch_next != 0 && ch_next < earliest_time) {
+                    earliest_time = ch_next;
+                    earliest_channel = ch;
+                }
+            }
+        }
+    }
+    
+    if (out_channel_id) {
+        *out_channel_id = earliest_channel;
+    }
+    
+    return (earliest_time == UINT32_MAX) ? 0 : earliest_time;
+}
+
 /* Automatic calculation status functions */
 /* --- FAO-56 Auto Calc dynamic computation helper --- */
 static void update_auto_calc_calculations(struct auto_calc_status_data *d, watering_channel_t *channel) {
@@ -7190,7 +7294,8 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
     if (d->et0_mm_day < 0.01f) d->et0_mm_day = 3.0f; /* fallback */
     if (d->crop_coefficient < 0.01f) d->crop_coefficient = 1.0f;
     d->etc_mm_day = d->et0_mm_day * d->crop_coefficient;
-    /* Water balance + irrigation calc */
+    
+    /* Water balance + irrigation calc (only for channels with water_balance) */
     if (channel->water_balance) {
         water_balance_t *balance = (water_balance_t*)channel->water_balance;
         d->current_deficit_mm = balance->current_deficit_mm;
@@ -7226,26 +7331,122 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
             d->cycle_duration_min = (uint8_t)(calc.cycle_duration_min > 255 ? 255 : calc.cycle_duration_min);
             d->volume_limited = calc.volume_limited ? 1 : 0;
         }
-        /* Predict next irrigation if not needed yet */
-        if (!d->irrigation_needed && d->etc_mm_day > 0.01f) {
+        
+        /* For automatic channels with water balance, predict next irrigation */
+        if (d->irrigation_needed) {
+            /* Irrigation needed now */
+            uint32_t now_sec = timezone_get_unix_utc();
+            d->next_irrigation_time = (now_sec != 0U) ? now_sec : 0;
+        } else if (d->etc_mm_day > 0.01f && plant) {
             float hours_until = 0.0f;
-            if (plant && calc_irrigation_timing(balance, d->etc_mm_day, plant, &hours_until) == WATERING_SUCCESS && hours_until > 0) {
+            if (calc_irrigation_timing(balance, d->etc_mm_day, plant, &hours_until) == WATERING_SUCCESS && hours_until >= 0.0f) {
                 uint32_t now_sec = timezone_get_unix_utc();
                 if (now_sec != 0U) {
                     double delta_sec = (double)hours_until * 3600.0;
-                    if (delta_sec < 0.0) {
-                        delta_sec = 0.0;
-                    }
                     if (delta_sec > (double)(UINT32_MAX - now_sec)) {
                         delta_sec = (double)(UINT32_MAX - now_sec);
                     }
                     d->next_irrigation_time = now_sec + (uint32_t)delta_sec;
-                } else {
-                    d->next_irrigation_time = 0;
                 }
             }
         }
     }
+    
+    /* For ALL channels (including manual): calculate next scheduled time if not already set */
+    uint32_t next_time_before = d->next_irrigation_time;
+    
+    if (d->next_irrigation_time == 0 && channel->watering_event.auto_enabled) {
+        /* Calculate next scheduled irrigation from the channel's schedule */
+        uint32_t now_utc = timezone_get_unix_utc();
+        if (now_utc != 0U) {
+            /* Get current local time */
+            rtc_datetime_t now_local;
+            if (timezone_unix_to_rtc_local(now_utc, &now_local) == 0) {
+                uint8_t current_hour = now_local.hour;
+                uint8_t current_minute = now_local.minute;
+                uint8_t current_day_of_week = now_local.day_of_week; /* 0=Sunday */
+                
+                uint8_t sched_hour = channel->watering_event.start_time.hour;
+                uint8_t sched_minute = channel->watering_event.start_time.minute;
+                
+                int32_t lat_cdeg = (int32_t)(channel->latitude_deg * 100.0f);
+                int32_t lon_cdeg = (int32_t)(channel->longitude_deg * 100.0f);
+                LOG_DBG("Schedule debug ch=%u: auto_en=%u, sched_type=%u, start=%02u:%02u, solar=%u, event=%u, lat=%d.%02d, lon=%d.%02d",
+                    d->channel_id,
+                    channel->watering_event.auto_enabled,
+                    channel->watering_event.schedule_type,
+                    sched_hour, sched_minute,
+                    channel->watering_event.use_solar_timing ? 1 : 0,
+                    channel->watering_event.solar_event,
+                    (int)(lat_cdeg / 100), (int)abs(lat_cdeg % 100),
+                    (int)(lon_cdeg / 100), (int)abs(lon_cdeg % 100));
+                
+                /* If solar timing is enabled, calculate effective time from sunrise/sunset */
+                if (channel->watering_event.use_solar_timing) {
+                    /* Get timezone offset (hours, rounded toward zero) */
+                    timezone_config_t tz_config;
+                    timezone_get_config(&tz_config);
+                    int8_t tz_offset = (int8_t)(tz_config.utc_offset_minutes / 60);
+
+                    /* Calculate day of year (proper month lengths + leap years) */
+                    uint16_t day_of_year = calculate_day_of_year(now_local.year, now_local.month, now_local.day);
+                    
+                    uint8_t eff_hour, eff_minute;
+                    watering_error_t err = fao56_get_effective_start_time(
+                        &channel->watering_event,
+                        channel->latitude_deg,
+                        channel->longitude_deg,
+                        day_of_year,
+                        tz_offset,
+                        &eff_hour,
+                        &eff_minute);
+                    
+                    if (err == WATERING_SUCCESS || err == WATERING_ERROR_SOLAR_FALLBACK) {
+                        sched_hour = eff_hour;
+                        sched_minute = eff_minute;
+                        LOG_DBG("Solar timing: ch=%u, effective time=%02u:%02u", 
+                                d->channel_id, sched_hour, sched_minute);
+                    }
+                }
+                
+                /* Calculate minutes until scheduled time */
+                int32_t current_mins = current_hour * 60 + current_minute;
+                int32_t sched_mins = sched_hour * 60 + sched_minute;
+                int32_t mins_until = sched_mins - current_mins;
+                
+                /* Check if schedule runs today based on schedule type */
+                bool runs_today = false;
+                if (channel->watering_event.schedule_type == SCHEDULE_DAILY) {
+                    /* Check days_of_week mask (bit 0 = Sunday) */
+                    uint8_t day_mask = channel->watering_event.schedule.daily.days_of_week;
+                    runs_today = (day_mask & (1 << current_day_of_week)) != 0;
+                } else if (channel->watering_event.schedule_type == SCHEDULE_PERIODIC) {
+                    /* Periodic - assume it could run today */
+                    runs_today = true;
+                } else if (channel->watering_event.schedule_type == SCHEDULE_AUTO) {
+                    runs_today = true;
+                }
+                
+                if (runs_today && mins_until > 0) {
+                    /* Schedule is later today */
+                    d->next_irrigation_time = now_utc + (uint32_t)(mins_until * 60);
+                } else {
+                    /* Schedule is tomorrow or later - find next day that matches */
+                    /* For simplicity, assume tomorrow at scheduled time */
+                    int32_t secs_until_tomorrow = (24 * 60 - current_mins + sched_mins) * 60;
+                    d->next_irrigation_time = now_utc + (uint32_t)secs_until_tomorrow;
+                }
+            }
+        }
+    }
+
+    int32_t etc_cmm = (int32_t)(d->etc_mm_day * 100.0f);
+        LOG_DBG("Next time computed: ch=%u, before=%u, after=%u, auto_en=%u, etc=%d.%02d",
+            d->channel_id,
+            next_time_before,
+            d->next_irrigation_time,
+            channel->watering_event.auto_enabled,
+            (int)(etc_cmm / 100), (int)abs(etc_cmm % 100));
 }
 
 static void notify_auto_calc_status(void) {
@@ -7266,6 +7467,32 @@ static void notify_auto_calc_status(void) {
         update_auto_calc_calculations(payload, channel);
     }
 
+    /* Reduce notification spam: only send when data changes and not more often than a small cadence.
+     * This avoids returning -EBUSY from the adaptive throttler in normal UI polling.
+     */
+    typedef struct {
+        bool has_last;
+        uint32_t last_uptime;
+        struct auto_calc_status_data last_payload;
+    } auto_calc_notify_cache_t;
+
+    static auto_calc_notify_cache_t cache[WATERING_CHANNELS_COUNT + 1]; /* last index reserved for 0xFF */
+    uint8_t cache_idx = (payload->channel_id == 0xFF) ? WATERING_CHANNELS_COUNT : (payload->channel_id % WATERING_CHANNELS_COUNT);
+    uint32_t now_uptime = k_uptime_get_32();
+
+    if (cache[cache_idx].has_last) {
+        bool same = (memcmp(&cache[cache_idx].last_payload, payload, sizeof(*payload)) == 0);
+        uint32_t elapsed = now_uptime - cache[cache_idx].last_uptime;
+        /* If unchanged, don't send more than once every 2 seconds */
+        if (same && elapsed < 2000U) {
+            return;
+        }
+        /* If changed, still cap bursts (UI can read on demand) */
+        if (!same && elapsed < 150U) {
+            return;
+        }
+    }
+
     uint8_t notify_buf[sizeof(history_fragment_header_t) + sizeof(*payload)] = {0};
     history_fragment_header_t *hdr = (history_fragment_header_t *)notify_buf;
     hdr->data_type = 15; /* identifies Auto Calc Status stream */
@@ -7280,14 +7507,26 @@ static void notify_auto_calc_status(void) {
     const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_AUTO_CALC_STATUS_VALUE];
     int err = safe_notify(default_conn, attr, notify_buf, sizeof(notify_buf));
     if (err == 0) {
+        cache[cache_idx].has_last = true;
+        cache[cache_idx].last_uptime = now_uptime;
+        memcpy(&cache[cache_idx].last_payload, payload, sizeof(*payload));
+
         static uint32_t last_log_time = 0;
-        uint32_t now = k_uptime_get_32();
-        if (now - last_log_time > 30000) {
+        if (now_uptime - last_log_time > 30000) {
             LOG_DBG("Auto calc status notification sent");
-            last_log_time = now;
+            last_log_time = now_uptime;
         }
     } else {
-        LOG_ERR("Auto calc status notification failed: %d", err);
+        /* -EBUSY here is usually our own throttling (not a hard BLE failure). */
+        if (err == -EBUSY) {
+            static uint32_t last_busy_log = 0;
+            if (now_uptime - last_busy_log > 2000) {
+                LOG_DBG("Auto calc status notify throttled (EBUSY)");
+                last_busy_log = now_uptime;
+            }
+        } else {
+            LOG_ERR("Auto calc status notification failed: %d", err);
+        }
     }
 }
 
@@ -7305,8 +7544,49 @@ static ssize_t read_auto_calc_status(struct bt_conn *conn, const struct bt_gatt_
     const struct auto_calc_status_data *global_value = 
         (const struct auto_calc_status_data *)auto_calc_status_value;
     
-    /* Use the selected channel from the global buffer, but default to 0 if invalid */
+    /* Use the selected channel from the global buffer */
     uint8_t channel_id = global_value->channel_id;
+    
+    /* Special case: channel_id == 0xFF means GLOBAL mode - find earliest irrigation across all channels */
+    if (channel_id == 0xFF) {
+        memset(&read_value, 0, sizeof(read_value));
+        read_value.channel_id = 0xFF; /* Keep as global indicator */
+        
+        uint8_t earliest_ch = 0xFF;
+        uint32_t global_next_time = get_global_next_irrigation_time(&earliest_ch);
+        
+        read_value.next_irrigation_time = global_next_time;
+        
+        /* If we found a channel, copy some of its data for context */
+        if (earliest_ch < WATERING_CHANNELS_COUNT) {
+            watering_channel_t *ch = NULL;
+            if (watering_get_channel(earliest_ch, &ch) == WATERING_SUCCESS && ch) {
+                bool is_auto = (ch->auto_mode == WATERING_AUTOMATIC_QUALITY || 
+                               ch->auto_mode == WATERING_AUTOMATIC_ECO);
+                read_value.calculation_active = is_auto ? 1 : 0;
+                read_value.auto_mode = (uint8_t)ch->auto_mode;
+                if (ch->water_balance) {
+                    water_balance_t *bal = (water_balance_t *)ch->water_balance;
+                    read_value.irrigation_needed = bal->irrigation_needed ? 1 : 0;
+                }
+            }
+        }
+        
+        /* Keep global reads quiet; the app might poll often */
+        static uint32_t last_global_log = 0;
+        uint32_t now_uptime = k_uptime_get_32();
+        if (now_uptime - last_global_log > 5000U) {
+            LOG_DBG("Global next irrigation: ch=%u, time=%u", earliest_ch, global_next_time);
+            last_global_log = now_uptime;
+        }
+        
+        LOG_DBG("Auto calc status read: ch=GLOBAL, next_ch=%u, next_time=%u",
+                earliest_ch, read_value.next_irrigation_time);
+        
+        return bt_gatt_attr_read(conn, attr, buf, len, offset, &read_value, sizeof(read_value));
+    }
+    
+    /* Normal per-channel mode */
     if (channel_id >= WATERING_CHANNELS_COUNT) {
         channel_id = 0;
     }
@@ -7498,7 +7778,11 @@ static void cancel_auto_calc_status_periodic(void)
     (void)k_work_cancel_delayable(&auto_calc_status_periodic_work);
 }
 
-/* Write handler: 1-byte channel select (0-7, 0xFF = first active) */
+/* Write handler: 1-byte channel select
+ * - 0..(WATERING_CHANNELS_COUNT-1): per-channel
+ * - 0xFF: GLOBAL mode (earliest across all channels)
+ * - 0xFE: first channel in automatic mode (compat helper)
+ */
 static ssize_t write_auto_calc_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                      const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
 {
@@ -7509,7 +7793,11 @@ static ssize_t write_auto_calc_status(struct bt_conn *conn, const struct bt_gatt
     uint8_t requested = *((const uint8_t *)buf);
     uint8_t selected = requested;
     if (requested == 0xFF) {
+        /* GLOBAL mode */
+        selected = 0xFF;
+    } else if (requested == 0xFE) {
         /* Find first channel in automatic mode */
+        selected = 0xFF;
         for (uint8_t i = 0; i < WATERING_CHANNELS_COUNT; i++) {
             watering_channel_t *ch;
             if (watering_get_channel(i, &ch) == WATERING_SUCCESS) {
