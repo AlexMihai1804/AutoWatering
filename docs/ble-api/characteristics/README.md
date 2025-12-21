@@ -44,7 +44,7 @@ See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fr
 | # | Characteristic | UUID | Size | Properties | Purpose |
 |---|----------------|------|------|------------|---------|
 | 14 | **[Growing Environment](14-growing-environment.md)** | defe | 71B | R/W/N | Enhanced plant config (fragmented 2/3) |
-| 15 | **[Auto Calc Status](15-auto-calc-status.md)** | de00 | 64B | R/W/N | Auto irrigation calc (Unified 8B notify header) |
+| 15 | **[Auto Calc Status](15-auto-calc-status.md)** | de00 | 64B | R/W/N | Auto irrigation calc (Notify = raw 64B) |
 | 16 | **[Current Task Status](16-current-task-status.md)** | deff | 21B | R/W/N | Active task progress |
 | 17 | **[Timezone Configuration](17-timezone-configuration.md)** | 6793 | 16B | R/W/N | Timezone & DST |
 
@@ -126,7 +126,7 @@ For system optimization:
 
 - Channel Configuration (4B header types 1/2/3, <=20B fragments)
 - Growing Environment (4B header types 2/3)
-- Auto Calc Status (Unified 8B notify header)
+- Auto Calc Status (Notify = raw 64B)
 - Rain / Environmental History (unified 8B header for notifications / responses)
 - Rain History Control (commands + fragmented response)
 - System Configuration (long write offset accumulation; no custom header)

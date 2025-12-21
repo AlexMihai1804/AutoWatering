@@ -7253,7 +7253,7 @@ static void notify_auto_calc_status(void) {
         return;
     }
 
-    /* Build unified fragmentation header + payload (single fragment) */
+    /* Send raw payload (same layout as READ). */
     struct auto_calc_status_data *payload = (struct auto_calc_status_data *)auto_calc_status_value;
     /* Refresh calculations before sending */
     uint8_t cid = payload->channel_id < WATERING_CHANNELS_COUNT ? payload->channel_id : 0;
@@ -7261,24 +7261,14 @@ static void notify_auto_calc_status(void) {
     if (watering_get_channel(cid, &channel) == WATERING_SUCCESS) {
         update_auto_calc_calculations(payload, channel);
     }
-    uint8_t notify_buf[sizeof(history_fragment_header_t) + sizeof(struct auto_calc_status_data)] = {0};
-    history_fragment_header_t *hdr = (history_fragment_header_t *)notify_buf;
-    hdr->data_type = 0;              /* 0 = auto calc status */
-    hdr->status = 0;                  /* OK */
-    hdr->entry_count = sys_cpu_to_le16(1); /* single structure */
-    hdr->fragment_index = 0;
-    hdr->total_fragments = 1;
-    hdr->fragment_size = sizeof(struct auto_calc_status_data);
-    hdr->reserved = 0;
-    memcpy(&notify_buf[sizeof(history_fragment_header_t)], payload, sizeof(struct auto_calc_status_data));
 
     const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_AUTO_CALC_STATUS_VALUE];
-    int err = safe_notify(default_conn, attr, notify_buf, sizeof(notify_buf));
+    int err = safe_notify(default_conn, attr, payload, sizeof(*payload));
     if (err == 0) {
         static uint32_t last_log_time = 0;
         uint32_t now = k_uptime_get_32();
         if (now - last_log_time > 30000) {
-            LOG_DBG("Auto calc status notification sent (unified header)");
+            LOG_DBG("Auto calc status notification sent");
             last_log_time = now;
         }
     } else {

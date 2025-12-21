@@ -5,7 +5,7 @@
 |-----------|---------|------|---------------|-------|
 | Read | `struct auto_calc_status_data` | 64 B | None | Returns the latest snapshot for the currently cached channel |
 | Write | Channel selector (`uint8_t`) | 1 B | None | `0-7` selects a channel, `0xFF` scans for the first channel in automatic mode |
-| Notify | `history_fragment_header_t` + struct | 8 B + 64 B | Single fragment | Immediate on subscribe, on channel change, on internal updates, and every 30 min while enabled |
+| Notify | `struct auto_calc_status_data` | 64 B | None | Immediate on subscribe, on channel change, on internal updates, and every 30 min while enabled |
 
 Auto Calculation Status exposes the FAO-56 based irrigation planner for one watering channel at a time. The characteristic mirrors the structure used by the firmware when computing ET0, crop coefficients, water balance, and cycle/soak recommendations. Data originates from `update_auto_calc_calculations()` in `src/bt_irrigation_service.c`, which consolidates plant metadata, environmental readings, and the channel's water balance state.
 
@@ -16,7 +16,7 @@ Auto Calculation Status exposes the FAO-56 based irrigation planner for one wate
 | Properties | Read, Write, Notify |
 | Permissions | Read, Write |
 | Payload Size | 64 bytes (`BUILD_ASSERT(sizeof(struct auto_calc_status_data) == 64)`) |
-| Notification Envelope | 8-byte `history_fragment_header_t` + payload |
+| Notification Envelope | Raw payload (same 64-byte struct as Read) |
 | Notification Priority | Normal (`safe_notify` / `advanced_notify`) |
 | Periodic Worker | `auto_calc_status_periodic` every 30 minutes while CCC is enabled |
 
@@ -74,7 +74,7 @@ Auto Calculation Status exposes the FAO-56 based irrigation planner for one wate
 - CCC enable:
     - Initializes the cached payload from channel `0` (including ET/plant calculus) and clears stale fields on failure.
     - Seeds the delayable work item and immediately sends a snapshot.
-- Each notification consists of one fragment: the 8-byte `history_fragment_header_t` (with `data_type = 0`, `status = 0`, `entry_count = 1`, `fragment_index = 0`, `total_fragments = 1`, `fragment_size = 64`) followed by the struct.
+- Each notification consists of the raw 64-byte `struct auto_calc_status_data` (same layout as Read).
 - `update_auto_calc_calculations()` runs immediately before every notify to guarantee fresh ET/deficit values.
 - The periodic worker (`auto_calc_status_periodic`) re-queues itself every 1 800 000 ms (30 min) while notifications remain enabled. Manual triggers (writes or internal events) do not affect the cadence; they simply send additional frames.
 - CCC disable clears the cached struct, cancels the delayable work, and stops all further notifications.
@@ -86,7 +86,7 @@ Auto Calculation Status exposes the FAO-56 based irrigation planner for one wate
 - Notification attempts while the connection is absent or CCC disabled are silently ignored (`0` returned after logging).
 
 ## Client Guidance
-- Reads return the struct directly. Notifications prepend the unified header; clients must skip the first 8 bytes before parsing.
+- Reads and notifications both return the same 64-byte `struct auto_calc_status_data`.
 - Treat `calculation_error = 1` as "data stale" and prompt the user to inspect diagnostics/environmental sensors before acting on the numbers.
 - `next_irrigation_time = 0` means either no irrigation is currently required or the heuristic could not predict a timestamp (e.g., missing plant data).
 - When switching channels, issue the write first and wait for the notify before relying on the read response so both views stay consistent.
