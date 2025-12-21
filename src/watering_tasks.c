@@ -1728,15 +1728,26 @@ watering_task_t *watering_get_next_task(void) {
     if (k_msgq_num_used_get(&watering_tasks_queue) == 0) {
         return NULL; /* No tasks pending */
     }
-    
-    /* We can't easily peek into the message queue without removing items,
-     * so for now return a simple indication that there is a next task.
-     * In a real implementation, we might maintain a separate queue
-     * data structure that allows peeking. */
-    
-    /* For the BLE interface, we just need to know if there are pending tasks,
-     * which we can get from the queue count */
-    return (watering_task_t *)1; /* Non-NULL indicates there is a pending task */
+
+    static watering_task_t next_task;
+    if (k_msgq_peek(&watering_tasks_queue, &next_task) != 0) {
+        return NULL;
+    }
+    return &next_task;
+}
+
+watering_error_t watering_peek_next_task(watering_task_t *task_out)
+{
+    if (task_out == NULL) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+    if (k_msgq_num_used_get(&watering_tasks_queue) == 0) {
+        return WATERING_ERROR_INVALID_DATA;
+    }
+    if (k_msgq_peek(&watering_tasks_queue, task_out) != 0) {
+        return WATERING_ERROR_BUSY;
+    }
+    return WATERING_SUCCESS;
 }
 
 /**

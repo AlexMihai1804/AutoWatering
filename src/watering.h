@@ -1475,6 +1475,17 @@ watering_error_t watering_set_channel_environment(uint8_t channel_id,
 int watering_get_pending_tasks_count(void);
 
 /**
+ * @brief Peek the next pending task without removing it from the queue.
+ *
+ * This is useful for BLE status snapshots that need to show which channel
+ * will run next.
+ *
+ * @param task_out Output task buffer.
+ * @return WATERING_SUCCESS on success, error code otherwise.
+ */
+watering_error_t watering_peek_next_task(watering_task_t *task_out);
+
+/**
  * @brief Get the number of completed tasks
  * 
  * @return Number of completed tasks since system start

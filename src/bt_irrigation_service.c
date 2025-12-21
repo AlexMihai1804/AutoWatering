@@ -10949,6 +10949,31 @@ static ssize_t read_bulk_sync_snapshot(struct bt_conn *conn, const struct bt_gat
     snapshot.next_task_channel = 0xFF;
     snapshot.next_task_in_min = 0xFFFF;
     snapshot.next_task_timestamp = 0;
+
+    if (snapshot.pending_task_count > 0) {
+        watering_task_t next_task;
+        if (watering_peek_next_task(&next_task) == WATERING_SUCCESS && next_task.channel != NULL) {
+            /* Resolve channel id by pointer match (safe, O(8)) */
+            for (uint8_t ch = 0; ch < WATERING_CHANNELS_COUNT && ch < 8; ch++) {
+                watering_channel_t *candidate = NULL;
+                if (watering_get_channel(ch, &candidate) == WATERING_SUCCESS && candidate == next_task.channel) {
+                    snapshot.next_task_channel = ch;
+                    break;
+                }
+            }
+
+            /* Best-effort scheduling information.
+             * If no task is currently running, the next queued task can start immediately.
+             * If a task is running, we don't currently track remaining time accurately here.
+             */
+            if (watering_get_current_task() == NULL) {
+                snapshot.next_task_in_min = 0;
+                if (snapshot.flags & 0x01) {
+                    snapshot.next_task_timestamp = snapshot.utc_timestamp;
+                }
+            }
+        }
+    }
     
     /* Per-channel quick status */
     for (uint8_t ch = 0; ch < 8; ch++) {

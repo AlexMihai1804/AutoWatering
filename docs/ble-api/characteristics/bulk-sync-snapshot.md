@@ -60,8 +60,8 @@ struct __attribute__((packed)) bulk_sync_snapshot_t {
     /* Task Queue (8 bytes) */
     uint8_t pending_task_count;   /* Number of pending tasks in queue */
     uint8_t next_task_channel;    /* Channel of next scheduled task */
-    uint16_t next_task_in_min;    /* Minutes until next task */
-    uint32_t next_task_timestamp; /* UTC timestamp of next task */
+    uint16_t next_task_in_min;    /* Minutes until next task (0 = immediate, 0xFFFF = unknown/none) */
+    uint32_t next_task_timestamp; /* UTC timestamp of next task (0 = unknown/none) */
     
     /* Channel Status (8 bytes) */
     uint8_t channel_status[8];    /* Per-channel status byte:
