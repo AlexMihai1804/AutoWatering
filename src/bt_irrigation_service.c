@@ -7569,6 +7569,33 @@ static void auth_pairing_failed(struct bt_conn *conn, enum bt_security_err reaso
     char addr[BT_ADDR_LE_STR_LEN];
     bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
     LOG_WRN("Pairing failed with %s: %d", addr, reason);
+
+    /* Auto-recovery: after firmware updates it's common for one side to keep an
+     * old bond while the other side doesn't (or key distribution changed).
+     * Clear our stored bond for this peer so it can re-pair cleanly.
+     */
+    bool should_unpair = false;
+    switch (reason) {
+        case BT_SECURITY_ERR_PIN_OR_KEY_MISSING:
+        case BT_SECURITY_ERR_AUTH_REQUIREMENT:
+        case BT_SECURITY_ERR_AUTH_FAIL:
+        case BT_SECURITY_ERR_KEY_REJECTED:
+        case BT_SECURITY_ERR_UNSPECIFIED:
+            should_unpair = true;
+            break;
+        default:
+            break;
+    }
+
+    if (should_unpair) {
+        const bt_addr_le_t *peer = bt_conn_get_dst(conn);
+        int unpair_err = bt_unpair(BT_ID_DEFAULT, peer);
+        if (unpair_err) {
+            LOG_WRN("Auto-unpair failed for %s: %d", addr, unpair_err);
+        } else {
+            LOG_INF("Cleared stored bond for %s (auto-recovery, reason=%d)", addr, reason);
+        }
+    }
 }
 
 static struct bt_conn_auth_cb auth_cb_just_works = {

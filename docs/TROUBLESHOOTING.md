@@ -187,6 +187,10 @@ Two runtime alarm codes are emitted:
 - Values stored via Zephyr settings
 - Clearing bonding data requires clearing settings partition or BLE Clear Bonds procedure
 
+**Post-update bonding recovery:**
+- If you see repeated `Pairing failed ... reason: 4` (or key-missing errors) after a firmware update, the device now auto-clears its stored bond for that peer on the first failure.
+- Still failing? Also "Forget/Unpair" the device on the phone/PC side, then retry pairing.
+
 ---
 
 ## Persistence & History

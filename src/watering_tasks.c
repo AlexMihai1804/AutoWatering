@@ -230,6 +230,33 @@ static uint32_t last_time_update = 0;
 /* Static storage for the currently running task (avoids dangling ptr) */
 static watering_task_t active_task_storage;          /* NEW */
 /* ------------------------------------------------------------------ */
+static bool get_channel_id_safe(const watering_channel_t *channel, uint8_t *channel_id_out)
+{
+    if (!channel || !channel_id_out) {
+        return false;
+    }
+
+    uintptr_t base = (uintptr_t)watering_channels;
+    uintptr_t end = (uintptr_t)(watering_channels + WATERING_CHANNELS_COUNT);
+    uintptr_t ptr = (uintptr_t)channel;
+
+    if (ptr < base || ptr >= end) {
+        return false;
+    }
+
+    size_t offset = (size_t)(ptr - base);
+    if (offset % sizeof(watering_channel_t) != 0) {
+        return false;
+    }
+
+    uint8_t id = (uint8_t)(offset / sizeof(watering_channel_t));
+    if (id >= WATERING_CHANNELS_COUNT) {
+        return false;
+    }
+
+    *channel_id_out = id;
+    return true;
+}
 
 /**
  * @brief Helper function to convert watering error codes to standard error codes
@@ -552,7 +579,25 @@ bool watering_stop_current_task(void) {
     /* Stop interval task system */
     interval_task_stop("Task stopped manually or completed");
 
-    uint8_t channel_id = watering_task_state.current_active_task->channel - watering_channels;
+    uint8_t channel_id = 0;
+    if (!get_channel_id_safe(watering_task_state.current_active_task->channel, &channel_id)) {
+        printk("ERROR: Active task has invalid channel pointer; forcing valve shutdown\n");
+        watering_task_state.current_active_task = NULL;
+        watering_task_state.task_in_progress = false;
+        watering_task_state.task_paused = false;
+        watering_task_state.pause_start_time = 0;
+        watering_task_state.total_paused_time = 0;
+        current_task_state = W_TASK_STATE_IDLE;
+        k_mutex_unlock(&watering_state_mutex);
+
+        valve_close_all();
+
+        #ifdef CONFIG_BT
+        bt_irrigation_current_task_update(0xFF, 0, 0, 0, 0, 0); // No active task
+        #endif
+
+        return true;
+    }
     watering_channel_off(channel_id);
     
     // Calculate effective duration excluding paused time
@@ -644,19 +689,19 @@ int watering_check_tasks(void) {
     /* Update freeze status periodically so alarms clear/refresh */
     check_freeze_lockout(NULL);
 
+    /* Run flow checks outside the task mutex so stop logic can acquire it. */
+    watering_error_t flow_check_result = check_flow_anomalies();
+    if (flow_check_result != WATERING_SUCCESS && flow_check_result != WATERING_ERROR_BUSY) {
+        watering_increment_error_tasks();  /* Track flow anomaly errors */
+        return -flow_check_result;
+    }
+
     // Use timeout instead of K_NO_WAIT for better responsiveness while avoiding hangs
     if (k_mutex_lock(&watering_state_mutex, K_MSEC(50)) != 0) {
         return 0;   /* skip this cycle if busy but don't wait too long */
     }
     
     __attribute__((unused)) uint32_t start_time = k_uptime_get_32();
-    watering_error_t flow_check_result = check_flow_anomalies();
-    
-    if (flow_check_result != WATERING_SUCCESS && flow_check_result != WATERING_ERROR_BUSY) {
-        watering_increment_error_tasks();  /* Track flow anomaly errors */
-        k_mutex_unlock(&watering_state_mutex);
-        return -flow_check_result;
-    }
 
     if (system_status == WATERING_STATUS_FAULT) {
         k_mutex_unlock(&watering_state_mutex);

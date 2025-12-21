@@ -48,11 +48,15 @@ K_MUTEX_DEFINE(flow_monitor_mutex);
 
 /* --- new constants ---------------------------------------------------- */
 #define NO_FLOW_STALL_TIMEOUT_MS   3000   /* 3 s without new pulses ⇒ error */
+#define NO_FLOW_RETRY_COOLDOWN_MS  5000   /* 5 s cooldown before retry to let system settle */
+#define FLOW_STARTUP_GRACE_MS      8000   /* 8 s grace period after task starts for flow to begin
+                                           * (accounts for master valve pre-delay + water pressure build-up) */
 
 /* --- new state vars --------------------------------------------------- */
 static uint32_t last_task_pulses      = 0;
 static uint32_t last_pulse_update_ts  = 0;
 static watering_task_t *watched_task  = NULL;
+static uint32_t retry_cooldown_until  = 0; /* timestamp until which we skip flow checks after a retry */
 
 
 size_t flow_monitor_get_unused_stack(void)
@@ -137,70 +141,125 @@ watering_error_t check_flow_anomalies(void)
     
     // Check for no-flow condition when a valve is open
     if (task_active && !task_paused) {
+        /* Skip flow checks during retry cooldown period to let system settle */
+        if (retry_cooldown_until > 0 && now < retry_cooldown_until) {
+            /* Still in cooldown after a retry - skip flow checks */
+            k_mutex_unlock(&flow_monitor_mutex);
+            return WATERING_SUCCESS;
+        }
+        retry_cooldown_until = 0; /* Clear expired cooldown */
+
         /* update watchdog when flow increases */
         if (pulses > last_task_pulses) {
             last_task_pulses     = pulses;
             last_pulse_update_ts = now;
         }
 
-        /* existing “never started” 5 s logic stays unchanged */
-        bool never_started = (pulses == 0 && now - start_time > 5000);
+        /* Use extended grace period that accounts for master valve pre-start delay */
+        bool never_started = (pulses == 0 && now - start_time > FLOW_STARTUP_GRACE_MS);
 
         /* new: no new pulses for a while => stalled flow */
         bool stalled_flow = (pulses == last_task_pulses) &&
                             (now - last_pulse_update_ts > NO_FLOW_STALL_TIMEOUT_MS);
 
         if (never_started || stalled_flow) {
-            printk("ALERT: No water flow detected with valve open!\n");
+            printk("ALERT: No water flow detected with valve open! (attempt %d/%d)\n",
+                   flow_error_attempts + 1, MAX_FLOW_ERROR_ATTEMPTS);
             flow_error_attempts++;
 
             /* raise first-time alarm (kept until cleared) */
             if (system_status != WATERING_STATUS_NO_FLOW) {
                 bt_irrigation_alarm_notify(ALARM_NO_FLOW, flow_error_attempts);
             }
+            system_status = WATERING_STATUS_NO_FLOW;
+            ble_status_update();
 
-            /* NEW: re-queue current task for a retry --------------------- */
+            /* Can we retry with a valve toggle? */
             if (flow_error_attempts < MAX_FLOW_ERROR_ATTEMPTS &&
                 watering_task_state.current_active_task) {
 
-                watering_task_t retry_task =
-                        *watering_task_state.current_active_task;
+                /* Get channel ID for the current task */
+                uint8_t channel_id = 0;
+                bool channel_valid = false;
+                for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+                    if (&watering_channels[i] == watering_task_state.current_active_task->channel) {
+                        channel_id = i;
+                        channel_valid = true;
+                        break;
+                    }
+                }
 
-                watering_stop_current_task();
-
-                /* push the task back into the queue ---------------------- */
-                watering_error_t qret = watering_add_task(&retry_task);
-
-                system_status = WATERING_STATUS_NO_FLOW;
-                bt_irrigation_alarm_notify(ALARM_NO_FLOW, flow_error_attempts); /* NEW */
-                ble_status_update();
-
-                /* --- escalate to FAULT if queue full or any error ------- */
-                if (qret != WATERING_SUCCESS) {
-                    printk("Retry enqueue failed (%d) -> entering FAULT\n", qret);
+                if (!channel_valid) {
+                    printk("NO_FLOW: Invalid channel - entering FAULT\n");
+                    valve_close_all();
+                    watering_task_state.current_active_task = NULL;
+                    watering_task_state.task_in_progress = false;
                     system_status = WATERING_STATUS_FAULT;
-                    bt_irrigation_alarm_notify(ALARM_NO_FLOW, flow_error_attempts); /* NEW */
                     ble_status_update();
                     transition_to_state(WATERING_STATE_ERROR_RECOVERY);
+                    k_mutex_unlock(&flow_monitor_mutex);
+                    return WATERING_ERROR_HARDWARE;
+                }
+
+                /* ===== TOGGLE: Close all valves including master ===== */
+                printk("NO_FLOW: TOGGLE - Closing all valves (ch=%d + master)\n", channel_id + 1);
+                valve_close_all();
+
+                /* Reset flow tracking */
+                last_task_pulses = 0;
+                last_pulse_update_ts = 0;
+                reset_pulse_count();
+
+                /* Wait for system to settle and water pressure to drop */
+                printk("NO_FLOW: Waiting %d ms before reopening...\n", NO_FLOW_RETRY_COOLDOWN_MS);
+                k_mutex_unlock(&flow_monitor_mutex);
+                k_sleep(K_MSEC(NO_FLOW_RETRY_COOLDOWN_MS));
+                k_mutex_lock(&flow_monitor_mutex, K_FOREVER);
+
+                /* ===== TOGGLE: Reopen valves (master will open first due to pre-delay) ===== */
+                printk("NO_FLOW: TOGGLE - Reopening channel %d valve\n", channel_id + 1);
+                watering_error_t reopen_err = watering_channel_on(channel_id);
+                
+                if (reopen_err != WATERING_SUCCESS) {
+                    printk("NO_FLOW: Failed to reopen valve (%d) - entering FAULT\n", reopen_err);
+                    valve_close_all();
+                    watering_task_state.current_active_task = NULL;
+                    watering_task_state.task_in_progress = false;
+                    system_status = WATERING_STATUS_FAULT;
+                    ble_status_update();
+                    transition_to_state(WATERING_STATE_ERROR_RECOVERY);
+                } else {
+                    /* Update start time for fresh grace period */
+                    watering_task_state.watering_start_time = k_uptime_get_32();
+                    last_pulse_update_ts = k_uptime_get_32();
+                    watched_task = watering_task_state.current_active_task;
+                    printk("NO_FLOW: TOGGLE complete - monitoring for flow\n");
                 }
 
             } else {
-                /* exceeded attempts – go to FAULT ----------------------- */
-                printk("CRITICAL ERROR: Maximum attempts reached. "
-                       "Entering fault state!\n");
+                /* exceeded attempts - go to FAULT */
+                printk("CRITICAL ERROR: Maximum flow error attempts (%d) reached. "
+                       "Entering fault state!\n", MAX_FLOW_ERROR_ATTEMPTS);
+
+                /* CRITICAL: Ensure ALL valves are closed including master valve */
+                valve_close_all();
+                watering_task_state.current_active_task = NULL;
+                watering_task_state.task_in_progress = false;
+                watering_task_state.task_paused = false;
+
                 system_status = WATERING_STATUS_FAULT;
-                bt_irrigation_alarm_notify(ALARM_NO_FLOW, flow_error_attempts);     /* NEW */
-                ble_status_update();                  /* NEW */
+                bt_irrigation_alarm_notify(ALARM_NO_FLOW, flow_error_attempts);
+                ble_status_update();
                 transition_to_state(WATERING_STATE_ERROR_RECOVERY);
-                watering_stop_current_task();
             }
         } else if (pulses > 0) {
             // Reset error counter if flow is detected
             flow_error_attempts = 0;
+            retry_cooldown_until = 0;
             if (system_status == WATERING_STATUS_NO_FLOW) {
                 system_status = WATERING_STATUS_OK;
                 bt_irrigation_alarm_notify(ALARM_NO_FLOW, 0);  /* clear alarm */
-                ble_status_update();                  /* NEW */
+                ble_status_update();
                 printk("Water flow detected, normal operation\n");
             }
         }
@@ -521,6 +580,7 @@ watering_error_t watering_reset_fault(void) {
         system_status = WATERING_STATUS_OK;
         ble_status_update();                          /* NEW */
         flow_error_attempts = 0;
+        retry_cooldown_until = 0;  /* Clear retry cooldown */
         
         // Try to recover the system state
         attempt_error_recovery(WATERING_SUCCESS);
@@ -540,6 +600,8 @@ void flow_monitor_clear_errors(void)
     flow_error_attempts   = 0;
     last_flow_check_time  = 0;
     last_task_pulses      = 0;
+    retry_cooldown_until  = 0;  /* Clear retry cooldown */
+    watched_task          = NULL;
     /* Only clear flow-related flags; keep other fault states intact */
     if (system_status == WATERING_STATUS_NO_FLOW ||
         system_status == WATERING_STATUS_UNEXPECTED_FLOW) {
