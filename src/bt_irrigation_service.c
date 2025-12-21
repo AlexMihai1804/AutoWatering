@@ -7253,8 +7253,12 @@ static void notify_auto_calc_status(void) {
         return;
     }
 
-    /* Send raw payload (same layout as READ). */
+    /* Notifications are wrapped in the unified 8-byte header so browser clients can
+     * use the same FRAG reassembly path as histories.
+     * READ returns the raw 64-byte struct.
+     */
     struct auto_calc_status_data *payload = (struct auto_calc_status_data *)auto_calc_status_value;
+
     /* Refresh calculations before sending */
     uint8_t cid = payload->channel_id < WATERING_CHANNELS_COUNT ? payload->channel_id : 0;
     watering_channel_t *channel;
@@ -7262,8 +7266,19 @@ static void notify_auto_calc_status(void) {
         update_auto_calc_calculations(payload, channel);
     }
 
+    uint8_t notify_buf[sizeof(history_fragment_header_t) + sizeof(*payload)] = {0};
+    history_fragment_header_t *hdr = (history_fragment_header_t *)notify_buf;
+    hdr->data_type = 15; /* identifies Auto Calc Status stream */
+    hdr->status = 0;
+    hdr->entry_count = sys_cpu_to_le16(1);
+    hdr->fragment_index = 0;
+    hdr->total_fragments = 1;
+    hdr->fragment_size = (uint8_t)sizeof(*payload);
+    hdr->reserved = 0;
+    memcpy(&notify_buf[sizeof(history_fragment_header_t)], payload, sizeof(*payload));
+
     const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_AUTO_CALC_STATUS_VALUE];
-    int err = safe_notify(default_conn, attr, payload, sizeof(*payload));
+    int err = safe_notify(default_conn, attr, notify_buf, sizeof(notify_buf));
     if (err == 0) {
         static uint32_t last_log_time = 0;
         uint32_t now = k_uptime_get_32();

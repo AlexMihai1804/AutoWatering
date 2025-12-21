@@ -20,7 +20,7 @@ Legend: R=Read, W=Write, N=Notify, F=Custom fragmentation (4B header), H=Unified
 | 12 | History Management | history_data | R/W/N | 12 B cmd, 32 B notify | H | 12-byte write buffer issues queries; read and real-time notifications return `struct history_data`; bulk responses stream via unified header |
 | 13 | Diagnostics | diagnostics_data | R/N | 12 B | - | Snapshot |
 | 14 | Growing Environment | growing_env_data | R/W/N | 71 B | F + S | Header types 2/3 |
-| 15 | Auto Calc Status | auto_calc_status_data | R/W/N | 64 B | H | 1B channel select write (no custom 4B write header); Notify sends raw 64B payload |
+| 15 | Auto Calc Status | auto_calc_status_data | R/W/N | 64 B | H | 1B channel select write (no custom 4B write header); Notify sends unified 8B header + 64B payload |
 | 16 | Current Task Status | current_task_data | R/W/N | 21 B | - | Struct consistent |
 | 17 | Timezone Configuration | rtc_data subset / timezone | R/W/N | 16 B | - | Mirrors rtc_data layout |
 | 18 | Rain Sensor Config | rain_config_data | R/W/N | 18 B | - | Struct BUILD_ASSERT enforced |
