@@ -69,6 +69,7 @@ int bt_irrigation_reset_control_notify(void);
 
 /* Rain history fragmentation support */
 #define RAIN_HISTORY_MAX_FRAGMENTS 255   /* Maximum number of fragments */
+#define MANUAL_OVERRIDE_WINDOW_MS 600000 /* 10 minutes */
 
 /* ------------------------------------------------------------------ */
 /* TIMING STRATEGY DOCUMENTATION                                      */
@@ -9368,6 +9369,7 @@ int bt_irrigation_direct_command(uint8_t channel_id, uint8_t command, uint16_t p
     switch (command) {
         case 0: /* Valve open */
             LOG_INF("Direct command: Open valve for channel %u", channel_id);
+            watering_hydraulic_set_manual_override(channel_id, MANUAL_OVERRIDE_WINDOW_MS);
             err = watering_channel_on(channel_id);
             if (err == WATERING_SUCCESS) {
                 bt_irrigation_valve_status_update(channel_id, true);
@@ -9400,8 +9402,20 @@ int bt_irrigation_direct_command(uint8_t channel_id, uint8_t command, uint16_t p
                     } else {
                         task.by_volume.volume_liters = param; /* Use param as volume */
                     }
-                    
-                    err = watering_add_task(&task);
+
+                    bool lock_active = (watering_hydraulic_is_global_locked() ||
+                                        watering_hydraulic_is_channel_locked(channel_id));
+                    if (lock_active) {
+                        watering_hydraulic_set_manual_override(channel_id, MANUAL_OVERRIDE_WINDOW_MS);
+                        if (watering_task_state.task_in_progress) {
+                            err = WATERING_ERROR_BUSY;
+                        } else {
+                            err = watering_start_task(&task);
+                        }
+                    } else {
+                        err = watering_add_task(&task);
+                    }
+
                     if (err == WATERING_SUCCESS) {
                         bt_irrigation_current_task_notify();
                     }

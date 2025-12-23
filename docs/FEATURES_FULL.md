@@ -155,8 +155,20 @@ No soil moisture probes are present in this build; related fields remain reserve
   - ISR schedules work item every 5 pulses or 3 s (whichever comes first)
 - **Configuration**: Calibration persisted under NVS key 1000, settable via `set_flow_calibration()` or Calibration Management characteristic. Accepted range: 100-10,000 pulses/liter (default from devicetree, fallback 450).
 - **Safety & diagnostics**: `check_flow_anomalies()` runs ~1/sec. Raises:
-  - `WATERING_STATUS_NO_FLOW` when a valve is open but pulses do not appear (~8 s startup grace) or stall for ~3 s; performs up to 3 open/close recovery toggles with 5 s cooldown, then enters `WATERING_STATUS_FAULT` until reset
-  - `WATERING_STATUS_UNEXPECTED_FLOW` when >=10 pulses arrive while all valves closed
+  - `WATERING_STATUS_NO_FLOW` when a valve is open but pulses do not appear or stall; performs up to 3 open/close recovery toggles, then stops the zone and applies channel lock (soft with auto-retry, hard on persistence)
+  - `WATERING_STATUS_UNEXPECTED_FLOW` when pulses persist with all valves closed (debounced window)
+
+### Hydraulic Sentinel (H.H.M.)
+- Auto-learning on first watering runs (2-6 per channel) captures ramp-up time and nominal flow using rolling averages (5s/30s/60s).
+- Profile selection: explicit user override > auto-learn; fallback uses irrigation method when available (spray vs drip).
+- Start ignore window: Fast `clamp(ramp+5s, 8-20)`, Slow `clamp(ramp+15s, 30-90)`, Unknown `20s`.
+- HIGH FLOW: `avg_5s` over limit for 5s -> close all valves; lock channel if flow stops, lock global if flow persists.
+- NO FLOW: stall detection + 3 toggle retries; then mark NO_FLOW, stop zone, soft lock with auto retry; hard lock after 3 consecutive no-flow runs.
+- LOW FLOW: warning only after 30s below limit; watering continues.
+- UNEXPECTED FLOW: debounced (>10 pulses in 30s for 30s) with 2s post-close ignore; global hard lock if persistent.
+- Nightly Static Test: 03:00, master on 10s, off 5s, monitor 60s; skipped if watering active or tasks queued.
+- Manual override: explicit BLE direct commands bypass locks temporarily for verification.
+- Anomaly log: append-only ring log stored on external flash (`/lfs/history/hydraulic_events.bin`).
 
 ### Rain Sensor (Tipping Bucket)
 - **Hardware interface**: `rain_sensor_config_t.debounce_ms` (default 50 ms).
@@ -558,7 +570,7 @@ Every handler validates arguments before updating RAM or NVS.
 
 ### Status Taxonomy
 Base status values:
-- `OK`, `FAULT`, `NO_FLOW`, `UNEXPECTED_FLOW`, `RTC_ERROR`, `LOW_POWER`
+- `OK`, `FAULT`, `NO_FLOW`, `UNEXPECTED_FLOW`, `RTC_ERROR`, `LOW_POWER`, `LOCKED`
 
 Enhanced status module derives:
 - Interval phase

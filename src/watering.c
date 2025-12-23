@@ -15,6 +15,8 @@
 #include "rain_integration.h"          /* Rain integration system */
 #include "rain_history.h"              /* Rain history management */
 #include "onboarding_state.h"          /* Onboarding state management */
+#include "timezone.h"                  /* For UTC timestamping */
+#include "nvs_config.h"                /* For lock persistence */
 
 LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -34,6 +36,16 @@ watering_status_t system_status = WATERING_STATUS_OK;
 watering_state_t system_state = WATERING_STATE_IDLE;
 power_mode_t current_power_mode = POWER_MODE_NORMAL;
 bool system_initialized = false;
+
+static hydraulic_lock_state_t global_hydraulic_lock = {
+    .level = HYDRAULIC_LOCK_NONE,
+    .reason = HYDRAULIC_LOCK_REASON_NONE,
+    .locked_at_epoch = 0,
+    .retry_after_epoch = 0
+};
+
+static uint8_t manual_override_channel = 0xFF;
+static uint32_t manual_override_until_ms = 0;
 
 /** Mutex for protecting system state */
 K_MUTEX_DEFINE(system_state_mutex);
@@ -79,6 +91,163 @@ void watering_restore_event(uint8_t channel_id)
     backup->active = false;
 }
 
+static bool manual_override_active_for_channel(uint8_t channel_id)
+{
+    uint32_t now_ms = k_uptime_get_32();
+
+    if (watering_task_state.manual_override_active &&
+        watering_task_state.current_active_task &&
+        watering_task_state.current_active_task->channel) {
+        uint8_t active_id = watering_task_state.current_active_task->channel - watering_channels;
+        if (active_id == channel_id) {
+            return true;
+        }
+    }
+
+    if (manual_override_until_ms == 0) {
+        return false;
+    }
+
+    if (now_ms >= manual_override_until_ms) {
+        manual_override_until_ms = 0;
+        manual_override_channel = 0xFF;
+        return false;
+    }
+
+    return (manual_override_channel == 0xFF || manual_override_channel == channel_id);
+}
+
+bool watering_hydraulic_is_global_locked(void)
+{
+    return (global_hydraulic_lock.level != HYDRAULIC_LOCK_NONE);
+}
+
+bool watering_hydraulic_is_channel_locked(uint8_t channel_id)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return false;
+    }
+    return (watering_channels[channel_id].hydraulic_lock.level != HYDRAULIC_LOCK_NONE);
+}
+
+bool watering_hydraulic_manual_override_active(uint8_t channel_id)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return false;
+    }
+    return manual_override_active_for_channel(channel_id);
+}
+
+void watering_hydraulic_set_manual_override(uint8_t channel_id, uint32_t duration_ms)
+{
+    manual_override_channel = channel_id;
+    manual_override_until_ms = k_uptime_get_32() + duration_ms;
+}
+
+void watering_hydraulic_clear_manual_override(void)
+{
+    manual_override_channel = 0xFF;
+    manual_override_until_ms = 0;
+}
+
+void watering_hydraulic_set_global_lock(hydraulic_lock_level_t level, hydraulic_lock_reason_t reason)
+{
+    if (level == HYDRAULIC_LOCK_NONE) {
+        watering_hydraulic_clear_global_lock();
+        return;
+    }
+
+    uint32_t now_epoch = timezone_get_unix_utc();
+    global_hydraulic_lock.level = level;
+    global_hydraulic_lock.reason = reason;
+    global_hydraulic_lock.locked_at_epoch = now_epoch;
+    global_hydraulic_lock.retry_after_epoch =
+        (level == HYDRAULIC_LOCK_SOFT && now_epoch > 0) ? (now_epoch + HYDRAULIC_SOFT_LOCK_RETRY_SEC) : 0;
+
+    if (system_status != WATERING_STATUS_LOCKED) {
+        system_status = WATERING_STATUS_LOCKED;
+        bt_irrigation_system_status_update(system_status);
+    }
+
+    nvs_save_hydraulic_global_lock(&global_hydraulic_lock);
+}
+
+void watering_hydraulic_clear_global_lock(void)
+{
+    global_hydraulic_lock.level = HYDRAULIC_LOCK_NONE;
+    global_hydraulic_lock.reason = HYDRAULIC_LOCK_REASON_NONE;
+    global_hydraulic_lock.locked_at_epoch = 0;
+    global_hydraulic_lock.retry_after_epoch = 0;
+
+    if (system_status == WATERING_STATUS_LOCKED) {
+        system_status = WATERING_STATUS_OK;
+        bt_irrigation_system_status_update(system_status);
+    }
+
+    nvs_save_hydraulic_global_lock(&global_hydraulic_lock);
+}
+
+void watering_hydraulic_set_channel_lock(uint8_t channel_id, hydraulic_lock_level_t level, hydraulic_lock_reason_t reason)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return;
+    }
+
+    if (level == HYDRAULIC_LOCK_NONE) {
+        watering_hydraulic_clear_channel_lock(channel_id);
+        return;
+    }
+
+    uint32_t now_epoch = timezone_get_unix_utc();
+    watering_channels[channel_id].hydraulic_lock.level = level;
+    watering_channels[channel_id].hydraulic_lock.reason = reason;
+    watering_channels[channel_id].hydraulic_lock.locked_at_epoch = now_epoch;
+    watering_channels[channel_id].hydraulic_lock.retry_after_epoch =
+        (level == HYDRAULIC_LOCK_SOFT && now_epoch > 0) ?
+            (now_epoch + ((reason == HYDRAULIC_LOCK_REASON_NO_FLOW) ?
+                          HYDRAULIC_NO_FLOW_RETRY_COOLDOWN_SEC :
+                          HYDRAULIC_SOFT_LOCK_RETRY_SEC)) : 0;
+
+    nvs_save_complete_channel_config(channel_id, &watering_channels[channel_id]);
+}
+
+void watering_hydraulic_clear_channel_lock(uint8_t channel_id)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return;
+    }
+
+    watering_channels[channel_id].hydraulic_lock.level = HYDRAULIC_LOCK_NONE;
+    watering_channels[channel_id].hydraulic_lock.reason = HYDRAULIC_LOCK_REASON_NONE;
+    watering_channels[channel_id].hydraulic_lock.locked_at_epoch = 0;
+    watering_channels[channel_id].hydraulic_lock.retry_after_epoch = 0;
+
+    nvs_save_complete_channel_config(channel_id, &watering_channels[channel_id]);
+}
+
+void watering_hydraulic_check_retry(void)
+{
+    uint32_t now_epoch = timezone_get_unix_utc();
+    if (now_epoch == 0) {
+        return;
+    }
+
+    if (global_hydraulic_lock.level == HYDRAULIC_LOCK_SOFT &&
+        global_hydraulic_lock.retry_after_epoch > 0 &&
+        now_epoch >= global_hydraulic_lock.retry_after_epoch) {
+        watering_hydraulic_clear_global_lock();
+    }
+
+    for (uint8_t i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+        hydraulic_lock_state_t *lock = &watering_channels[i].hydraulic_lock;
+        if (lock->level == HYDRAULIC_LOCK_SOFT &&
+            lock->retry_after_epoch > 0 &&
+            now_epoch >= lock->retry_after_epoch) {
+            watering_hydraulic_clear_channel_lock(i);
+        }
+    }
+}
+
 /**
  * @brief Log error with file and line information
  */
@@ -109,6 +278,22 @@ watering_error_t watering_init(void) {
     err = config_init();
     if (err != WATERING_SUCCESS) {
         LOG_ERROR("Configuration subsystem init failed", err);
+    }
+
+    hydraulic_lock_state_t persisted_lock;
+    int lock_ret = nvs_load_hydraulic_global_lock(&persisted_lock);
+    if (lock_ret >= 0 && persisted_lock.level != HYDRAULIC_LOCK_NONE) {
+        uint32_t now_epoch = timezone_get_unix_utc();
+        if (persisted_lock.level == HYDRAULIC_LOCK_SOFT &&
+            persisted_lock.retry_after_epoch > 0 &&
+            now_epoch > 0 &&
+            now_epoch >= persisted_lock.retry_after_epoch) {
+            nvs_save_hydraulic_global_lock(&global_hydraulic_lock);
+        } else {
+            global_hydraulic_lock = persisted_lock;
+            system_status = WATERING_STATUS_LOCKED;
+            bt_irrigation_system_status_update(system_status);
+        }
     }
 
     // Use ultra minimal valve initialization
@@ -1894,8 +2079,9 @@ watering_error_t watering_run_automatic_calculations(void)
     LOG_DBG("Running automatic irrigation calculations");
     
     // Check if system is in a state that allows automatic calculations
-    if (system_status == WATERING_STATUS_FAULT || 
-        system_status == WATERING_STATUS_RTC_ERROR) {
+    if (system_status == WATERING_STATUS_FAULT ||
+        system_status == WATERING_STATUS_RTC_ERROR ||
+        system_status == WATERING_STATUS_LOCKED) {
         LOG_WRN("Skipping automatic calculations due to system status: %d", system_status);
         return WATERING_ERROR_BUSY;
     }
@@ -2093,6 +2279,7 @@ watering_error_t watering_get_system_status_detailed(char *status_buffer, uint16
             case WATERING_STATUS_UNEXPECTED_FLOW: status_str = "UNEXPECTED_FLOW"; break;
             case WATERING_STATUS_RTC_ERROR: status_str = "RTC_ERROR"; break;
             case WATERING_STATUS_LOW_POWER: status_str = "LOW_POWER"; break;
+            case WATERING_STATUS_LOCKED: status_str = "LOCKED"; break;
         }
         written += snprintf(status_buffer + written, buffer_size - written,
                            "System Status: %s\n", status_str);

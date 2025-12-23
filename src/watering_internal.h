@@ -43,6 +43,7 @@ struct watering_task_state_t {
     bool task_paused;                      /**< Flag indicating task is paused */
     uint32_t pause_start_time;             /**< Timestamp when pause started */
     uint32_t total_paused_time;            /**< Total time spent paused (ms) */
+    bool manual_override_active;           /**< Manual override active for current task */
 };
 
 /**
@@ -75,6 +76,9 @@ extern struct last_completed_task_t last_completed_task;
 
 /** Threshold of pulses that indicates unexpected flow */
 #define UNEXPECTED_FLOW_THRESHOLD 10
+
+#define HYDRAULIC_SOFT_LOCK_RETRY_SEC (6 * 3600)
+#define HYDRAULIC_NO_FLOW_RETRY_COOLDOWN_SEC 900
 
 /** Timeout duration for state transition in milliseconds */
 #define STATE_TRANSITION_TIMEOUT_MS 10000
@@ -127,6 +131,21 @@ watering_error_t flow_monitor_init(void);
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t check_flow_anomalies(void);
+watering_error_t hydraulic_run_static_test(void);
+
+/**
+ * @brief Hydraulic lock helpers
+ */
+bool watering_hydraulic_is_global_locked(void);
+bool watering_hydraulic_is_channel_locked(uint8_t channel_id);
+bool watering_hydraulic_manual_override_active(uint8_t channel_id);
+void watering_hydraulic_set_manual_override(uint8_t channel_id, uint32_t duration_ms);
+void watering_hydraulic_clear_manual_override(void);
+void watering_hydraulic_set_global_lock(hydraulic_lock_level_t level, hydraulic_lock_reason_t reason);
+void watering_hydraulic_clear_global_lock(void);
+void watering_hydraulic_set_channel_lock(uint8_t channel_id, hydraulic_lock_level_t level, hydraulic_lock_reason_t reason);
+void watering_hydraulic_clear_channel_lock(uint8_t channel_id);
+void watering_hydraulic_check_retry(void);
 
 /**
  * @brief Initialize the configuration system
@@ -203,6 +222,8 @@ watering_error_t valve_init(void);
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t valve_close_all(void);
+watering_error_t master_valve_force_open(void);
+watering_error_t master_valve_force_close(void);
 
 /**
  * @brief Clear the pending task queue

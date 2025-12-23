@@ -10,6 +10,11 @@ This guide covers firmware diagnostics for the AutoWatering irrigation controlle
 |---------|--------------|--------|
 | Alarm code 1 (No Flow) | Valve open but no pulses | Check flow sensor wiring; verify calibration >0; ensure water supply on |
 | Alarm code 2 (Unexpected Flow) | Pulses with all valves closed | Inspect for leak; stuck valve; reset after fix |
+| Alarm code 3 (High Flow) | Burst pipe / broken head | Shut down water, fix leak, then manual test |
+| Alarm code 4 (Low Flow) | Filter clogged / partial blockage | Clean filters; watering continues |
+| Alarm code 5 (Mainline Leak) | Leak with all zones off | Inspect mainline and valves; reset after fix |
+| Alarm code 6 (Channel Lock) | Repeated NO_FLOW or HIGH_FLOW | Manual test, then clear lock |
+| Alarm code 7 (Global Lock) | Persistent leak or unexpected flow | Fix cause, then manual override test |
 | Interval mode never pauses | Interval not configured / wrong mode | Write interval config with configured=1 and select interval mode |
 | Rain data always zero | No rain pulses captured | Wiring, debounce (`rain_sensor_configure`), simulate pulse |
 | BLE write rejected | Invalid length or out-of-range field | Recheck struct size & field ranges (see characteristic docs) |
@@ -97,11 +102,17 @@ Data Length Extension request failed: -13 (may not be supported)
 
 ## Flow & Alarm Handling
 
-Two runtime alarm codes are emitted:
-- **1 NO_FLOW:** Valve opened; pulses did not appear within detection window
-- **2 UNEXPECTED_FLOW:** Pulses detected while all valves closed
+Runtime alarm codes:
+- **1 NO_FLOW:** Valve opened; pulses did not appear after retries
+- **2 UNEXPECTED_FLOW:** Pulses detected while all valves closed (debounced)
+- **3 HIGH_FLOW:** Flow above learned limit (burst/popup)
+- **4 LOW_FLOW:** Flow below learned limit (warning only)
+- **5 MAINLINE_LEAK:** Static test detected pulses with all zones off
+- **6 CHANNEL_LOCK:** Channel locked after persistent anomalies
+- **7 GLOBAL_LOCK:** Global lock due to leak/unexpected flow
 
 **Clear procedure:** Write the clear opcode to Alarm Status characteristic after resolving cause.
+**Manual override:** Explicit manual commands (BLE direct command) bypass locks temporarily for verification.
 
 **Checklist:**
 1. Inspect flow sensor wires (VCC, GND, signal on expected GPIO)

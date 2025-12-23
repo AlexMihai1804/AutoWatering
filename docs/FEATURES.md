@@ -44,6 +44,7 @@ Implementation notes:
 
 ### Sensing & Monitoring
 - **Flow sensor**: Pulse counting with calibration (100-10,000 pulses/liter; adjustable via BLE).
+- **Hydraulic Sentinel (H.H.M.)**: Auto-learning at first runs, profile-aware limits, HIGH/LOW/NO/UNEXPECTED flow handling, nightly static mainline test (03:00, skipped when watering).
 - **Rain gauge**: Tipping-bucket with 0.2 mm/pulse default, debounce, health monitoring.
 - **Environmental sensor** (BME280): Temperature, humidity, pressure; 15/60 min polling intervals.
 - Environmental, rain, and watering history with multi-resolution aggregation.
@@ -109,7 +110,8 @@ Implementation notes:
 - Timezone/DST conversion helpers: `src/timezone.c`.
 
 ### Error & Status Reporting
-- Status codes: OK, No-Flow, Unexpected-Flow, Fault, RTC Error, Low Power.
+- Status codes: OK, No-Flow, Unexpected-Flow, Fault, RTC Error, Low Power, Locked.
+- Manual override: explicit BLE direct commands can temporarily bypass locks for testing.
 - Enhanced system status: interval phase, compensation flags, sensor health, configuration completeness.
 - Error recovery strategies (retry, fallback, disable, reset, graceful degrade).
 - Rain-based skip events logged via history helpers.

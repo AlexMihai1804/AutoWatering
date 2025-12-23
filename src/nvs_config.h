@@ -356,4 +356,7 @@ int nvs_save_system_flags(uint32_t flags);
 int nvs_load_system_flags(uint32_t *flags);
 int nvs_clear_onboarding_data(void);
 
+int nvs_save_hydraulic_global_lock(const hydraulic_lock_state_t *lock_state);
+int nvs_load_hydraulic_global_lock(hydraulic_lock_state_t *lock_state);
+
 #endif /* NVS_CONFIG_H */
