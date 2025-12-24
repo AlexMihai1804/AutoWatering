@@ -1,0 +1,80 @@
+#############################################
+# Partition Manager Static Configuration
+# AutoWatering - nRF52840 + W25Q128 External Flash
+#############################################
+#
+# Internal Flash (1 MB):
+# - MCUboot: 80 KB
+# - Application slot0: 784 KB  
+# - NVS Storage: 150 KB
+# - Settings: 8 KB
+#
+# External Flash W25Q128 (16 MB):
+# - MCUboot slot1 (secondary): 1 MB
+# - Scratch: 128 KB
+# - Database (LittleFS): 512 KB
+# - Extended storage: 14.6 MB
+#############################################
+
+# ==========================================
+# Internal Flash Partitions
+# ==========================================
+
+mcuboot:
+  address: 0x0
+  size: 0x14000              # 80 KB
+  region: flash_primary
+
+mcuboot_primary:
+  address: 0x14000
+  size: 0xC4000              # 784 KB
+  span: [mcuboot_pad, app]
+  region: flash_primary
+
+mcuboot_pad:
+  address: 0x14000
+  size: 0x200
+  region: flash_primary
+
+app:
+  address: 0x14200
+  size: 0xC3E00              # Remaining slot0 space
+  region: flash_primary
+
+nvs_storage:
+  address: 0xD8000
+  size: 0x26000              # 152 KB
+  region: flash_primary
+
+settings_storage:
+  address: 0xFE000
+  size: 0x2000               # 8 KB
+  region: flash_primary
+
+# ==========================================
+# External Flash Partitions (W25Q128)
+# ==========================================
+
+mcuboot_secondary:
+  address: 0x0
+  size: 0x100000             # 1 MB - must match mcuboot_primary
+  device: w25q128
+  region: external_flash
+
+mcuboot_scratch:
+  address: 0x100000
+  size: 0x20000              # 128 KB
+  device: w25q128
+  region: external_flash
+
+database:
+  address: 0x120000
+  size: 0x80000              # 512 KB - LittleFS for plant/soil DB + history
+  device: w25q128
+  region: external_flash
+
+ext_storage:
+  address: 0x1A0000
+  size: 0xE60000             # ~14.6 MB - future expansion
+  device: w25q128
+  region: external_flash

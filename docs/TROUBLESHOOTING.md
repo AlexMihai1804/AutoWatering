@@ -241,6 +241,7 @@ west flash --runner jlink
 - Run pristine rebuild: `west build -p always ...`
 - Check Zephyr SDK in PATH
 - Verify west version: `west --version`
+- On Windows, if `arm-zephyr-eabi-ar.exe` fails creating a temporary file while building archives (often caused by long paths), build in a shorter directory, e.g. `west build ... -d C:\b\aw_build`
 
 ---
 

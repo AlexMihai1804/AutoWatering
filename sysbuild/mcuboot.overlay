@@ -1,0 +1,124 @@
+/*
+ * MCUboot Overlay for AutoWatering
+ * - USB CDC ACM for serial recovery
+ * - External W25Q128 flash support (slot1/scratch)
+ * - Optional DFU button for guaranteed recovery entry
+ */
+
+/ {
+    chosen {
+        /* Use CDC ACM for mcumgr serial recovery */
+        zephyr,console = &cdc_acm_uart0;
+        zephyr,uart-mcumgr = &cdc_acm_uart0;
+    };
+
+    /* 
+     * DFU Recovery Button (optional)
+     * Hold this button during reset to enter USB recovery mode
+     * Wire to any available GPIO with a pull-up and button to GND
+     */
+    aliases {
+        mcuboot-button0 = &dfu_button;
+    };
+
+    buttons {
+        compatible = "gpio-keys";
+        
+        dfu_button: dfu_button {
+            /* 
+             * Using P0.13 as DFU button (adjust to available GPIO)
+             * Button should pull to GND when pressed
+             * NOTE: Change this to match your hardware!
+             */
+            gpios = <&gpio0 13 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+            label = "MCUboot DFU Button";
+        };
+    };
+};
+
+/* ---------- pinctrl for SPI2 (W25Q128 external flash) ---------- */
+&pinctrl {
+    spi2_default: spi2_default {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 1, 15)>,
+                    <NRF_PSEL(SPIM_MOSI, 1, 13)>,
+                    <NRF_PSEL(SPIM_MISO, 1, 14)>;
+        };
+    };
+
+    spi2_sleep: spi2_sleep {
+        group1 {
+            psels = <NRF_PSEL(SPIM_SCK, 1, 15)>,
+                    <NRF_PSEL(SPIM_MOSI, 1, 13)>,
+                    <NRF_PSEL(SPIM_MISO, 1, 14)>;
+            low-power-enable;
+        };
+    };
+};
+
+/* ---------- SPI2 for W25Q128 external flash (MCUboot needs this too) ---------- */
+&spi2 {
+    status = "okay";
+    compatible = "nordic,nrf-spim";
+    pinctrl-0 = <&spi2_default>;
+    pinctrl-1 = <&spi2_sleep>;
+    pinctrl-names = "default", "sleep";
+    cs-gpios = <&gpio0 23 GPIO_ACTIVE_LOW>;
+
+    w25q128: w25q128@0 {
+        compatible = "jedec,spi-nor";
+        reg = <0>;
+        spi-max-frequency = <40000000>;
+        jedec-id = [ef 40 18];
+        size = <DT_SIZE_M(128)>;  /* 128 Mbit = 16 MB */
+        has-dpd;
+        t-enter-dpd = <3000>;
+        t-exit-dpd = <30000>;
+
+        partitions {
+            compatible = "fixed-partitions";
+            #address-cells = <1>;
+            #size-cells = <1>;
+
+            /* Slot 1 for MCUboot secondary image (1 MB - matches slot0) */
+            slot1_partition: partition@0 {
+                label = "image-1";
+                reg = <0x00000000 0x00100000>;
+            };
+
+            /* Scratch partition for MCUboot swap (128 KB) */
+            scratch_partition: partition@100000 {
+                label = "image-scratch";
+                reg = <0x00100000 0x00020000>;
+            };
+        };
+    };
+};
+
+/* ---------- USB CDC ACM for serial recovery ---------- */
+&zephyr_udc0 {
+    cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
+    };
+};
+
+/* ---------- Internal flash partitions for MCUboot ---------- */
+&flash0 {
+    partitions {
+        compatible = "fixed-partitions";
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        /* MCUboot bootloader - increased size for USB stack */
+        boot_partition: partition@0 {
+            label = "mcuboot";
+            reg = <0x00000000 0x00014000>;  /* 80 KB */
+        };
+
+        /* Primary application slot (slot0) */
+        slot0_partition: partition@14000 {
+            label = "image-0";
+            reg = <0x00014000 0x000C4000>;  /* ~784 KB */
+        };
+    };
+};

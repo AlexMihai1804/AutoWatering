@@ -234,10 +234,16 @@
         #address-cells = <1>;
         #size-cells = <1>;
 
-        /* Slot 0: Primary application image (single stage, BOSSA untouched) */
-        slot0_partition: partition@10000 {
+        /* MCUboot bootloader (must match sysbuild/mcuboot.overlay) */
+        boot_partition: partition@0 {
+            label = "mcuboot";
+            reg = <0x00000000 0x00014000>;  /* 80 KB */
+        };
+
+        /* Slot 0: Primary application image (must match sysbuild/mcuboot.overlay) */
+        slot0_partition: partition@14000 {
             label = "image-0";
-            reg = <0x00010000 0x000e8000>;
+            reg = <0x00014000 0x000C4000>;  /* 784 KB */
         };
     };
 };

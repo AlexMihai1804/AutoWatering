@@ -32,6 +32,10 @@ struct bt_conn;
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/util.h>
 
+#if defined(CONFIG_MCUMGR_TRANSPORT_BT)
+#include <zephyr/mgmt/mcumgr/transport/smp_bt.h>
+#endif
+
 #include "bt_irrigation_service.h"
 #include "watering.h"
 #include "watering_internal.h"  // Add this include to access internal state
@@ -8097,6 +8101,14 @@ int bt_irrigation_service_init(void) {
         LOG_ERR("Bluetooth init failed: %d", err);
         return err;
     }
+
+#if defined(CONFIG_MCUMGR_TRANSPORT_BT)
+    err = smp_bt_register();
+    if (err) {
+        LOG_ERR("SMP BT (mcumgr) register failed: %d", err);
+        return err;
+    }
+#endif
     
     /* Register authentication callbacks */
     bt_conn_auth_cb_register(&auth_cb_just_works);
