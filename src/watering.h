@@ -79,6 +79,71 @@ typedef enum watering_mode {
 } watering_mode_t;
 
 /**
+ * @brief Hydraulic profile for per-zone flow behavior
+ */
+typedef enum {
+    PROFILE_AUTO = 0,   /**< Auto-learned or undetermined */
+    PROFILE_SPRAY = 1,  /**< Fast response (spray/rotor) */
+    PROFILE_DRIP = 2    /**< Slow response (drip) */
+} hydraulic_profile_t;
+
+/**
+ * @brief Lock severity for hydraulic anomalies
+ */
+typedef enum {
+    HYDRAULIC_LOCK_NONE = 0,
+    HYDRAULIC_LOCK_SOFT = 1,  /**< Auto retry allowed */
+    HYDRAULIC_LOCK_HARD = 2   /**< Manual acknowledgement required */
+} hydraulic_lock_level_t;
+
+/**
+ * @brief Lock reason for hydraulic anomalies
+ */
+typedef enum {
+    HYDRAULIC_LOCK_REASON_NONE = 0,
+    HYDRAULIC_LOCK_REASON_HIGH_FLOW = 1,
+    HYDRAULIC_LOCK_REASON_NO_FLOW = 2,
+    HYDRAULIC_LOCK_REASON_UNEXPECTED_FLOW = 3,
+    HYDRAULIC_LOCK_REASON_MAINLINE_LEAK = 4
+} hydraulic_lock_reason_t;
+
+/**
+ * @brief Learned hydraulic data per zone
+ */
+typedef struct {
+    uint32_t nominal_flow_ml_min;     /**< Learned nominal flow */
+    uint16_t ramp_up_time_sec;        /**< Time to stabilize */
+    hydraulic_profile_t profile_type; /**< Profile derived or overridden */
+    uint8_t tolerance_high_percent;   /**< High flow tolerance percent */
+    uint8_t tolerance_low_percent;    /**< Low flow tolerance percent */
+    bool is_calibrated;               /**< Learned at least twice */
+    bool monitoring_enabled;          /**< Flow monitoring enabled */
+    uint8_t learning_runs;            /**< Total learning runs */
+    uint8_t stable_runs;              /**< Stable learning runs */
+    bool estimated;                   /**< Nominal is estimated */
+} ZoneHydraulicData;
+
+/**
+ * @brief Lock state for hydraulic protection
+ */
+typedef struct {
+    hydraulic_lock_level_t level;
+    hydraulic_lock_reason_t reason;
+    uint32_t locked_at_epoch;
+    uint32_t retry_after_epoch;
+} hydraulic_lock_state_t;
+
+/**
+ * @brief Tracking counters for anomaly persistence
+ */
+typedef struct {
+    uint8_t no_flow_runs;
+    uint8_t high_flow_runs;
+    uint8_t unexpected_flow_runs;
+    uint32_t last_anomaly_epoch;
+} hydraulic_anomaly_state_t;
+
+/**
  * @brief Watering system state machine states
  */
 typedef enum {
@@ -745,6 +810,11 @@ typedef struct {
         float min_factor;             /**< Minimum compensation factor */
         float max_factor;             /**< Maximum compensation factor */
     } temp_compensation;
+
+    /* Hydraulic monitoring and safety */
+    ZoneHydraulicData hydraulic;      /**< Learned hydraulic profile and nominal flow */
+    hydraulic_lock_state_t hydraulic_lock;   /**< Per-channel lock state */
+    hydraulic_anomaly_state_t hydraulic_anomaly; /**< Persistence counters */
     
     struct {
         float reduction_percentage;   /**< Last rain reduction percentage */
@@ -831,7 +901,8 @@ typedef enum {
     WATERING_STATUS_FAULT = 3,         /**< System in fault state requiring manual reset */
     WATERING_STATUS_RTC_ERROR = 4,     /**< RTC failure detected */
     WATERING_STATUS_LOW_POWER = 5,     /**< System in low power mode */
-    WATERING_STATUS_FREEZE_LOCKOUT = 6 /**< Anti-freeze safety lockout */
+    WATERING_STATUS_FREEZE_LOCKOUT = 6, /**< Anti-freeze safety lockout */
+    WATERING_STATUS_LOCKED = 7         /**< Hydraulic safety lock active */
 } watering_status_t;
 
 /**
@@ -1809,5 +1880,20 @@ watering_error_t watering_get_system_status_detailed(char *status_buffer, uint16
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_get_rain_integration_status(rain_integration_status_t *integration_status);
+
+/**
+ * @brief Get current global hydraulic lock state
+ *
+ * @param out_lock Output lock state (required)
+ */
+void watering_get_global_hydraulic_lock(hydraulic_lock_state_t *out_lock);
+
+/**
+ * @brief Check if manual override is active for a channel
+ *
+ * @param channel_id Channel ID (0-7)
+ * @return true if manual override is active
+ */
+bool watering_hydraulic_manual_override_active(uint8_t channel_id);
 
 #endif // WATERING_H

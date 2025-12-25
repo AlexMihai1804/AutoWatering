@@ -136,6 +136,8 @@ enhanced_system_status_t enhanced_system_determine_primary_status(void)
                 return ENHANCED_STATUS_NO_FLOW;
             case WATERING_STATUS_UNEXPECTED_FLOW:
                 return ENHANCED_STATUS_UNEXPECTED_FLOW;
+            case WATERING_STATUS_LOCKED:
+                return ENHANCED_STATUS_LOCKED;
             default:
                 break;
         }
@@ -376,6 +378,8 @@ const char* enhanced_system_status_to_string(enhanced_system_status_t status)
             return "RTC Error";
         case ENHANCED_STATUS_LOW_POWER:
             return "Low Power";
+        case ENHANCED_STATUS_LOCKED:
+            return "Locked";
         case ENHANCED_STATUS_INTERVAL_WATERING:
             return "Interval Watering";
         case ENHANCED_STATUS_INTERVAL_PAUSING:
@@ -412,6 +416,7 @@ bool enhanced_system_status_is_error(enhanced_system_status_t status)
         case ENHANCED_STATUS_RTC_ERROR:
         case ENHANCED_STATUS_BME280_ERROR:
         case ENHANCED_STATUS_CONFIG_INCOMPLETE:
+        case ENHANCED_STATUS_LOCKED:
             return true;
         default:
             return false;

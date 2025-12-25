@@ -304,8 +304,12 @@ watering_error_t watering_channel_on(uint8_t channel_id) {
         return WATERING_ERROR_HARDWARE;
     }
     
-    // Check system status
+    // Check system status and hydraulic locks
     if (system_status == WATERING_STATUS_FAULT) {
+        return WATERING_ERROR_BUSY;
+    }
+    if ((watering_hydraulic_is_global_locked() || watering_hydraulic_is_channel_locked(channel_id)) &&
+        !watering_hydraulic_manual_override_active(channel_id)) {
         return WATERING_ERROR_BUSY;
     }
     
@@ -609,6 +613,20 @@ watering_error_t master_valve_manual_close(void) {
         return WATERING_ERROR_BUSY;
     }
     
+    return master_valve_close();
+}
+
+watering_error_t master_valve_force_open(void) {
+    if (!master_config.enabled) {
+        return WATERING_ERROR_CONFIG;
+    }
+    return master_valve_open();
+}
+
+watering_error_t master_valve_force_close(void) {
+    if (!master_config.enabled) {
+        return WATERING_ERROR_CONFIG;
+    }
     return master_valve_close();
 }
 

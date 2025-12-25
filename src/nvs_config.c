@@ -81,6 +81,7 @@ enum {
     ID_SYSTEM_FLAGS = 920,       /* System configuration flags */
     ID_CONFIG_STATUS_BASE = 930, /* Configuration status +ch (0-7) */
     ID_CONFIG_RESET_LOG_BASE = 940, /* Configuration reset logs +ch (0-7) */
+    ID_HYDRAULIC_GLOBAL_LOCK = 950, /* Global hydraulic lock state */
 };
 
 /* ΓÇöΓÇöΓÇö nivel ├«nalt ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
@@ -1324,6 +1325,26 @@ int nvs_load_system_flags(uint32_t *flags)
         /* Default to no flags set */
         *flags = 0;
         ret = sizeof(*flags);
+    }
+    return ret;
+}
+
+int nvs_save_hydraulic_global_lock(const hydraulic_lock_state_t *lock_state)
+{
+    if (!lock_state) {
+        return -EINVAL;
+    }
+    return nvs_config_write(ID_HYDRAULIC_GLOBAL_LOCK, lock_state, sizeof(*lock_state));
+}
+
+int nvs_load_hydraulic_global_lock(hydraulic_lock_state_t *lock_state)
+{
+    if (!lock_state) {
+        return -EINVAL;
+    }
+    int ret = nvs_config_read(ID_HYDRAULIC_GLOBAL_LOCK, lock_state, sizeof(*lock_state));
+    if (ret == -ENOENT) {
+        memset(lock_state, 0, sizeof(*lock_state));
     }
     return ret;
 }

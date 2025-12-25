@@ -150,6 +150,7 @@ int interval_task_start(watering_task_t *task)
     watering_task_state.watering_start_time = enhanced_task_state.watering_start_time;
     watering_task_state.task_in_progress = true;
     watering_task_state.task_paused = false;
+    watering_task_state.manual_override_active = false;
 
     return 0;
 }
@@ -212,6 +213,7 @@ int interval_task_update(uint32_t current_volume, float flow_rate_ml_sec)
     // Update legacy task state
     watering_task_state.task_in_progress = enhanced_task_state.task_in_progress;
     watering_task_state.task_paused = enhanced_task_state.task_paused;
+    watering_task_state.manual_override_active = false;
 
     return 0;
 }
@@ -247,6 +249,7 @@ int interval_task_stop(const char *reason)
     watering_task_state.current_active_task = NULL;
     watering_task_state.task_in_progress = false;
     watering_task_state.task_paused = false;
+    watering_task_state.manual_override_active = false;
 
     return 0;
 }

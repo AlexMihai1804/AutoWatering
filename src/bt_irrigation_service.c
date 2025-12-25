@@ -69,6 +69,7 @@ int bt_irrigation_reset_control_notify(void);
 
 /* Rain history fragmentation support */
 #define RAIN_HISTORY_MAX_FRAGMENTS 255   /* Maximum number of fragments */
+#define MANUAL_OVERRIDE_WINDOW_MS 600000 /* 10 minutes */
 
 /* ------------------------------------------------------------------ */
 /* TIMING STRATEGY DOCUMENTATION                                      */
@@ -329,6 +330,7 @@ static uint16_t get_current_day_of_year(void) {
 #define ATTR_IDX_CHANNEL_COMP_CONFIG_VALUE 80
 /* THROUGHPUT: Bulk Sync Snapshot characteristic index (single READ replaces 10+ queries) */
 #define ATTR_IDX_BULK_SYNC_SNAPSHOT_VALUE 83
+#define ATTR_IDX_HYDRAULIC_STATUS_VALUE 85
 
 /* Simple direct notification function - no queues, no work handlers */
 
@@ -454,6 +456,7 @@ typedef struct {
     bool reset_control_notifications_enabled;
     bool rain_integration_status_notifications_enabled;
     bool channel_comp_config_notifications_enabled;
+    bool hydraulic_status_notifications_enabled;
 } notification_state_t;
 
 static notification_state_t notification_state = {0};
@@ -565,7 +568,8 @@ static notify_priority_t get_notification_priority(const struct bt_gatt_attr *at
                attr == &irrigation_svc.attrs[ATTR_IDX_COMPENSATION_STATUS_VALUE] ||
                attr == &irrigation_svc.attrs[ATTR_IDX_RTC_VALUE] ||
                attr == &irrigation_svc.attrs[ATTR_IDX_AUTO_CALC_STATUS_VALUE] ||
-               attr == &irrigation_svc.attrs[ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE]) {
+               attr == &irrigation_svc.attrs[ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE] ||
+               attr == &irrigation_svc.attrs[ATTR_IDX_HYDRAULIC_STATUS_VALUE]) {
         return NOTIFY_PRIORITY_NORMAL;
     } else if (attr == &irrigation_svc.attrs[ATTR_IDX_ENVIRONMENTAL_HISTORY_VALUE]) {
         return NOTIFY_PRIORITY_LOW; /* History data is low priority */
@@ -921,6 +925,13 @@ static ssize_t write_channel_comp_config(struct bt_conn *conn, const struct bt_g
                                          const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
 static void    channel_comp_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 
+/* Hydraulic status characteristic */
+static ssize_t read_hydraulic_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                     void *buf, uint16_t len, uint16_t offset);
+static ssize_t write_hydraulic_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                      const void *buf, uint16_t len, uint16_t offset, uint8_t flags);
+static void hydraulic_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+
 /* ------------------------------------------------------------------ */
 
 /* Custom UUIDs for Irrigation Service */
@@ -997,6 +1008,8 @@ static void    channel_comp_config_ccc_changed(const struct bt_gatt_attr *attr, 
 /* THROUGHPUT: Bulk Sync Snapshot characteristic - single READ replaces 10+ queries at connection */
 #define BT_UUID_IRRIGATION_BULK_SYNC_SNAPSHOT_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde60)
+#define BT_UUID_IRRIGATION_HYDRAULIC_STATUS_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x1234, 0x56789abcde22)
 
 static struct bt_uuid_128 irrigation_service_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_SERVICE_VAL);
 static struct bt_uuid_128 valve_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_VALVE_VAL);
@@ -1034,6 +1047,7 @@ static struct bt_uuid_128 rain_integration_status_char_uuid = BT_UUID_INIT_128(B
 static struct bt_uuid_128 channel_comp_config_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_CHANNEL_COMP_CONFIG_VAL);
 /* THROUGHPUT: Bulk Sync Snapshot characteristic UUID */
 static struct bt_uuid_128 bulk_sync_snapshot_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_BULK_SYNC_SNAPSHOT_VAL);
+static struct bt_uuid_128 hydraulic_status_char_uuid = BT_UUID_INIT_128(BT_UUID_IRRIGATION_HYDRAULIC_STATUS_VAL);
 
 /* Characteristic value handles - use types from headers */
 static uint8_t valve_value[sizeof(struct valve_control_data)];
@@ -1107,6 +1121,7 @@ static uint8_t compensation_status_value[sizeof(struct compensation_status_data)
 static uint8_t rain_integration_status_value[sizeof(struct rain_integration_status_ble)];
 /* Channel Compensation Config characteristic value buffer */
 static uint8_t channel_comp_config_value[sizeof(struct channel_compensation_config_data)];
+static uint8_t hydraulic_status_value[sizeof(struct hydraulic_status_data)];
 
 /* ------------------------------------------------------------------ */
 /* THROUGHPUT: Bulk Sync Snapshot - Single READ replaces 10+ queries  */
@@ -1972,6 +1987,136 @@ static void compensation_status_ccc_changed(const struct bt_gatt_attr *attr, uin
 }
 
 /* ================================================================== */
+/* Hydraulic Status Characteristics                                   */
+/* ================================================================== */
+
+static void build_hydraulic_status(struct hydraulic_status_data *out, uint8_t channel_id)
+{
+    if (!out) {
+        return;
+    }
+
+    memset(out, 0, sizeof(*out));
+    out->channel_id = channel_id;
+
+    uint8_t resolved_channel = channel_id;
+    if (resolved_channel >= WATERING_CHANNELS_COUNT) {
+        resolved_channel = 0;
+        out->channel_id = resolved_channel;
+    }
+
+    watering_channel_t *channel = NULL;
+    if (watering_get_channel(resolved_channel, &channel) == WATERING_SUCCESS && channel) {
+        out->profile_type = (uint8_t)channel->hydraulic.profile_type;
+        out->lock_level = (uint8_t)channel->hydraulic_lock.level;
+        out->lock_reason = (uint8_t)channel->hydraulic_lock.reason;
+        out->nominal_flow_ml_min = channel->hydraulic.nominal_flow_ml_min;
+        out->ramp_up_time_sec = channel->hydraulic.ramp_up_time_sec;
+        out->tolerance_high_percent = channel->hydraulic.tolerance_high_percent;
+        out->tolerance_low_percent = channel->hydraulic.tolerance_low_percent;
+        out->is_calibrated = channel->hydraulic.is_calibrated ? 1 : 0;
+        out->monitoring_enabled = channel->hydraulic.monitoring_enabled ? 1 : 0;
+        out->learning_runs = channel->hydraulic.learning_runs;
+        out->stable_runs = channel->hydraulic.stable_runs;
+        out->estimated = channel->hydraulic.estimated ? 1 : 0;
+        out->manual_override_active = watering_hydraulic_manual_override_active(resolved_channel) ? 1 : 0;
+        out->lock_at_epoch = channel->hydraulic_lock.locked_at_epoch;
+        out->retry_after_epoch = channel->hydraulic_lock.retry_after_epoch;
+        out->no_flow_runs = channel->hydraulic_anomaly.no_flow_runs;
+        out->high_flow_runs = channel->hydraulic_anomaly.high_flow_runs;
+        out->unexpected_flow_runs = channel->hydraulic_anomaly.unexpected_flow_runs;
+        out->last_anomaly_epoch = channel->hydraulic_anomaly.last_anomaly_epoch;
+    }
+
+    hydraulic_lock_state_t global_lock = {0};
+    watering_get_global_hydraulic_lock(&global_lock);
+    out->global_lock_level = (uint8_t)global_lock.level;
+    out->global_lock_reason = (uint8_t)global_lock.reason;
+    out->global_lock_at_epoch = global_lock.locked_at_epoch;
+    out->global_retry_after_epoch = global_lock.retry_after_epoch;
+}
+
+static ssize_t write_hydraulic_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                      const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    ARG_UNUSED(flags);
+
+    if (offset != 0 || len != 1 || buf == NULL) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    uint8_t requested = *((const uint8_t *)buf);
+    uint8_t selected = requested;
+
+    if (requested == 0xFF) {
+        watering_task_t *task = watering_get_current_task();
+        if (task && task->channel) {
+            selected = (uint8_t)(task->channel - watering_channels);
+        } else {
+            selected = 0;
+        }
+    } else if (requested >= WATERING_CHANNELS_COUNT) {
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+
+    struct hydraulic_status_data *cached = (struct hydraulic_status_data *)hydraulic_status_value;
+    cached->channel_id = selected;
+
+    if (notification_state.hydraulic_status_notifications_enabled) {
+        struct hydraulic_status_data status;
+        build_hydraulic_status(&status, selected);
+        memcpy(hydraulic_status_value, &status, sizeof(status));
+        safe_notify(default_conn, attr, &status, sizeof(status));
+    }
+
+    return len;
+}
+
+static ssize_t read_hydraulic_status(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                     void *buf, uint16_t len, uint16_t offset)
+{
+    if (!conn || !attr || !buf) {
+        LOG_ERR("Invalid parameters for Hydraulic Status read");
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_HANDLE);
+    }
+
+    uint8_t channel_id = ((const struct hydraulic_status_data *)hydraulic_status_value)->channel_id;
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        channel_id = 0;
+    }
+
+    struct hydraulic_status_data status;
+    build_hydraulic_status(&status, channel_id);
+
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, &status, sizeof(status));
+}
+
+static void hydraulic_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.hydraulic_status_notifications_enabled = notif_enabled;
+
+    if (notif_enabled) {
+        LOG_INF("Hydraulic status notifications enabled");
+        if (default_conn) {
+            uint8_t channel_id = ((struct hydraulic_status_data *)hydraulic_status_value)->channel_id;
+            if (channel_id >= WATERING_CHANNELS_COUNT) {
+                channel_id = 0;
+            }
+            struct hydraulic_status_data status;
+            build_hydraulic_status(&status, channel_id);
+            memcpy(hydraulic_status_value, &status, sizeof(status));
+            safe_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_HYDRAULIC_STATUS_VALUE],
+                        &status, sizeof(status));
+        }
+    } else {
+        LOG_INF("Hydraulic status notifications disabled");
+    }
+}
+
+/* ================================================================== */
 /* Onboarding Characteristics Implementation                          */
 /* ================================================================== */
 
@@ -2451,6 +2596,14 @@ BT_GATT_SERVICE_DEFINE(irrigation_svc,
                          BT_GATT_CHRC_READ,
                          BT_GATT_PERM_READ_ENCRYPT,
                          read_bulk_sync_snapshot, NULL, bulk_sync_snapshot_value),
+
+    // Hydraulic status characteristic
+    BT_GATT_CHARACTERISTIC(&hydraulic_status_char_uuid.uuid,
+                         BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                         BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
+                         read_hydraulic_status, write_hydraulic_status, hydraulic_status_value),
+    BT_GATT_CCC(hydraulic_status_ccc_changed,
+               BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
 );
 
 /* ------------------------------------------------------------------ */
@@ -4715,6 +4868,7 @@ static void force_enable_all_notifications(void) {
     notification_state.environmental_data_notifications_enabled = true;
     notification_state.environmental_history_notifications_enabled = true;
     notification_state.compensation_status_notifications_enabled = true;
+    notification_state.hydraulic_status_notifications_enabled = true;
     
     LOG_INF("✅ All BLE notifications force-enabled");
 }
@@ -9368,6 +9522,7 @@ int bt_irrigation_direct_command(uint8_t channel_id, uint8_t command, uint16_t p
     switch (command) {
         case 0: /* Valve open */
             LOG_INF("Direct command: Open valve for channel %u", channel_id);
+            watering_hydraulic_set_manual_override(channel_id, MANUAL_OVERRIDE_WINDOW_MS);
             err = watering_channel_on(channel_id);
             if (err == WATERING_SUCCESS) {
                 bt_irrigation_valve_status_update(channel_id, true);
@@ -9400,8 +9555,20 @@ int bt_irrigation_direct_command(uint8_t channel_id, uint8_t command, uint16_t p
                     } else {
                         task.by_volume.volume_liters = param; /* Use param as volume */
                     }
-                    
-                    err = watering_add_task(&task);
+
+                    bool lock_active = (watering_hydraulic_is_global_locked() ||
+                                        watering_hydraulic_is_channel_locked(channel_id));
+                    if (lock_active) {
+                        watering_hydraulic_set_manual_override(channel_id, MANUAL_OVERRIDE_WINDOW_MS);
+                        if (watering_task_state.task_in_progress) {
+                            err = WATERING_ERROR_BUSY;
+                        } else {
+                            err = watering_start_task(&task);
+                        }
+                    } else {
+                        err = watering_add_task(&task);
+                    }
+
                     if (err == WATERING_SUCCESS) {
                         bt_irrigation_current_task_notify();
                     }
@@ -11122,6 +11289,38 @@ int bt_irrigation_channel_comp_config_notify(uint8_t channel_id) {
                        channel_comp_config_value, sizeof(config));
 }
 
+int bt_irrigation_hydraulic_status_notify(uint8_t channel_id)
+{
+    if (!default_conn || !notification_state.hydraulic_status_notifications_enabled) {
+        return 0;
+    }
+
+    uint8_t selected = channel_id;
+    if (selected == 0xFF) {
+        selected = ((struct hydraulic_status_data *)hydraulic_status_value)->channel_id;
+        if (selected >= WATERING_CHANNELS_COUNT) {
+            selected = 0;
+        }
+    }
+
+    struct hydraulic_status_data status;
+    build_hydraulic_status(&status, selected);
+    memcpy(hydraulic_status_value, &status, sizeof(status));
+
+    const struct bt_gatt_attr *attr = &irrigation_svc.attrs[ATTR_IDX_HYDRAULIC_STATUS_VALUE];
+    int result = safe_notify(default_conn, attr, &status, sizeof(status));
+
+    if (result == 0) {
+        LOG_DBG("Hydraulic status notify: ch=%u, lock=%u/%u, global=%u/%u",
+                selected, status.lock_level, status.lock_reason,
+                status.global_lock_level, status.global_lock_reason);
+    } else {
+        LOG_WRN("Hydraulic status notify failed: %d", result);
+    }
+
+    return result;
+}
+
 /* ------------------------------------------------------------------ */
 /* THROUGHPUT: Bulk Sync Snapshot implementation                      */
 /* ------------------------------------------------------------------ */
@@ -11374,6 +11573,10 @@ int bt_irrigation_auto_calc_status_notify(void) {
 }
 
 int bt_irrigation_growing_env_notify(void) {
+    return 0; // BLE disabled - no notifications
+}
+
+int bt_irrigation_hydraulic_status_notify(uint8_t channel_id) {
     return 0; // BLE disabled - no notifications
 }
 

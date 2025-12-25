@@ -44,7 +44,7 @@ LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
 K_MSGQ_DEFINE(watering_tasks_queue, sizeof(watering_task_t), 10, 4);
 
 /** Current state of task execution */
-struct watering_task_state_t watering_task_state = {NULL, 0, false, false, 0, 0};
+struct watering_task_state_t watering_task_state = {NULL, 0, false, false, 0, 0, false};
 
 /** Global state of last completed task for BLE reporting */
 struct last_completed_task_t last_completed_task = {NULL, 0, 0, false};
@@ -276,6 +276,7 @@ watering_error_t tasks_init(void) {
     watering_task_state.task_paused = false;
     watering_task_state.pause_start_time = 0;
     watering_task_state.total_paused_time = 0;
+    watering_task_state.manual_override_active = false;
     
     // Initialize last completed task state
     last_completed_task.task = NULL;
@@ -373,10 +374,29 @@ int watering_process_next_task(void) {
     if (system_status == WATERING_STATUS_FAULT) {
         return -WATERING_ERROR_BUSY;
     }
+
+    if (system_status == WATERING_STATUS_LOCKED) {
+        watering_task_t peek_task;
+        if (k_msgq_peek(&watering_tasks_queue, &peek_task) == 0) {
+            if (peek_task.trigger_type != WATERING_TRIGGER_MANUAL) {
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+    }
     
     watering_task_t task;
     if (k_msgq_get(&watering_tasks_queue, &task, K_NO_WAIT) != 0) {
         return 0;  // No tasks in queue
+    }
+
+    if ((watering_hydraulic_is_global_locked() ||
+         watering_hydraulic_is_channel_locked(task.channel - watering_channels)) &&
+        task.trigger_type != WATERING_TRIGGER_MANUAL) {
+        /* Keep task queued until lock clears */
+        k_msgq_put(&watering_tasks_queue, &task, K_NO_WAIT);
+        return 0;
     }
 
     if (task.channel == NULL) {
@@ -507,6 +527,7 @@ watering_error_t watering_start_task(watering_task_t *task)
     
     watering_task_state.watering_start_time = k_uptime_get_32();
     watering_task_state.task_in_progress = true;
+    watering_task_state.manual_override_active = (task->trigger_type == WATERING_TRIGGER_MANUAL);
     
     printk("TASK DEBUG: watering_start_time set to %u\n", watering_task_state.watering_start_time);
     
@@ -587,6 +608,7 @@ bool watering_stop_current_task(void) {
         watering_task_state.task_paused = false;
         watering_task_state.pause_start_time = 0;
         watering_task_state.total_paused_time = 0;
+        watering_task_state.manual_override_active = false;
         current_task_state = W_TASK_STATE_IDLE;
         k_mutex_unlock(&watering_state_mutex);
 
@@ -638,6 +660,7 @@ bool watering_stop_current_task(void) {
     watering_task_state.task_paused = false;
     watering_task_state.pause_start_time = 0;
     watering_task_state.total_paused_time = 0;
+    watering_task_state.manual_override_active = false;
     current_task_state = W_TASK_STATE_IDLE;
     
     k_mutex_unlock(&watering_state_mutex);
@@ -800,6 +823,7 @@ int watering_check_tasks(void) {
             
             watering_task_state.current_active_task = NULL;
             watering_task_state.task_in_progress = false;
+            watering_task_state.manual_override_active = false;
             current_task_state = W_TASK_STATE_COMPLETED;
             
             k_mutex_unlock(&watering_state_mutex);
@@ -849,6 +873,7 @@ watering_error_t watering_cleanup_tasks(void) {
         /* Ensure state is fully reset even if the active task pointer was already cleared */
         watering_task_state.current_active_task = NULL;
         watering_task_state.task_in_progress = false;
+        watering_task_state.manual_override_active = false;
         current_task_state = W_TASK_STATE_IDLE;
         
         /* Notify BLE clients about task completion */
@@ -1057,6 +1082,7 @@ static void scheduler_task_fn(void *p1, void *p2, void *p3) {
     while (!exit_tasks) {
         bool rtc_read_success = false;
         uint32_t utc_timestamp_for_history = 0U;
+        static uint16_t last_nightly_test_julian_day = 0;
         
         if (rtc_status == 0) {
             if (rtc_datetime_get(&now) == 0) {
@@ -1118,6 +1144,21 @@ static void scheduler_task_fn(void *p1, void *p2, void *p3) {
         
         if (rtc_read_success) {
             watering_scheduler_run();
+            watering_hydraulic_check_retry();
+
+            if (current_julian_day != 0 &&
+                current_hour == 3 && current_minute == 0 &&
+                last_nightly_test_julian_day != current_julian_day) {
+                bool watering_active = (watering_task_state.task_in_progress ||
+                                        watering_task_state.current_active_task != NULL);
+                if (!watering_active && watering_get_pending_tasks_count() == 0 &&
+                    !watering_hydraulic_is_global_locked()) {
+                    hydraulic_run_static_test();
+                } else {
+                    printk("Nightly test skipped: watering active or queued\n");
+                }
+                last_nightly_test_julian_day = current_julian_day;
+            }
 
             /* Aggregate hourly/daily environmental history (once per scheduler tick) */
             if (utc_timestamp_for_history != 0U && env_history_get_storage() != NULL) {
@@ -1180,7 +1221,9 @@ watering_error_t watering_scheduler_run(void) {
         return WATERING_ERROR_BUSY;
     }
     
-    if (system_status == WATERING_STATUS_FAULT || system_status == WATERING_STATUS_RTC_ERROR) {
+    if (system_status == WATERING_STATUS_FAULT ||
+        system_status == WATERING_STATUS_RTC_ERROR ||
+        system_status == WATERING_STATUS_LOCKED) {
         return WATERING_ERROR_BUSY;
     }
     

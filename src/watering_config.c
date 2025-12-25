@@ -130,6 +130,28 @@ watering_error_t load_default_config(void) {
         watering_channels[i].plant_db_index = UINT16_MAX;
         watering_channels[i].soil_db_index = UINT8_MAX;
         watering_channels[i].irrigation_method_index = UINT8_MAX;
+
+        /* Hydraulic monitoring defaults */
+        watering_channels[i].hydraulic.nominal_flow_ml_min = 0;
+        watering_channels[i].hydraulic.ramp_up_time_sec = 0;
+        watering_channels[i].hydraulic.profile_type = PROFILE_AUTO;
+        watering_channels[i].hydraulic.tolerance_high_percent = 30;
+        watering_channels[i].hydraulic.tolerance_low_percent = 40;
+        watering_channels[i].hydraulic.is_calibrated = false;
+        watering_channels[i].hydraulic.monitoring_enabled = true;
+        watering_channels[i].hydraulic.learning_runs = 0;
+        watering_channels[i].hydraulic.stable_runs = 0;
+        watering_channels[i].hydraulic.estimated = false;
+
+        watering_channels[i].hydraulic_lock.level = HYDRAULIC_LOCK_NONE;
+        watering_channels[i].hydraulic_lock.reason = HYDRAULIC_LOCK_REASON_NONE;
+        watering_channels[i].hydraulic_lock.locked_at_epoch = 0;
+        watering_channels[i].hydraulic_lock.retry_after_epoch = 0;
+
+        watering_channels[i].hydraulic_anomaly.no_flow_runs = 0;
+        watering_channels[i].hydraulic_anomaly.high_flow_runs = 0;
+        watering_channels[i].hydraulic_anomaly.unexpected_flow_runs = 0;
+        watering_channels[i].hydraulic_anomaly.last_anomaly_epoch = 0;
     }
     
     // Default days counter

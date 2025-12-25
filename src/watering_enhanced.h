@@ -367,6 +367,7 @@ typedef enum {
     ENHANCED_STATUS_FAULT = 3,                 // System in fault state requiring manual reset
     ENHANCED_STATUS_RTC_ERROR = 4,             // RTC failure detected
     ENHANCED_STATUS_LOW_POWER = 5,             // System in low power mode
+    ENHANCED_STATUS_LOCKED = 6,                // Hydraulic lock active
     
     // New enhanced status indicators for advanced features
     ENHANCED_STATUS_INTERVAL_WATERING = 10,    // Currently in watering phase of interval mode

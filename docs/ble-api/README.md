@@ -45,6 +45,7 @@ All characteristics live under the irrigation primary service. Properties come d
 | 26 | Reset Control | `12345678-1234-5678-1234-56789abcde21` | 16 bytes | R / W / N | Two-step reset interface (code generate + confirmation). Notifies result and refreshed confirmation code. |
 | 27 | Channel Compensation Config | `12345678-1234-5678-1234-56789abcde19` | 44 bytes | R / W / N | Per-channel rain/temp compensation settings. 1-byte write selects channel; 44-byte write updates config. |
 | 28 | Bulk Sync Snapshot | `12345678-1234-5678-1234-56789abcde60` | 60 bytes | R | **NEW** Single-read aggregate of system state, environmental data, rain totals, compensation status, and channel states. Use at connection to replace multiple queries. |
+| 29 | Hydraulic Status | `12345678-1234-5678-1234-56789abcde22` | 48 bytes | R / W / N | Hydraulic profile, tolerances, lock/anomaly counters, plus global lock snapshot. |
 
 Legend: R = Read, W = Write, N = Notify.
 
