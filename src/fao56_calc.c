@@ -2907,6 +2907,114 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
 /* AUTO (Smart Schedule) Mode - Daily Deficit Tracking              */
 /* ================================================================== */
 
+/* Shared per-channel water balance backing store for AUTO mode.
+ * This avoids per-call static allocation differences between helpers.
+ */
+static water_balance_t s_auto_channel_balance[WATERING_CHANNELS_COUNT];
+
+watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
+                                              const environmental_data_t *env)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT || !env) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    watering_channel_t *channel = NULL;
+    watering_error_t err = watering_get_channel(channel_id, &channel);
+    if (err != WATERING_SUCCESS || !channel) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    if (!watering_channel_auto_mode_valid(channel)) {
+        return WATERING_ERROR_CONFIG;
+    }
+
+    // Ensure water balance structure exists
+    if (!channel->water_balance) {
+        channel->water_balance = &s_auto_channel_balance[channel_id];
+        memset(channel->water_balance, 0, sizeof(water_balance_t));
+    }
+    water_balance_t *balance = channel->water_balance;
+
+    // Get plant, soil, and irrigation method from database
+    if (channel->plant_db_index >= PLANT_FULL_SPECIES_COUNT ||
+        channel->soil_db_index >= SOIL_ENHANCED_TYPES_COUNT ||
+        channel->irrigation_method_index >= IRRIGATION_METHODS_COUNT) {
+        return WATERING_ERROR_INVALID_DATA;
+    }
+    const plant_full_data_t *plant = &plant_full_database[channel->plant_db_index];
+    const soil_enhanced_data_t *soil = &soil_enhanced_database[channel->soil_db_index];
+    const irrigation_method_data_t *method = &irrigation_methods_database[channel->irrigation_method_index];
+
+    // Compute days after planting and root depth
+    uint32_t current_time = timezone_get_unix_utc();
+    uint16_t days_after_planting = 0;
+    if (channel->planting_date_unix > 0 && current_time > channel->planting_date_unix) {
+        days_after_planting = (uint16_t)((current_time - channel->planting_date_unix) / 86400);
+    }
+    channel->days_after_planting = days_after_planting;
+
+    float root_depth_m = calc_current_root_depth(plant, days_after_planting);
+
+    // Update AWC/RAW parameters (needed for clamping and trigger)
+    float awc_mm_per_m = soil->awc_mm_per_m;
+    balance->rwz_awc_mm = awc_mm_per_m * root_depth_m;
+
+    float wetting_fraction = method->wetting_fraction_x1000 / 1000.0f;
+    if (wetting_fraction < 0.1f) wetting_fraction = 0.1f;
+    balance->wetting_awc_mm = balance->rwz_awc_mm * wetting_fraction;
+
+    float depletion_fraction = plant->depletion_fraction_p_x1000 / 1000.0f;
+    if (depletion_fraction < 0.1f) depletion_fraction = 0.5f;
+    balance->raw_mm = balance->wetting_awc_mm * depletion_fraction;
+
+    // Compute instantaneous (daily) ETc estimate (mm/day)
+    environmental_data_t env_data = *env;
+    if (!env_data.temp_valid) {
+        // Conservative defaults if sensors are unavailable
+        env_data.air_temp_mean_c = 25.0f;
+        env_data.air_temp_min_c = 18.0f;
+        env_data.air_temp_max_c = 32.0f;
+        env_data.temp_valid = true;
+    }
+
+    uint16_t day_of_year = fao56_get_current_day_of_year();
+    float latitude_rad = channel->latitude_deg * (PI / 180.0f);
+    float daily_et0 = calc_et0_hargreaves_samani(&env_data, latitude_rad, day_of_year);
+    if (daily_et0 < HEURISTIC_ET0_MIN) daily_et0 = HEURISTIC_ET0_MIN;
+    if (daily_et0 > HEURISTIC_ET0_MAX) daily_et0 = HEURISTIC_ET0_MAX;
+
+    phenological_stage_t stage = calc_phenological_stage(plant, days_after_planting);
+    float kc = calc_crop_coefficient(plant, stage, days_after_planting);
+    float etc_mm_day = daily_et0 * kc;
+
+    // Accumulate fractional ETc based on elapsed uptime
+    uint32_t now_ms = k_uptime_get_32();
+    if (balance->last_update_time == 0U) {
+        balance->last_update_time = now_ms;
+        balance->irrigation_needed = (balance->current_deficit_mm >= balance->raw_mm);
+        return WATERING_SUCCESS;
+    }
+
+    uint32_t delta_ms = now_ms - balance->last_update_time;
+    float delta_s = (float)delta_ms / 1000.0f;
+    if (delta_s <= 0.0f) {
+        balance->last_update_time = now_ms;
+        return WATERING_SUCCESS;
+    }
+
+    float delta_etc_mm = etc_mm_day * (delta_s / 86400.0f);
+    err = track_deficit_accumulation(balance, delta_etc_mm, 0.0f, 0.0f);
+    if (err != WATERING_SUCCESS) {
+        return err;
+    }
+
+    balance->last_update_time = now_ms;
+    balance->irrigation_needed = (balance->current_deficit_mm >= balance->raw_mm);
+
+    return WATERING_SUCCESS;
+}
+
 /**
  * @brief Perform daily deficit update and irrigation decision for AUTO mode
  */
@@ -2990,9 +3098,8 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     float root_depth_m = calc_current_root_depth(plant, days_after_planting);
     
     // Ensure water balance structure exists
-    static water_balance_t channel_balance[WATERING_CHANNELS_COUNT];
     if (!channel->water_balance) {
-        channel->water_balance = &channel_balance[channel_id];
+        channel->water_balance = &s_auto_channel_balance[channel_id];
         memset(channel->water_balance, 0, sizeof(water_balance_t));
     }
     water_balance_t *balance = channel->water_balance;
@@ -3037,8 +3144,8 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     float adjusted_mad = apply_environmental_stress_adjustment(base_mad, &env_data, plant);
     decision->stress_factor = adjusted_mad / base_mad;
     
-    // Track deficit: add ETc loss, subtract effective rain
-    err = track_deficit_accumulation(balance, daily_etc, effective_rain, 0.0f);
+    // Daily check: subtract effective rain (ETc is accumulated continuously)
+    err = track_deficit_accumulation(balance, 0.0f, effective_rain, 0.0f);
     if (err != WATERING_SUCCESS) {
         LOG_ERR("AUTO mode: Deficit tracking failed for channel %u", channel_id);
         return err;
@@ -3169,6 +3276,9 @@ watering_error_t fao56_apply_missed_days_deficit(uint8_t channel_id,
     LOG_INF("AUTO mode: Applied %u missed days deficit to channel %u: +%.1f mm (new total: %.1f mm)",
             days_missed, channel_id, (double)total_missed_deficit, 
             (double)balance->current_deficit_mm);
+
+    // Start realtime accumulation from now
+    balance->last_update_time = k_uptime_get_32();
     
     return WATERING_SUCCESS;
 }

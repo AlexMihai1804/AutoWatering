@@ -1256,6 +1256,10 @@ watering_error_t watering_scheduler_run(void) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
+    /* Realtime AUTO deficit accumulation: read env once per scheduler tick */
+    environmental_data_t realtime_env = {0};
+    (void)env_sensors_read(&realtime_env);
+    
     /* CRITICAL FIX: Add timeout check to prevent infinite loops */
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
         /* Safety check: prevent scheduler from running too long */
@@ -1269,6 +1273,13 @@ watering_error_t watering_scheduler_run(void) {
         
         if (!event->auto_enabled) {
             continue;
+        }
+        
+        if (event->schedule_type == SCHEDULE_AUTO) {
+            /* Keep deficit moving in real time between daily checks.
+             * This is best-effort; it never blocks scheduling.
+             */
+            (void)fao56_realtime_update_deficit((uint8_t)i, &realtime_env);
         }
         
         bool should_run = false;

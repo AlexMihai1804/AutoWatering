@@ -489,7 +489,7 @@ typedef struct {
  * 1. Reads current environmental data and 24h rainfall
  * 2. Computes daily ETc (ET0 × Kc based on plant growth stage)
  * 3. Subtracts effective rainfall from the deficit
- * 4. Adds daily ETc loss to the deficit
+ * 4. Updates irrigation decision thresholds (deficit is accumulated continuously)
  * 5. Applies environmental stress adjustment on hot/dry days
  * 6. Compares deficit against the plant's RAW threshold
  * 7. Persists updated water balance to NVS
@@ -500,6 +500,21 @@ typedef struct {
  */
 watering_error_t fao56_daily_update_deficit(uint8_t channel_id, 
                                             fao56_auto_decision_t *decision);
+
+/**
+ * @brief Accumulate soil water deficit in (near) real time for AUTO mode
+ *
+ * Called periodically (e.g., scheduler tick). Uses elapsed uptime since the
+ * last update to add a fractional ETc contribution to the current deficit.
+ * This does not apply rainfall (handled by the daily AUTO check) and does not
+ * persist to NVS (to avoid flash wear).
+ *
+ * @param channel_id Channel ID (0-7)
+ * @param env Current environmental snapshot (may be partially valid)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
+                                              const environmental_data_t *env);
 
 /**
  * @brief Handle multi-day offline gap by estimating missed deficit accumulation
