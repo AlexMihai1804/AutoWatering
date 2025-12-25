@@ -123,11 +123,11 @@ size_t flow_monitor_get_unused_stack(void)
 /* --- alarm codes used by bt_irrigation_alarm_notify ------------------- */
 #define ALARM_NO_FLOW          1
 #define ALARM_UNEXPECTED_FLOW  2
-#define ALARM_HIGH_FLOW        3
-#define ALARM_LOW_FLOW         4
-#define ALARM_MAINLINE_LEAK    5
-#define ALARM_CHANNEL_LOCK     6
-#define ALARM_GLOBAL_LOCK      7
+#define ALARM_HIGH_FLOW        4
+#define ALARM_LOW_FLOW         5
+#define ALARM_MAINLINE_LEAK    6
+#define ALARM_CHANNEL_LOCK     7
+#define ALARM_GLOBAL_LOCK      8
 
 /* Helper used throughout this file */
 static inline void ble_status_update(void)
@@ -347,6 +347,8 @@ static void hydraulic_learning_update(watering_channel_t *channel, uint32_t now_
         return;
     }
 
+    bool updated = false;
+
     if (learning_ctx.phase == LEARNING_WAIT_STABLE) {
         uint32_t flow_3s = calc_flow_ml_min(pulse_sum_last_seconds(3), 3, pulses_per_liter);
 
@@ -358,12 +360,18 @@ static void hydraulic_learning_update(watering_channel_t *channel, uint32_t now_
 
         if (learning_ctx.stable_windows >= HYDRAULIC_STABLE_WINDOW_S) {
             uint32_t ramp_sec = (now_ms - learning_ctx.start_ms) / 1000;
-            channel->hydraulic.ramp_up_time_sec = (uint16_t)ramp_sec;
+            uint16_t ramp_u16 = (uint16_t)ramp_sec;
+            if (channel->hydraulic.ramp_up_time_sec != ramp_u16) {
+                channel->hydraulic.ramp_up_time_sec = ramp_u16;
+                updated = true;
+            }
             if (channel->hydraulic.profile_type == PROFILE_AUTO) {
                 if (ramp_sec < 5) {
                     channel->hydraulic.profile_type = PROFILE_SPRAY;
+                    updated = true;
                 } else if (ramp_sec > 15) {
                     channel->hydraulic.profile_type = PROFILE_DRIP;
+                    updated = true;
                 }
             }
 
@@ -377,6 +385,7 @@ static void hydraulic_learning_update(watering_channel_t *channel, uint32_t now_
             channel->hydraulic.learning_runs++;
             channel->hydraulic.estimated = true;
             learning_ctx.phase = LEARNING_IDLE;
+            updated = true;
         }
     } else if (learning_ctx.phase == LEARNING_MEASURE) {
         if ((now_ms - learning_ctx.measure_start_ms) >= (HYDRAULIC_MEASURE_WINDOW_S * 1000)) {
@@ -394,11 +403,17 @@ static void hydraulic_learning_update(watering_channel_t *channel, uint32_t now_
                 channel->hydraulic.is_calibrated =
                     (channel->hydraulic.stable_runs >= HYDRAULIC_LEARNING_MIN_RUNS);
                 channel->hydraulic.estimated = false;
+                updated = true;
             }
 
             channel->hydraulic.learning_runs++;
             learning_ctx.phase = LEARNING_IDLE;
+            updated = true;
         }
+    }
+
+    if (updated) {
+        bt_irrigation_hydraulic_status_notify(channel_id);
     }
 }
 
@@ -699,6 +714,7 @@ watering_error_t check_flow_anomalies(void)
                                             (uint16_t)flow_30s, (uint16_t)low_limit,
                                             HYDRAULIC_LOG_ACTION_WARN, 60);
                         channel->hydraulic_anomaly.last_anomaly_epoch = now_epoch;
+                        bt_irrigation_hydraulic_status_notify(channel_id);
                     }
                     low_flow_consecutive = 0;
                 }

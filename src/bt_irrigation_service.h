@@ -563,6 +563,13 @@ int bt_irrigation_environmental_data_notify(void);
 int bt_irrigation_compensation_status_notify(uint8_t channel_id);
 
 /**
+ * @brief Send hydraulic status notification
+ * @param channel_id Channel ID or 0xFF to use cached selection
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_hydraulic_status_notify(uint8_t channel_id);
+
+/**
  * @brief Send interval mode phase change notification
  * @param channel_id Channel ID in interval mode
  * @param is_watering True if currently watering, false if pausing

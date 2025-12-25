@@ -1,6 +1,6 @@
 # BLE Characteristics Reference
 
-Updated to reflect the 27 characteristics implemented in firmware (Irrigation Service + Custom Configuration Service).
+Updated to reflect the 30 characteristics implemented in firmware (Irrigation Service + Custom Configuration Service).
 
 See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fragmentation types, long write semantics). A concise cross-characteristic summary of fragmentation/long-write schemes is available in [`_fragmentation-reference.md`](_fragmentation-reference.md).
 
@@ -62,11 +62,19 @@ See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fr
 | 25 | **[Onboarding Status](25-onboarding-status.md)** | de20 | 29B | R/N | Onboarding progress |
 | 26 | **[Reset Control](26-reset-control.md)** | de21 | 16B | R/W/N | Controlled resets |
 
+### Extension Characteristics
+
+| # | Characteristic | UUID | Size | Properties | Purpose |
+|---|----------------|------|------|------------|---------|
+| 27 | **[Channel Compensation Config](27-channel-compensation-config.md)** | de19 | 44B | R/W/N | Per-channel rain/temp compensation settings |
+| 28 | **[Bulk Sync Snapshot](bulk-sync-snapshot.md)** | de60 | 60B | R | Connection-time aggregate state |
+| 29 | **[Hydraulic Status](29-hydraulic-status.md)** | de22 | 48B | R/W/N | Hydraulic profile + lock/anomaly snapshot |
+
 ### Custom Configuration Service
 
 | # | Characteristic | UUID (full) | Size | Properties | Purpose |
 |---|----------------|-------------|------|------------|---------|
-| 27 | **[Custom Soil Configuration](27-custom-soil-configuration.md)** | 12345678-1234-5678-9abc-def123456781 | 76B | R/W/N | Create/update/delete per-channel custom soil |
+| 30 | **[Custom Soil Configuration](27-custom-soil-configuration.md)** | 12345678-1234-5678-9abc-def123456781 | 76B | R/W/N | Create/update/delete per-channel custom soil |
 
 **Legend**: R=Read, W=Write, N=Notify
 
@@ -107,9 +115,10 @@ To track system performance:
 2. **[History Management](12-history-management.md)** - Access historical data
 3. **[Diagnostics](13-diagnostics.md)** - Monitor system health
 4. **[Alarm Status](10-alarm-status.md)** - Check for system alerts
-5. **[Environmental Data](23-environmental-data.md)** - Monitor real-time environmental conditions
-6. **[Environmental History](24-environmental-history.md)** - Access historical environmental data
-7. **[Compensation Status](25-compensation-status.md)** - View environmental compensation calculations
+5. **[Hydraulic Status](29-hydraulic-status.md)** - Review hydraulic profiles and lock state
+6. **[Environmental Data](23-environmental-data.md)** - Monitor real-time environmental conditions
+7. **[Environmental History](24-environmental-history.md)** - Access historical environmental data
+8. **[Compensation Status](25-compensation-status.md)** - View environmental compensation calculations
 
 ### Calibration & Setup
 

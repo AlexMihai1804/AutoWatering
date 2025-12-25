@@ -280,6 +280,37 @@ struct compensation_status_data {
     uint8_t reserved[7];            /* Reserved for future use */
 } __attribute__((packed));
 
+/* Hydraulic status structure for BLE */
+struct hydraulic_status_data {
+    uint8_t channel_id;             /* Channel ID (0-7) */
+    uint8_t profile_type;           /* hydraulic_profile_t */
+    uint8_t lock_level;             /* hydraulic_lock_level_t (channel) */
+    uint8_t lock_reason;            /* hydraulic_lock_reason_t (channel) */
+    uint32_t nominal_flow_ml_min;   /* Learned nominal flow */
+    uint16_t ramp_up_time_sec;      /* Learned ramp-up time */
+    uint8_t tolerance_high_percent; /* High flow tolerance */
+    uint8_t tolerance_low_percent;  /* Low flow tolerance */
+    uint8_t is_calibrated;          /* 1 if stable runs met */
+    uint8_t monitoring_enabled;     /* 1 if monitoring enabled */
+    uint8_t learning_runs;          /* Total learning runs */
+    uint8_t stable_runs;            /* Stable learning runs */
+    uint8_t estimated;              /* 1 if nominal is estimated */
+    uint8_t manual_override_active; /* 1 if manual override active */
+    uint16_t reserved0;             /* Reserved */
+    uint32_t lock_at_epoch;         /* Channel lock timestamp */
+    uint32_t retry_after_epoch;     /* Channel retry after timestamp */
+    uint8_t no_flow_runs;           /* Persistent NO_FLOW count */
+    uint8_t high_flow_runs;         /* Persistent HIGH_FLOW count */
+    uint8_t unexpected_flow_runs;   /* Persistent UNEXPECTED_FLOW count */
+    uint8_t reserved1;              /* Reserved */
+    uint32_t last_anomaly_epoch;    /* Last anomaly timestamp */
+    uint8_t global_lock_level;      /* hydraulic_lock_level_t (global) */
+    uint8_t global_lock_reason;     /* hydraulic_lock_reason_t (global) */
+    uint16_t reserved2;             /* Reserved */
+    uint32_t global_lock_at_epoch;  /* Global lock timestamp */
+    uint32_t global_retry_after_epoch; /* Global retry after timestamp */
+} __attribute__((packed));
+
 /* Enhanced system configuration structure with BME280 and compensation support */
 struct enhanced_system_config_data {
     /* Basic system configuration (compatible with existing structure) */
@@ -342,6 +373,8 @@ BUILD_ASSERT(sizeof(struct environmental_data_ble) == 4*3 + 4 + 1 + 2 + 1 + 4,
             "environmental_data_ble unexpected size");
 BUILD_ASSERT(sizeof(struct compensation_status_data) == 1 + 1 + 4 + 4 + 1 + 4 + 1 + 4 + 4 + 4 + 4 + 1 + 7,
             "compensation_status_data unexpected size");
+BUILD_ASSERT(sizeof(struct hydraulic_status_data) == 48,
+            "hydraulic_status_data unexpected size");
 
 #ifdef __cplusplus
 }

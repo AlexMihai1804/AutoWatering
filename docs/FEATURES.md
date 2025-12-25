@@ -45,6 +45,7 @@ Implementation notes:
 ### Sensing & Monitoring
 - **Flow sensor**: Pulse counting with calibration (100-10,000 pulses/liter; adjustable via BLE).
 - **Hydraulic Sentinel (H.H.M.)**: Auto-learning at first runs, profile-aware limits, HIGH/LOW/NO/UNEXPECTED flow handling, nightly static mainline test (03:00, skipped when watering).
+- **Hydraulic Status BLE**: Per-channel profile, tolerances, lock state, anomaly counters, plus global lock snapshot.
 - **Rain gauge**: Tipping-bucket with 0.2 mm/pulse default, debounce, health monitoring.
 - **Environmental sensor** (BME280): Temperature, humidity, pressure; 15/60 min polling intervals.
 - Environmental, rain, and watering history with multi-resolution aggregation.
@@ -89,7 +90,7 @@ Implementation notes:
 - Sleep pacing and power mode switching: `src/power_management.c`, scheduler loop in `src/watering_tasks.c`.
 
 ### Bluetooth Low Energy
-- Custom irrigation service: **27 documented characteristics** (`docs/ble-api/`).
+- Custom irrigation service: **29 documented characteristics** (`docs/ble-api/`).
 - Notification scheduler: 8-buffer pool, MTU-aware payloads (up to 250 bytes), adaptive throttling (critical 0 ms, high 50 ms, normal 200 ms, low 1 s).
 - Fragmentation for large payloads (TLV-framed, sequence-numbered).
 - History streaming via write-triggered fragment notifications (no client ACK).

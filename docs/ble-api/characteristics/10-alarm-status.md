@@ -29,7 +29,7 @@ The Alarm Status characteristic transports critical fault information raised by 
 Structure fields are little-endian. `alarm_value` is initialised to zeros at boot so first reads return the cleared state.
 
 ## Field Behaviour
-- `alarm_code`: runtime producers emit codes 1 (`ALARM_NO_FLOW`), 2 (`ALARM_UNEXPECTED_FLOW`), and 3 (`ALARM_FREEZE_LOCKOUT`). `write_alarm()` treats 0x00 and 0xFF as clear-all aliases and allows 0x01-0x0D as selective clears (must match the active code). Other single-byte values return `BT_ATT_ERR_VALUE_NOT_ALLOWED`.
+- `alarm_code`: runtime producers emit codes 1 (`ALARM_NO_FLOW`), 2 (`ALARM_UNEXPECTED_FLOW`), 3 (`ALARM_FREEZE_LOCKOUT`), 4 (`ALARM_HIGH_FLOW`), 5 (`ALARM_LOW_FLOW`), 6 (`ALARM_MAINLINE_LEAK`), 7 (`ALARM_CHANNEL_LOCK`), 8 (`ALARM_GLOBAL_LOCK`). `write_alarm()` treats 0x00 and 0xFF as clear-all aliases and allows 0x01-0x0D as selective clears (must match the active code). Other single-byte values return `BT_ATT_ERR_VALUE_NOT_ALLOWED`.
 - `alarm_data`: writers such as `watering_monitor.c` use this as context (retry attempt count or number of stray pulses). Clears reset the field to 0 before calling `bt_irrigation_alarm_notify()`.
 - `timestamp`: `bt_irrigation_alarm_notify()` always stamps the structure with `timezone_get_unix_utc()`, even for clear operations supplied with `alarm_data = 0`. Clients should treat the timestamp as "last state change" rather than "alarm onset".
 
@@ -57,8 +57,13 @@ Structure fields are little-endian. `alarm_value` is initialised to zeros at boo
 - `src/watering_monitor.c` raises alarms for flow anomalies:
   - Code 1 (`ALARM_NO_FLOW`): emitted when a commanded watering task fails to register pulses after various retries. `alarm_data` records the retry attempt count; clears use `alarm_data = 0`.
   - Code 2 (`ALARM_UNEXPECTED_FLOW`): emitted when pulses are detected while all valves are closed. `alarm_data` carries the raw pulse count observed before mitigation.
+  - Code 4 (`ALARM_HIGH_FLOW`): emitted when flow exceeds the learned high limit. `alarm_data` carries the channel id.
+  - Code 5 (`ALARM_LOW_FLOW`): emitted when flow stays below the learned low limit. `alarm_data` carries the channel id.
+  - Code 6 (`ALARM_MAINLINE_LEAK`): emitted when static test detects pulses with all zones off. `alarm_data` carries the pulse count.
+  - Code 7 (`ALARM_CHANNEL_LOCK`): emitted when a channel lock is applied. `alarm_data` carries the channel id.
+  - Code 8 (`ALARM_GLOBAL_LOCK`): emitted when a global lock is applied. `alarm_data` carries the channel id (or 0 for global-only events).
 - `src/watering_tasks.c` raises alarms for anti-freeze safety:
-  - Code 3 (`ALARM_FREEZE_LOCKOUT`): emitted when environmental data is stale/unavailable or temperature ≤ freeze threshold (default 2°C). `alarm_data` carries `temp_c*10` on raise, `0xFFFF` for stale data, and `0` on clear.
+  - Code 3 (`ALARM_FREEZE_LOCKOUT`): emitted when environmental data is stale/unavailable or temperature below the freeze threshold (default 2 deg C). `alarm_data` carries `temp_c*10` on raise, `0xFFFF` for stale data, and `0` on clear.
 - Other subsystems may call `bt_irrigation_alarm_notify()` in future; consumers should not hard-code the code list and must handle unknown non-zero values.
 
 ## Error Handling
@@ -86,7 +91,7 @@ Transport errors during notification are logged (`LOG_ERR`) but do not change th
 
 ## Firmware References
 - `src/bt_irrigation_service.c`: `read_alarm`, `write_alarm`, `alarm_ccc_changed`, `bt_irrigation_alarm_notify`, `bt_irrigation_alarm_clear`.
-- `src/watering_monitor.c`: flow anomaly detection that currently generates alarm codes 1 and 2.
+- `src/watering_monitor.c`: flow anomaly detection that generates alarm codes 1, 2, 4, 5, 6, 7, and 8.
 - `src/bt_gatt_structs.h`: `struct alarm_data` definition and size assert.
 
 ## Related Interfaces

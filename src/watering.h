@@ -1881,4 +1881,19 @@ watering_error_t watering_get_system_status_detailed(char *status_buffer, uint16
  */
 watering_error_t watering_get_rain_integration_status(rain_integration_status_t *integration_status);
 
+/**
+ * @brief Get current global hydraulic lock state
+ *
+ * @param out_lock Output lock state (required)
+ */
+void watering_get_global_hydraulic_lock(hydraulic_lock_state_t *out_lock);
+
+/**
+ * @brief Check if manual override is active for a channel
+ *
+ * @param channel_id Channel ID (0-7)
+ * @return true if manual override is active
+ */
+bool watering_hydraulic_manual_override_active(uint8_t channel_id);
+
 #endif // WATERING_H

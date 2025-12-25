@@ -122,6 +122,14 @@ bool watering_hydraulic_is_global_locked(void)
     return (global_hydraulic_lock.level != HYDRAULIC_LOCK_NONE);
 }
 
+void watering_get_global_hydraulic_lock(hydraulic_lock_state_t *out_lock)
+{
+    if (!out_lock) {
+        return;
+    }
+    *out_lock = global_hydraulic_lock;
+}
+
 bool watering_hydraulic_is_channel_locked(uint8_t channel_id)
 {
     if (channel_id >= WATERING_CHANNELS_COUNT) {
@@ -142,12 +150,19 @@ void watering_hydraulic_set_manual_override(uint8_t channel_id, uint32_t duratio
 {
     manual_override_channel = channel_id;
     manual_override_until_ms = k_uptime_get_32() + duration_ms;
+    bt_irrigation_hydraulic_status_notify(channel_id);
 }
 
 void watering_hydraulic_clear_manual_override(void)
 {
+    uint8_t previous_channel = manual_override_channel;
     manual_override_channel = 0xFF;
     manual_override_until_ms = 0;
+    if (previous_channel < WATERING_CHANNELS_COUNT) {
+        bt_irrigation_hydraulic_status_notify(previous_channel);
+    } else {
+        bt_irrigation_hydraulic_status_notify(0xFF);
+    }
 }
 
 void watering_hydraulic_set_global_lock(hydraulic_lock_level_t level, hydraulic_lock_reason_t reason)
@@ -170,6 +185,7 @@ void watering_hydraulic_set_global_lock(hydraulic_lock_level_t level, hydraulic_
     }
 
     nvs_save_hydraulic_global_lock(&global_hydraulic_lock);
+    bt_irrigation_hydraulic_status_notify(0xFF);
 }
 
 void watering_hydraulic_clear_global_lock(void)
@@ -185,6 +201,7 @@ void watering_hydraulic_clear_global_lock(void)
     }
 
     nvs_save_hydraulic_global_lock(&global_hydraulic_lock);
+    bt_irrigation_hydraulic_status_notify(0xFF);
 }
 
 void watering_hydraulic_set_channel_lock(uint8_t channel_id, hydraulic_lock_level_t level, hydraulic_lock_reason_t reason)
@@ -209,6 +226,7 @@ void watering_hydraulic_set_channel_lock(uint8_t channel_id, hydraulic_lock_leve
                           HYDRAULIC_SOFT_LOCK_RETRY_SEC)) : 0;
 
     nvs_save_complete_channel_config(channel_id, &watering_channels[channel_id]);
+    bt_irrigation_hydraulic_status_notify(channel_id);
 }
 
 void watering_hydraulic_clear_channel_lock(uint8_t channel_id)
@@ -223,6 +241,7 @@ void watering_hydraulic_clear_channel_lock(uint8_t channel_id)
     watering_channels[channel_id].hydraulic_lock.retry_after_epoch = 0;
 
     nvs_save_complete_channel_config(channel_id, &watering_channels[channel_id]);
+    bt_irrigation_hydraulic_status_notify(channel_id);
 }
 
 void watering_hydraulic_check_retry(void)

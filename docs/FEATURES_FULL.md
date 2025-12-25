@@ -169,6 +169,7 @@ No soil moisture probes are present in this build; related fields remain reserve
 - Nightly Static Test: 03:00, master on 10s, off 5s, monitor 60s; skipped if watering active or tasks queued.
 - Manual override: explicit BLE direct commands bypass locks temporarily for verification.
 - Anomaly log: append-only ring log stored on external flash (`/lfs/history/hydraulic_events.bin`).
+- BLE characteristic: Hydraulic Status snapshot exposes per-channel profile/flow/tolerances/locks plus global lock state.
 
 ### Rain Sensor (Tipping Bucket)
 - **Hardware interface**: `rain_sensor_config_t.debounce_ms` (default 50 ms).
