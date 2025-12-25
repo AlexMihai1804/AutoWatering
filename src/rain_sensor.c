@@ -16,6 +16,10 @@
 
 LOG_MODULE_REGISTER(rain_sensor, LOG_LEVEL_DBG);
 
+/* Log throttling (avoid spamming when there is simply no rain) */
+static uint32_t last_no_pulses_log_time_s;
+static uint32_t last_disconnected_log_time_s;
+
 /* Device tree definitions for rain sensor */
 #define RAIN_SENSOR_NODE DT_NODELABEL(rain_key)
 
@@ -173,9 +177,13 @@ static void rain_sensor_update_status(void)
         }
     }
     
-    /* Additional error checks */
-    if (last_pulse == 0 && current_time > 3600) { /* No pulses after 1 hour of operation */
-        LOG_WRN("Rain sensor: No pulses detected since startup");
+    /* Additional info (rate-limited): no pulses since boot can simply mean no rainfall. */
+    if (last_pulse == 0 && current_time > 3600) { /* after 1 hour of operation */
+        if ((current_time - last_no_pulses_log_time_s) >= 3600U) { /* at most once per hour */
+            last_no_pulses_log_time_s = current_time;
+            LOG_INF("Rain sensor: No pulses detected since startup");
+        }
+
         if (rain_sensor_state.data_quality > 70) {
             rain_sensor_state.data_quality = 70;
         }
@@ -463,7 +471,6 @@ bool rain_sensor_is_integration_enabled(void)
 
 void rain_sensor_update_hourly(void)
 {
-    uint32_t uptime_s = k_uptime_get_32() / 1000;
     uint32_t current_pulses = atomic_get(&rain_sensor_state.total_pulses);
     uint32_t current_unix = timezone_get_unix_utc();
 
@@ -495,7 +502,10 @@ void rain_sensor_update_hourly(void)
             uint8_t pulse_count = (hour_pulses > UINT8_MAX) ? UINT8_MAX : (uint8_t)hour_pulses;
             uint8_t quality = rain_sensor_state.data_quality;
 
-            LOG_INF("Hour completed (%u): %.2f mm rainfall", completed_hour_epoch, (double)completed_hour_mm);
+                /* Avoid float formatting in logs (often disabled); print mm with 2 decimals via fixed-point. */
+                uint32_t mm_x100 = (completed_hour_mm <= 0.0f) ? 0U : (uint32_t)(completed_hour_mm * 100.0f + 0.5f);
+                LOG_INF("Hour completed (%u): %u.%02u mm rainfall",
+                    completed_hour_epoch, mm_x100 / 100U, mm_x100 % 100U);
 
             /* Persist to rain history (store even 0.0mm to keep a continuous timeline) */
             watering_error_t hist_ret = rain_history_record_hourly_full(
@@ -539,12 +549,9 @@ void rain_sensor_update_hourly(void)
     /* Check for error recovery */
     rain_sensor_health_check();
     
-    /* Check for sensor disconnection */
-    uint32_t last_pulse = atomic_get(&rain_sensor_state.last_pulse_time);
-    if (rain_sensor_state.config.sensor_enabled && 
-        last_pulse == 0 && uptime_s > 7200) { /* 2 hours after startup */
-        rain_sensor_handle_error(RAIN_ERROR_SENSOR_DISCONNECTED);
-    }
+    /* Do not treat "no rain" as a hardware disconnect.
+     * (A tipping bucket can legitimately have 0 pulses for days.)
+     */
 }
 
 void rain_sensor_debug_info(void)
@@ -613,7 +620,11 @@ static void rain_sensor_handle_error(rain_error_code_t error)
     
     switch (error) {
         case RAIN_ERROR_SENSOR_DISCONNECTED:
-            LOG_ERR("Rain sensor disconnected - no pulses detected");
+            /* Rate-limit to avoid log spam. */
+            if ((last_error_time - last_disconnected_log_time_s) >= 1800U) {
+                last_disconnected_log_time_s = last_error_time;
+                LOG_ERR("Rain sensor disconnected - no pulses detected");
+            }
             rain_sensor_state.status = RAIN_SENSOR_STATUS_ERROR;
             rain_sensor_state.data_quality = 0;
             break;
@@ -990,12 +1001,9 @@ static void rain_sensor_health_check(void)
     
     sensor_health.last_health_check = current_time;
     
-    /* Check for sensor disconnection */
-    uint32_t last_pulse = atomic_get(&rain_sensor_state.last_pulse_time);
-    if (rain_sensor_state.config.sensor_enabled && last_pulse == 0 && current_time > 7200) {
-        rain_sensor_log_error(RAIN_ERROR_SENSOR_DISCONNECTED, "No pulses detected for extended period");
-        sensor_health.sensor_health_critical = true;
-    }
+    /* Don't flag a "disconnect" purely because there are no pulses yet.
+     * If the sensor ever produced pulses, you can add a stricter heuristic later.
+     */
     
     /* Check pulse accuracy */
     if (sensor_health.pulse_accuracy_percentage < 70.0f && sensor_health.total_pulses_lifetime > 50) {
@@ -1226,9 +1234,10 @@ void rain_sensor_periodic_diagnostics(void)
     
     /* Check for critical health conditions */
     if (sensor_health.sensor_health_critical) {
-        LOG_WRN("Rain sensor health critical - accuracy: %.1f%%, errors: %u",
-                (double)sensor_health.pulse_accuracy_percentage,
-                sensor_health.consecutive_errors);
+        uint32_t acc_x10 = (uint32_t)(sensor_health.pulse_accuracy_percentage * 10.0f);
+        LOG_WRN("Rain sensor health critical - accuracy: %u.%u%%, errors: %u",
+            acc_x10 / 10U, acc_x10 % 10U,
+            sensor_health.consecutive_errors);
     }
     
     /* Log periodic health summary without floats to avoid formatter issues */

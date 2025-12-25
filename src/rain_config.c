@@ -53,7 +53,7 @@ int rain_config_load(rain_nvs_config_t *config)
     }
     
     int ret = nvs_config_read(NVS_RAIN_CONFIG_ID, config, sizeof(rain_nvs_config_t));
-    if (ret != 0) {
+    if (ret < 0) {
         LOG_WRN("Failed to load rain config from NVS: %d, using defaults", ret);
         rain_config_get_default(config);
         return ret;
@@ -82,7 +82,7 @@ int rain_state_save(const rain_nvs_state_t *state)
     }
     
     int ret = nvs_config_write(NVS_RAIN_STATE_ID, state, sizeof(rain_nvs_state_t));
-    if (ret != 0) {
+    if (ret < 0) {
         LOG_ERR("Failed to save rain state to NVS: %d", ret);
         return ret;
     }
@@ -102,7 +102,7 @@ int rain_state_load(rain_nvs_state_t *state)
     }
     
     int ret = nvs_config_read(NVS_RAIN_STATE_ID, state, sizeof(rain_nvs_state_t));
-    if (ret != 0) {
+    if (ret < 0) {
         LOG_WRN("Failed to load rain state from NVS: %d, using defaults", ret);
         rain_state_get_default(state);
         return ret;
