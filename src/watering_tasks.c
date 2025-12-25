@@ -1304,78 +1304,92 @@ watering_error_t watering_scheduler_run(void) {
             }
         }
         
-        if (effective_hour == current_hour && effective_minute == current_minute) {
-            if (event->schedule_type == SCHEDULE_DAILY) {
-                if (event->schedule.daily.days_of_week & (1 << current_day_of_week)) {
-                    should_run = true;
-                }
-            } else if (event->schedule_type == SCHEDULE_PERIODIC) {
-                if (event->schedule.periodic.interval_days > 0 && 
-                    days_since_start > 0 && 
-                    (days_since_start % event->schedule.periodic.interval_days) == 0) {
-                    should_run = true;
-                }
-            } else if (event->schedule_type == SCHEDULE_AUTO) {
-                /* AUTO mode: FAO-56 based smart scheduling */
-                is_auto_mode = true;
-                
-                /* Prevent running multiple times per day using julian day tracking */
-                if (channel->last_auto_check_julian_day == current_julian_day && 
-                    channel->auto_check_ran_today) {
-                    printk("AUTO mode: Channel %d already checked today (julian=%u)\n", 
-                           i + 1, current_julian_day);
-                    continue;
-                }
-                
-                /* Validate AUTO mode prerequisites */
-                if (!watering_channel_auto_mode_valid(channel)) {
-                    printk("AUTO mode: Channel %d missing required config (plant/soil/date)\n", i + 1);
-                    continue;
-                }
-                
-                /* Handle multi-day offline gap: apply missed ETc accumulation */
-                if (channel->last_auto_check_julian_day > 0) {
-                    int16_t days_diff;
-                    if (current_julian_day >= channel->last_auto_check_julian_day) {
-                        days_diff = current_julian_day - channel->last_auto_check_julian_day;
-                    } else {
-                        /* Year wrapped: assume 365 days in year for simplicity */
-                        days_diff = (365 - channel->last_auto_check_julian_day) + current_julian_day;
+        if (event->schedule_type == SCHEDULE_DAILY || event->schedule_type == SCHEDULE_PERIODIC) {
+            /* Legacy schedules trigger at an exact configured minute. */
+            if (effective_hour == current_hour && effective_minute == current_minute) {
+                if (event->schedule_type == SCHEDULE_DAILY) {
+                    if (event->schedule.daily.days_of_week & (1 << current_day_of_week)) {
+                        should_run = true;
                     }
-                    if (days_diff > 1 && days_diff <= 366) {
-                        /* More than 1 day gap - apply conservative ETc for missed days
-                         * (subtract 1 because today's check will handle the current day) */
-                        uint16_t days_missed = (uint16_t)(days_diff - 1);
-                        watering_error_t gap_err = fao56_apply_missed_days_deficit(i, days_missed);
-                        if (gap_err == WATERING_SUCCESS) {
-                            printk("AUTO mode: Channel %d applied %u missed days deficit\n", 
-                                   i + 1, days_missed);
-                        }
+                } else { /* SCHEDULE_PERIODIC */
+                    if (event->schedule.periodic.interval_days > 0 &&
+                        days_since_start > 0 &&
+                        (days_since_start % event->schedule.periodic.interval_days) == 0) {
+                        should_run = true;
                     }
                 }
-                
-                /* Run daily deficit update and get irrigation decision */
-                watering_error_t auto_err = fao56_daily_update_deficit(i, &auto_decision);
-                if (auto_err != WATERING_SUCCESS) {
-                    printk("AUTO mode: Deficit calculation failed for channel %d: %d\n", 
-                           i + 1, auto_err);
-                    continue;
-                }
-                
-                /* Mark that we've done the daily check */
-                channel->last_auto_check_julian_day = current_julian_day;
-                channel->auto_check_ran_today = true;
-                
-                /* Only run if FAO-56 says we need water */
-                if (auto_decision.should_water && auto_decision.volume_liters > 0) {
-                    should_run = true;
-                    printk("AUTO mode: Channel %d NEEDS WATER - deficit=%.1f mm, volume=%.1f L\n",
-                           i + 1, (double)auto_decision.current_deficit_mm, 
-                           (double)auto_decision.volume_liters);
+            }
+        } else if (event->schedule_type == SCHEDULE_AUTO) {
+            /*
+             * AUTO mode should run once per day after the effective start time.
+             *
+             * The scheduler may sleep in 60/120/300s increments depending on power
+             * mode. If we require an exact minute match, we can miss the window and
+             * never update deficit for that day.
+             */
+            is_auto_mode = true;
+
+            const uint16_t current_minutes = (uint16_t)current_hour * 60u + (uint16_t)current_minute;
+            const uint16_t start_minutes = (uint16_t)effective_hour * 60u + (uint16_t)effective_minute;
+
+            if (current_minutes < start_minutes) {
+                continue; /* Not time yet */
+            }
+
+            /* Prevent running multiple times per day using julian day tracking */
+            if (channel->last_auto_check_julian_day == current_julian_day &&
+                channel->auto_check_ran_today) {
+                continue;
+            }
+
+            /* Validate AUTO mode prerequisites */
+            if (!watering_channel_auto_mode_valid(channel)) {
+                printk("AUTO mode: Channel %d missing required config (plant/soil/date)\n", i + 1);
+                continue;
+            }
+
+            /* Handle multi-day offline gap: apply missed ETc accumulation */
+            if (channel->last_auto_check_julian_day > 0) {
+                int16_t days_diff;
+                if (current_julian_day >= channel->last_auto_check_julian_day) {
+                    days_diff = current_julian_day - channel->last_auto_check_julian_day;
                 } else {
-                    printk("AUTO mode: Channel %d SKIP - soil has adequate moisture (deficit=%.1f mm)\n",
-                           i + 1, (double)auto_decision.current_deficit_mm);
+                    /* Year wrapped: assume 365 days in year for simplicity */
+                    days_diff = (365 - channel->last_auto_check_julian_day) + current_julian_day;
                 }
+                if (days_diff > 1 && days_diff <= 366) {
+                    /* More than 1 day gap - apply conservative ETc for missed days
+                     * (subtract 1 because today's check will handle the current day) */
+                    uint16_t days_missed = (uint16_t)(days_diff - 1);
+                    watering_error_t gap_err = fao56_apply_missed_days_deficit(i, days_missed);
+                    if (gap_err == WATERING_SUCCESS) {
+                        printk("AUTO mode: Channel %d applied %u missed days deficit\n",
+                               i + 1, days_missed);
+                    }
+                }
+            }
+
+            /* Run daily deficit update and get irrigation decision */
+            watering_error_t auto_err = fao56_daily_update_deficit(i, &auto_decision);
+            if (auto_err != WATERING_SUCCESS) {
+                printk("AUTO mode: Deficit calculation failed for channel %d: %d\n",
+                       i + 1, auto_err);
+                continue;
+            }
+
+            /* Mark that we've done the daily check */
+            channel->last_auto_check_julian_day = current_julian_day;
+            channel->auto_check_ran_today = true;
+
+            /* Only run if FAO-56 says we need water */
+            if (auto_decision.should_water && auto_decision.volume_liters > 0) {
+                should_run = true;
+                printk("AUTO mode: Channel %d NEEDS WATER - deficit=%.1f mm, volume=%.1f L\n",
+                       i + 1, (double)auto_decision.current_deficit_mm,
+                       (double)auto_decision.volume_liters);
+            } else {
+                printk("AUTO mode: Channel %d SKIP - soil has adequate moisture (deficit=%.1f mm)\n",
+                       i + 1, (double)auto_decision.current_deficit_mm);
             }
         }
         
