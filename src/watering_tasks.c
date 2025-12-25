@@ -983,6 +983,27 @@ static void update_system_time(void) {
                     
                     days_since_start++;
                     watering_save_config();
+
+                    /*
+                     * AUTO mode uses current_julian_day to:
+                     *  - prevent multiple FAO-56 deficit updates per day
+                     *  - reset auto_check_ran_today on day rollover
+                     *
+                     * When running without an RTC, keep a simple day-of-year counter
+                     * so AUTO deficit keeps updating across days.
+                     */
+                    if (current_julian_day == 0) {
+                        current_julian_day = 1;
+                    } else {
+                        current_julian_day++;
+                        if (current_julian_day > 366) {
+                            current_julian_day = 1;
+                        }
+                    }
+
+                    for (int ch = 0; ch < WATERING_CHANNELS_COUNT; ch++) {
+                        watering_channels[ch].auto_check_ran_today = false;
+                    }
                     
                     last_day = (last_day % 31) + 1;
                     printk("Day changed (system time), days since start: %d\n", days_since_start);
@@ -1075,6 +1096,9 @@ static void scheduler_task_fn(void *p1, void *p2, void *p3) {
         current_minute = 0;
         current_day_of_week = 1;
         last_day = 1;
+
+        /* Ensure AUTO-mode day tracking is non-zero in system-time mode. */
+        current_julian_day = (uint16_t)((days_since_start % 365) + 1);
         
         last_time_update = k_uptime_get_32();
     }
