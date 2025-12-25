@@ -1,6 +1,6 @@
 # BLE Characteristics Reference
 
-Updated to reflect the 30 characteristics implemented in firmware (Irrigation Service + Custom Configuration Service).
+Updated to reflect the 31 characteristics implemented in firmware (Irrigation Service + Custom Configuration Service).
 
 See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fragmentation types, long write semantics). A concise cross-characteristic summary of fragmentation/long-write schemes is available in [`_fragmentation-reference.md`](_fragmentation-reference.md).
 
@@ -75,6 +75,7 @@ See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fr
 | # | Characteristic | UUID (full) | Size | Properties | Purpose |
 |---|----------------|-------------|------|------------|---------|
 | 30 | **[Custom Soil Configuration](27-custom-soil-configuration.md)** | 12345678-1234-5678-9abc-def123456781 | 76B | R/W/N | Create/update/delete per-channel custom soil |
+| 31 | **[Soil Moisture Configuration](30-soil-moisture-configuration.md)** | 12345678-1234-5678-9abc-def123456784 | 8B | R/W/N | Configure antecedent soil moisture (global + per-channel override) |
 
 **Legend**: R=Read, W=Write, N=Notify
 

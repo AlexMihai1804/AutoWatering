@@ -13,6 +13,7 @@
 #include <zephyr/logging/log.h>
 #include "rtc.h"
 #include "timezone.h"
+#include "soil_moisture_config.h"
 
 LOG_MODULE_REGISTER(fao56_calc, LOG_LEVEL_INF);
 
@@ -1376,10 +1377,11 @@ static float calc_evaporation_losses(
  * Enhanced version that accounts for rainfall intensity, soil characteristics,
  * antecedent moisture conditions, and evaporation losses.
  */
-float calc_effective_precipitation(
+static float calc_effective_precipitation_with_moisture(
     float rainfall_mm,
     const soil_enhanced_data_t *soil,
-    const irrigation_method_data_t *irrigation_method
+    const irrigation_method_data_t *irrigation_method,
+    float antecedent_moisture_pct
 )
 {
     if (!soil || rainfall_mm <= 0.0f) {
@@ -1397,9 +1399,12 @@ float calc_effective_precipitation(
     float duration_h, intensity_mm_h;
     calc_rainfall_characteristics(rainfall_mm, &duration_h, &intensity_mm_h);
     
-    // Estimate antecedent moisture (this would ideally come from soil sensors or tracking)
-    // For now, use a default moderate moisture level
-    float antecedent_moisture_pct = 50.0f;  // Default 50% moisture
+    if (antecedent_moisture_pct < 0.0f) {
+        antecedent_moisture_pct = 0.0f;
+    }
+    if (antecedent_moisture_pct > 100.0f) {
+        antecedent_moisture_pct = 100.0f;
+    }
     
     // Calculate runoff losses
     float runoff_coeff = calc_runoff_coefficient(intensity_mm_h, soil, antecedent_moisture_pct);
@@ -1427,6 +1432,16 @@ float calc_effective_precipitation(
             (double)runoff_loss, (double)(runoff_coeff * 100.0f), (double)evap_loss);
     
     return effective_rainfall;
+}
+
+float calc_effective_precipitation(
+    float rainfall_mm,
+    const soil_enhanced_data_t *soil,
+    const irrigation_method_data_t *irrigation_method
+)
+{
+    float antecedent = (float)soil_moisture_get_global_effective_pct();
+    return calc_effective_precipitation_with_moisture(rainfall_mm, soil, irrigation_method, antecedent);
 }
 
 /**
@@ -2994,8 +3009,10 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     if (depletion_fraction < 0.1f) depletion_fraction = 0.5f; // Default to 50%
     balance->raw_mm = balance->wetting_awc_mm * depletion_fraction;
     
-    // Calculate effective precipitation
-    float effective_rain = calc_effective_precipitation(rainfall_24h, soil, method);
+    // Calculate effective precipitation (uses global/per-channel antecedent moisture estimate)
+    float antecedent_moisture_pct = (float)soil_moisture_get_effective_pct(channel_id);
+    float effective_rain = calc_effective_precipitation_with_moisture(
+        rainfall_24h, soil, method, antecedent_moisture_pct);
     balance->effective_rain_mm = effective_rain;
     decision->effective_rain_mm = effective_rain;
     

@@ -74,6 +74,25 @@ Helper macros (`PLANT_KC_MID`, `PLANT_ROOT_MIN_M`, `PLANT_DEPL_FRACTION`, etc.) 
   - Calls `track_deficit_accumulation()` (internal static helper) to update `water_balance_t` using ETc (ET0 x Kc), rainfall, and any manual irrigation feedback.
   - Flags `irrigation_needed` when the current deficit crosses `raw_mm`.
 
+#### Antecedent Soil Moisture (Effective Rainfall)
+
+The FAO‑56 engine models **effective precipitation** by estimating runoff and infiltration. One of the key drivers is the **antecedent soil moisture estimate** (how wet the soil was before the rain event):
+- Higher antecedent moisture → higher runoff → lower effective rainfall
+- Lower antecedent moisture → lower runoff → higher effective rainfall
+
+AutoWatering supports configuring this estimate as a percentage (`0..100`) via a **global** value and optional **per-channel** overrides.
+
+**Precedence (per channel):**
+1. If per-channel override is enabled → use the channel’s `moisture_pct`
+2. Else if global override is enabled → use the global `moisture_pct`
+3. Else → default to `50%`
+
+This value is applied inside `calc_effective_precipitation()` / AUTO mode’s daily deficit update, and can change whether a channel decides to irrigate (because effective rain reduces the computed deficit).
+
+**Persistence:** stored in NVS (global record + per-channel records).
+
+**BLE configuration:** exposed via the Custom Configuration Service characteristic `12345678-1234-5678-9abc-def123456784` (see `docs/ble-api/characteristics/30-soil-moisture-configuration.md`).
+
 The persisted water balance structure is defined in `src/water_balance_types.h`:
 
 ```c

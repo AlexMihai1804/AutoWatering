@@ -13,7 +13,11 @@ This guide reflects the current Bluetooth Low Energy interface implemented in `s
 
 ## Characteristic Inventory (Verified)
 
-All characteristics live under the irrigation primary service. Properties come directly from the `BT_GATT_CHARACTERISTIC` declarations; sizes match the packed structs in `bt_gatt_structs.h` and `bt_gatt_structs_enhanced.h`.
+Characteristics are exposed through two services:
+- **Irrigation Service** (primary): `12345678-1234-5678-1234-56789abcdef0`
+- **Custom Configuration Service**: `12345678-1234-5678-9abc-def123456780`
+
+Properties come directly from the `BT_GATT_CHARACTERISTIC` declarations; sizes match the packed structs in `bt_gatt_structs.h` and `bt_gatt_structs_enhanced.h`. For the full list (including Custom Configuration Service characteristics) see `docs/ble-api/characteristics/README.md`.
 
 | # | Characteristic | UUID | Size | Properties | Notes |
 |---|----------------|------|------|------------|-------|

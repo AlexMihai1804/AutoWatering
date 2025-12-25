@@ -17,6 +17,7 @@ graph LR
     subgraph Application
         TASKS[watering_tasks.c]
         AUTO[fao56_calc.c / watering.c]
+        SOILMOIST[soil_moisture_config.c]
         CFG[nvs_config.c]
         HIST[history modules]
     end
@@ -37,9 +38,11 @@ graph LR
     FLOW --> TASKS
     RAIN --> TASKS
     ENV --> AUTO
+    SOILMOIST --> AUTO
     AUTO --> TASKS
     AUTO --> HIST
     CFG --> TASKS
+    CFG --> SOILMOIST
     CFG --> HIST
     RTC --> AUTO
 ```
@@ -50,14 +53,15 @@ graph LR
 
 1. USB CDC ACM (optional console) via `setup_usb_cdc_acm()`.
 2. Persistent storage: `nvs_config_init()`.
-3. Valve hardware (`valve_init()`), flow sensor, and rain sensor drivers.
-4. RTC (`rtc_init()` with uptime fallback) and timezone helpers (UTC default with configurable offset/DST persisted via NVS).
-5. Core watering engine: `watering_init()` followed by `watering_start_tasks()` (spawns processing threads and work items).
-6. Support services: storage monitor, configuration status, onboarding state, reset controller, enhanced status/error handlers.
-7. Sensor stack: `sensor_manager`, BME280 driver, environmental data + history modules.
-8. Compensation layers: custom soil DB, rain compensation, temperature compensation & integration, interval task integration.
-9. History subsystems: watering history, rain history, rain integration.
-10. BLE service (`bt_irrigation_service_init()`) when `CONFIG_BT` is enabled.
+3. Onboarding state (`onboarding_state_init()`) and soil moisture config cache (`soil_moisture_config_init()`).
+4. Valve hardware (`valve_init()`), flow sensor, and rain sensor drivers.
+5. RTC (`rtc_init()` with uptime fallback) and timezone helpers (UTC default with configurable offset/DST persisted via NVS).
+6. Core watering engine: `watering_init()` followed by `watering_start_tasks()` (spawns processing threads and work items).
+7. Support services: storage monitor, configuration status, reset controller, enhanced status/error handlers.
+8. Sensor stack: `sensor_manager`, BME280 driver, environmental data + history modules.
+9. Compensation layers: custom soil DB, rain compensation, temperature compensation & integration, interval task integration.
+10. History subsystems: watering history, rain history, rain integration.
+11. BLE service (`bt_irrigation_service_init()`) when `CONFIG_BT` is enabled.
 
 All module initializations log warnings on failure but keep the system running unless NVS cannot be mounted.
 
@@ -87,12 +91,14 @@ All module initializations log warnings on failure but keep the system running u
 
 ### Persistence & Histories
 - All writes/read flow through `nvs_config.c`; individual modules own their keys.
+- Soil moisture global/per-channel overrides are loaded early and cached (`soil_moisture_config.c`) to support FAO-56 effective rainfall calculations.
 - `watering_history.c`: 30 detailed events/channel, 90 daily, 36 monthly, 10 annual summaries plus optional insights cache.
 - `rain_history.c` and `environmental_history.c` maintain rolling datasets for BLE export.
 - Generated databases (`plant_full_db.inc`, `soil_enhanced_db.inc`, `irrigation_methods_db.inc`) are included directly with compile-time size asserts.
 
 ### BLE Interface
 - `bt_irrigation_service.c` exposes 33 characteristics (26 irrigation + 7 history) documented under `docs/ble-api/`.
+- `bt_custom_soil_handlers.c` exposes a separate Custom Configuration Service used for extended configuration (e.g., custom soil DB and antecedent soil moisture override).
 - Notification macros (`SMART_NOTIFY`, `CRITICAL_NOTIFY`, `CHANNEL_CONFIG_NOTIFY`) enforce throttling tiers.
 - Large payloads (channel config, histories) use the shared fragmentation helpers with 3-byte headers.
 - History control/insights characteristics mirror the structures defined in the history modules; settings persist through NVS.

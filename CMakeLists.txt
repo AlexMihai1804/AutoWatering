@@ -91,6 +91,7 @@ target_sources(app PRIVATE
     
     # Storage and configuration
     src/nvs_config.c
+    src/soil_moisture_config.c
     src/nvs_storage_monitor.c
     src/configuration_status.c
     src/onboarding_state.c

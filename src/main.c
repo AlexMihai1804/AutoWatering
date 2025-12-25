@@ -46,6 +46,7 @@
 #endif
 #include "usb_descriptors.h"
 #include "nvs_config.h"
+#include "soil_moisture_config.h"
 #include "watering_history.h"
 bool critical_section_active = false;
 #define INIT_TIMEOUT_MS 5000
@@ -402,6 +403,12 @@ int main(void) {
     ret = onboarding_state_init();
     if (ret != 0) {
         printk("Warning: Onboarding state system initialization failed: %d\n", ret);
+    }
+
+    /* Load soil moisture configuration early (used by FAO-56 effective rainfall). */
+    ret = soil_moisture_config_init();
+    if (ret != 0) {
+        printk("Warning: Soil moisture config init failed: %d\n", ret);
     }
     
     k_sleep(K_MSEC(200));

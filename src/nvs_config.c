@@ -72,6 +72,8 @@ enum {
     ID_ENHANCED_CHANNEL_CFG_BASE = 500, /* Enhanced channel config +ch (0-7) */
     ID_WATER_BALANCE_BASE = 600, /* Water balance state +ch (0-7) */
     ID_AUTOMATIC_CALC_STATE = 700, /* Automatic calculation state */
+    ID_SOIL_MOISTURE_GLOBAL = 710,  /* soil_moisture_global_config_t */
+    ID_SOIL_MOISTURE_CH_BASE = 720, /* soil_moisture_channel_override_t +ch (0-7) */
     ID_RAIN_CONFIG = 800,        /* Rain sensor configuration */
     ID_RAIN_STATE = 801,         /* Rain sensor state */
     ID_RAIN_HOURLY_DATA = 802,   /* Rain hourly history data */
@@ -83,6 +85,88 @@ enum {
     ID_CONFIG_RESET_LOG_BASE = 940, /* Configuration reset logs +ch (0-7) */
     ID_HYDRAULIC_GLOBAL_LOCK = 950, /* Global hydraulic lock state */
 };
+
+int nvs_save_soil_moisture_global_config(const soil_moisture_global_config_t *cfg)
+{
+    if (!cfg) {
+        return -EINVAL;
+    }
+    return nvs_config_write(ID_SOIL_MOISTURE_GLOBAL, cfg, sizeof(*cfg));
+}
+
+int nvs_load_soil_moisture_global_config(soil_moisture_global_config_t *cfg)
+{
+    if (!cfg) {
+        return -EINVAL;
+    }
+
+    /* Start from defaults so new fields remain sane on partial reads */
+    soil_moisture_global_config_t def = (soil_moisture_global_config_t)DEFAULT_SOIL_MOISTURE_GLOBAL_CONFIG;
+    *cfg = def;
+
+    int ret = nvs_config_read(ID_SOIL_MOISTURE_GLOBAL, cfg, sizeof(*cfg));
+    if (ret < 0) {
+        /* Preserve "missing" vs "configured". Callers can treat -ENOENT as "no stored value". */
+        return ret;
+    }
+
+    /* Validate/clamp */
+    if (cfg->enabled > 1) {
+        cfg->enabled = 0;
+    }
+    if (cfg->moisture_pct > 100) {
+        cfg->moisture_pct = 100;
+    }
+
+    if (ret != sizeof(*cfg)) {
+        /* Upgrade partial/older records to the current struct size. */
+        (void)nvs_save_soil_moisture_global_config(cfg);
+        return sizeof(*cfg);
+    }
+
+    return ret;
+}
+
+int nvs_save_soil_moisture_channel_override(uint8_t ch, const soil_moisture_channel_override_t *cfg)
+{
+    if (!cfg || ch >= WATERING_CHANNELS_COUNT) {
+        return -EINVAL;
+    }
+    return nvs_config_write(ID_SOIL_MOISTURE_CH_BASE + ch, cfg, sizeof(*cfg));
+}
+
+int nvs_load_soil_moisture_channel_override(uint8_t ch, soil_moisture_channel_override_t *cfg)
+{
+    if (!cfg || ch >= WATERING_CHANNELS_COUNT) {
+        return -EINVAL;
+    }
+
+    /* Start from defaults so new fields remain sane on partial reads */
+    soil_moisture_channel_override_t def = (soil_moisture_channel_override_t)DEFAULT_SOIL_MOISTURE_CHANNEL_OVERRIDE;
+    *cfg = def;
+
+    int ret = nvs_config_read(ID_SOIL_MOISTURE_CH_BASE + ch, cfg, sizeof(*cfg));
+    if (ret < 0) {
+        /* Preserve "missing" vs "configured". Callers can treat -ENOENT as "no stored value". */
+        return ret;
+    }
+
+    /* Validate/clamp */
+    if (cfg->override_enabled > 1) {
+        cfg->override_enabled = 0;
+    }
+    if (cfg->moisture_pct > 100) {
+        cfg->moisture_pct = 100;
+    }
+
+    if (ret != sizeof(*cfg)) {
+        /* Upgrade partial/older records to the current struct size. */
+        (void)nvs_save_soil_moisture_channel_override(ch, cfg);
+        return sizeof(*cfg);
+    }
+
+    return ret;
+}
 
 /* ΓÇöΓÇöΓÇö nivel ├«nalt ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 int nvs_save_watering_config(const void *cfg, size_t sz)

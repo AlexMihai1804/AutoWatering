@@ -358,6 +358,20 @@ struct enhanced_system_config_data {
 
 BUILD_ASSERT(sizeof(struct enhanced_system_config_data) == 56, "enhanced_system_config_data must be 56 bytes");
 
+/* Soil moisture configuration structure for BLE transfer (custom config service) */
+struct soil_moisture_config_data {
+    uint8_t channel_id;        /* 0-7 for per-channel override, 0xFF for global */
+    uint8_t operation;         /* 0=read, 1=set */
+    uint8_t enabled;           /* 0=disabled, 1=enabled */
+    uint8_t moisture_pct;      /* 0-100 */
+    uint8_t status;            /* watering_error_t result */
+    uint8_t has_data;          /* 0=no stored value (defaults), 1=value present in NVS */
+    uint8_t reserved[2];       /* Reserved */
+} __attribute__((packed));
+
+BUILD_ASSERT(sizeof(struct soil_moisture_config_data) == 8,
+            "soil_moisture_config_data must be 8 bytes");
+
 /* Compile-time size guards for enhanced BLE structs (documentation alignment) */
 BUILD_ASSERT(sizeof(struct custom_soil_config_data) == 1 + 1 + 32 + 4*5 + 4 + 4 + 4 + 1 + 3,
             "custom_soil_config_data unexpected size");

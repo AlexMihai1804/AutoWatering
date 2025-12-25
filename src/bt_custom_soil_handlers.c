@@ -6,6 +6,7 @@
 #include "bt_custom_soil_handlers.h"
 #include "custom_soil_db.h"
 #include "watering.h"
+#include "soil_moisture_config.h"
 #include "configuration_status.h"
 #include "onboarding_state.h"
 #include <zephyr/kernel.h>
@@ -20,11 +21,13 @@ static struct custom_soil_config_data custom_soil_response;
 static struct config_reset_response_data reset_response;
 static struct config_status_response_data status_response;
 static struct enhanced_channel_config_data enhanced_config_response;
+static struct soil_moisture_config_data soil_moisture_response;
 
 /* Notification state tracking */
 static bool custom_soil_notifications_enabled = false;
 static bool config_reset_notifications_enabled = false;
 static bool config_status_notifications_enabled = false;
+static bool soil_moisture_notifications_enabled = false;
 
 /* Custom UUIDs for the configuration service */
 #define BT_UUID_CUSTOM_CONFIG_SERVICE_VAL \
@@ -35,20 +38,33 @@ static bool config_status_notifications_enabled = false;
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x9abc, 0xdef123456782)
 #define BT_UUID_CUSTOM_CONFIG_STATUS_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x9abc, 0xdef123456783)
+#define BT_UUID_CUSTOM_SOIL_MOISTURE_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x9abc, 0xdef123456784)
 
 static struct bt_uuid_128 custom_config_service_uuid = BT_UUID_INIT_128(BT_UUID_CUSTOM_CONFIG_SERVICE_VAL);
 static struct bt_uuid_128 custom_soil_config_uuid = BT_UUID_INIT_128(BT_UUID_CUSTOM_SOIL_CONFIG_VAL);
 static struct bt_uuid_128 custom_config_reset_uuid = BT_UUID_INIT_128(BT_UUID_CUSTOM_CONFIG_RESET_VAL);
 static struct bt_uuid_128 custom_config_status_uuid = BT_UUID_INIT_128(BT_UUID_CUSTOM_CONFIG_STATUS_VAL);
+static struct bt_uuid_128 custom_soil_moisture_uuid = BT_UUID_INIT_128(BT_UUID_CUSTOM_SOIL_MOISTURE_VAL);
 
 /* Attribute indices inside the custom configuration service */
-#define CUSTOM_CFG_ATTR_SOIL_VALUE   2
-#define CUSTOM_CFG_ATTR_RESET_VALUE  5
-#define CUSTOM_CFG_ATTR_STATUS_VALUE 8
+#define CUSTOM_CFG_ATTR_SOIL_VALUE     2
+#define CUSTOM_CFG_ATTR_MOISTURE_VALUE 5
+#define CUSTOM_CFG_ATTR_RESET_VALUE    8
+#define CUSTOM_CFG_ATTR_STATUS_VALUE   11
 
 static void custom_soil_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+static void custom_soil_moisture_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void custom_config_reset_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void custom_config_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+
+ssize_t bt_soil_moisture_config_read(struct bt_conn *conn,
+                                    const struct bt_gatt_attr *attr,
+                                    void *buf, uint16_t len, uint16_t offset);
+ssize_t bt_soil_moisture_config_write(struct bt_conn *conn,
+                                     const struct bt_gatt_attr *attr,
+                                     const void *buf, uint16_t len,
+                                     uint16_t offset, uint8_t flags);
 
 BT_GATT_SERVICE_DEFINE(custom_config_svc,
     BT_GATT_PRIMARY_SERVICE(&custom_config_service_uuid.uuid),
@@ -59,6 +75,13 @@ BT_GATT_SERVICE_DEFINE(custom_config_svc,
                            bt_custom_soil_config_read, bt_custom_soil_config_write,
                            &custom_soil_response),
     BT_GATT_CCC(custom_soil_config_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
+
+    BT_GATT_CHARACTERISTIC(&custom_soil_moisture_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
+                           bt_soil_moisture_config_read, bt_soil_moisture_config_write,
+                           &soil_moisture_response),
+    BT_GATT_CCC(custom_soil_moisture_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
 
     BT_GATT_CHARACTERISTIC(&custom_config_reset_uuid.uuid,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
@@ -82,9 +105,24 @@ int bt_custom_soil_handlers_init(void)
     memset(&reset_response, 0, sizeof(reset_response));
     memset(&status_response, 0, sizeof(status_response));
     memset(&enhanced_config_response, 0, sizeof(enhanced_config_response));
+    memset(&soil_moisture_response, 0, sizeof(soil_moisture_response));
     
     LOG_INF("Custom soil BLE handlers initialized");
     return 0;
+}
+
+static void custom_soil_moisture_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    soil_moisture_notifications_enabled = (value == BT_GATT_CCC_NOTIFY);
+    LOG_INF("Soil moisture config notifications %s",
+            soil_moisture_notifications_enabled ? "enabled" : "disabled");
+
+    if (soil_moisture_notifications_enabled) {
+        (void)bt_gatt_notify(NULL,
+                             &custom_config_svc.attrs[CUSTOM_CFG_ATTR_MOISTURE_VALUE],
+                             &soil_moisture_response,
+                             sizeof(soil_moisture_response));
+    }
 }
 
 static void custom_soil_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
@@ -138,6 +176,116 @@ ssize_t bt_custom_soil_config_read(struct bt_conn *conn,
     /* Return the last response or empty structure */
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                             &custom_soil_response, sizeof(custom_soil_response));
+}
+
+ssize_t bt_soil_moisture_config_read(struct bt_conn *conn,
+                                    const struct bt_gatt_attr *attr,
+                                    void *buf, uint16_t len, uint16_t offset)
+{
+    LOG_DBG("Soil moisture config read request, offset=%d, len=%d", offset, len);
+
+    return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                             &soil_moisture_response, sizeof(soil_moisture_response));
+}
+
+ssize_t bt_soil_moisture_config_write(struct bt_conn *conn,
+                                     const struct bt_gatt_attr *attr,
+                                     const void *buf, uint16_t len,
+                                     uint16_t offset, uint8_t flags)
+{
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    ARG_UNUSED(flags);
+
+    if (offset != 0) {
+        LOG_ERR("Soil moisture config write with non-zero offset not supported");
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+
+    if (!buf || len != sizeof(struct soil_moisture_config_data)) {
+        LOG_ERR("Invalid soil moisture config data length: %d, expected %zu",
+                len, sizeof(struct soil_moisture_config_data));
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    const struct soil_moisture_config_data *req = (const struct soil_moisture_config_data *)buf;
+
+    memcpy(&soil_moisture_response, req, sizeof(soil_moisture_response));
+    soil_moisture_response.status = (uint8_t)WATERING_SUCCESS;
+
+    if (req->operation == 0) {
+        /* READ */
+        if (req->channel_id == 0xFF) {
+            bool enabled;
+            uint8_t pct;
+            bool has_data;
+            int ret = soil_moisture_get_global_with_presence(&enabled, &pct, &has_data);
+            if (ret != 0) {
+                soil_moisture_response.status = (uint8_t)WATERING_ERROR_STORAGE;
+            } else {
+                soil_moisture_response.enabled = enabled ? 1 : 0;
+                soil_moisture_response.moisture_pct = pct;
+                soil_moisture_response.has_data = has_data ? 1 : 0;
+            }
+        } else if (req->channel_id < WATERING_CHANNELS_COUNT) {
+            bool enabled;
+            uint8_t pct;
+            bool has_data;
+            int ret = soil_moisture_get_channel_override_with_presence(req->channel_id, &enabled, &pct, &has_data);
+            if (ret != 0) {
+                soil_moisture_response.status = (uint8_t)WATERING_ERROR_STORAGE;
+            } else {
+                soil_moisture_response.enabled = enabled ? 1 : 0;
+                soil_moisture_response.moisture_pct = pct;
+                soil_moisture_response.has_data = has_data ? 1 : 0;
+            }
+        } else {
+            soil_moisture_response.status = (uint8_t)WATERING_ERROR_INVALID_PARAM;
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+    } else if (req->operation == 1) {
+        /* SET */
+        if (req->moisture_pct > 100) {
+            soil_moisture_response.status = (uint8_t)WATERING_ERROR_INVALID_PARAM;
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+
+        if (req->channel_id == 0xFF) {
+            int ret = soil_moisture_set_global(req->enabled != 0, req->moisture_pct);
+            if (ret != 0) {
+                soil_moisture_response.status = (uint8_t)WATERING_ERROR_STORAGE;
+                soil_moisture_response.has_data = 0;
+            } else {
+                soil_moisture_response.has_data = 1;
+            }
+        } else if (req->channel_id < WATERING_CHANNELS_COUNT) {
+            int ret = soil_moisture_set_channel_override(req->channel_id, req->enabled != 0, req->moisture_pct);
+            if (ret != 0) {
+                soil_moisture_response.status = (uint8_t)WATERING_ERROR_STORAGE;
+                soil_moisture_response.has_data = 0;
+            } else {
+                soil_moisture_response.has_data = 1;
+            }
+        } else {
+            soil_moisture_response.status = (uint8_t)WATERING_ERROR_INVALID_PARAM;
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+    } else {
+        soil_moisture_response.status = (uint8_t)WATERING_ERROR_INVALID_PARAM;
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+
+    if (soil_moisture_notifications_enabled) {
+        (void)bt_gatt_notify(NULL,
+                             &custom_config_svc.attrs[CUSTOM_CFG_ATTR_MOISTURE_VALUE],
+                             &soil_moisture_response,
+                             sizeof(soil_moisture_response));
+    }
+
+    LOG_INF("Soil moisture cfg op=%u ch=%u enabled=%u pct=%u status=%u",
+            req->operation, req->channel_id, req->enabled, req->moisture_pct, soil_moisture_response.status);
+
+    return len;
 }
 
 ssize_t bt_custom_soil_config_write(struct bt_conn *conn,

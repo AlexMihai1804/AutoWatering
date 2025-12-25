@@ -217,6 +217,31 @@ typedef struct {
     bool fallback_mode;                /**< True if running in fallback mode due to sensor failures */
 } __attribute__((packed)) automatic_calc_state_t;
 
+/* ——— Soil moisture configuration (global + per-channel overrides) ——— */
+typedef struct {
+    uint8_t enabled;                /**< 1 to enable global antecedent moisture override */
+    uint8_t moisture_pct;           /**< 0-100 (%), used as antecedent moisture estimate */
+    uint8_t reserved[2];
+} __attribute__((packed)) soil_moisture_global_config_t;
+
+typedef struct {
+    uint8_t override_enabled;       /**< 1 to enable per-channel override */
+    uint8_t moisture_pct;           /**< 0-100 (%), used as antecedent moisture estimate */
+    uint8_t reserved[2];
+} __attribute__((packed)) soil_moisture_channel_override_t;
+
+#define DEFAULT_SOIL_MOISTURE_GLOBAL_CONFIG { \
+    .enabled = 0, \
+    .moisture_pct = 50, \
+    .reserved = {0, 0} \
+}
+
+#define DEFAULT_SOIL_MOISTURE_CHANNEL_OVERRIDE { \
+    .override_enabled = 0, \
+    .moisture_pct = 50, \
+    .reserved = {0, 0} \
+}
+
 /* Default enhanced channel configuration */
 #define DEFAULT_ENHANCED_CHANNEL_CONFIG { \
     .plant_db_index = UINT16_MAX,         /* Not set */ \
@@ -316,6 +341,11 @@ int nvs_load_water_balance_config(uint8_t ch, water_balance_config_t *balance);
 
 int nvs_save_automatic_calc_state(const automatic_calc_state_t *state);
 int nvs_load_automatic_calc_state(automatic_calc_state_t *state);
+
+int nvs_save_soil_moisture_global_config(const soil_moisture_global_config_t *cfg);
+int nvs_load_soil_moisture_global_config(soil_moisture_global_config_t *cfg);
+int nvs_save_soil_moisture_channel_override(uint8_t ch, const soil_moisture_channel_override_t *cfg);
+int nvs_load_soil_moisture_channel_override(uint8_t ch, soil_moisture_channel_override_t *cfg);
 
 /* ——— Enhanced Channel Management Functions ————————————————— */
 /* Note: These functions are declared in watering.h where the full struct definition is available */
