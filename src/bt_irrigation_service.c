@@ -7298,8 +7298,8 @@ static uint32_t calc_channel_next_irrigation_time(watering_channel_t *channel) {
     
     uint32_t next_time = 0;
     
-    /* First check if water balance predicts irrigation needed NOW */
-    if (channel->water_balance) {
+    /* For non-AUTO schedules, check if water balance predicts irrigation needed NOW */
+    if (channel->watering_event.schedule_type != SCHEDULE_AUTO && channel->water_balance) {
         water_balance_t *balance = (water_balance_t *)channel->water_balance;
         if (balance->irrigation_needed) {
             /* Irrigation needed now */
@@ -7506,12 +7506,19 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
         
         /* For automatic channels with water balance, predict next irrigation.
          *
-         * NOTE: For SCHEDULE_AUTO we intentionally report the next scheduled
-         * (calendar/solar) start time instead of an ETc-based prediction.
-         * The prediction can be capped (e.g., 7 days) and appears confusing
-         * because it keeps the *current* time-of-day.
+         * For SCHEDULE_AUTO (FAO-56): if irrigation_needed is true, we need to
+         * calculate the next scheduled start time (today if not passed, else tomorrow).
+         * If not needed, we use ETc-based prediction to estimate when deficit will reach RAW.
+         *
+         * For other schedule types: use ETc prediction when available.
          */
-        if (channel->watering_event.schedule_type != SCHEDULE_AUTO) {
+        if (channel->watering_event.schedule_type == SCHEDULE_AUTO) {
+            /* For FAO-56, we handle next_irrigation_time in the schedule calculation below.
+             * If irrigation_needed is true, we want the soonest scheduled time.
+             * If not needed, we still show the scheduled time (channel will skip if deficit < RAW).
+             */
+            /* Fall through to schedule calculation */
+        } else {
             if (d->irrigation_needed) {
                 /* Irrigation needed now */
                 uint32_t now_sec = timezone_get_unix_utc();
