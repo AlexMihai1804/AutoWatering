@@ -7486,21 +7486,29 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
             d->volume_limited = calc.volume_limited ? 1 : 0;
         }
         
-        /* For automatic channels with water balance, predict next irrigation */
-        if (d->irrigation_needed) {
-            /* Irrigation needed now */
-            uint32_t now_sec = timezone_get_unix_utc();
-            d->next_irrigation_time = (now_sec != 0U) ? now_sec : 0;
-        } else if (d->etc_mm_day > 0.01f && plant) {
-            float hours_until = 0.0f;
-            if (calc_irrigation_timing(balance, d->etc_mm_day, plant, &hours_until) == WATERING_SUCCESS && hours_until >= 0.0f) {
+        /* For automatic channels with water balance, predict next irrigation.
+         *
+         * NOTE: For SCHEDULE_AUTO we intentionally report the next scheduled
+         * (calendar/solar) start time instead of an ETc-based prediction.
+         * The prediction can be capped (e.g., 7 days) and appears confusing
+         * because it keeps the *current* time-of-day.
+         */
+        if (channel->watering_event.schedule_type != SCHEDULE_AUTO) {
+            if (d->irrigation_needed) {
+                /* Irrigation needed now */
                 uint32_t now_sec = timezone_get_unix_utc();
-                if (now_sec != 0U) {
-                    double delta_sec = (double)hours_until * 3600.0;
-                    if (delta_sec > (double)(UINT32_MAX - now_sec)) {
-                        delta_sec = (double)(UINT32_MAX - now_sec);
+                d->next_irrigation_time = (now_sec != 0U) ? now_sec : 0;
+            } else if (d->etc_mm_day > 0.01f && plant) {
+                float hours_until = 0.0f;
+                if (calc_irrigation_timing(balance, d->etc_mm_day, plant, &hours_until) == WATERING_SUCCESS && hours_until >= 0.0f) {
+                    uint32_t now_sec = timezone_get_unix_utc();
+                    if (now_sec != 0U) {
+                        double delta_sec = (double)hours_until * 3600.0;
+                        if (delta_sec > (double)(UINT32_MAX - now_sec)) {
+                            delta_sec = (double)(UINT32_MAX - now_sec);
+                        }
+                        d->next_irrigation_time = now_sec + (uint32_t)delta_sec;
                     }
-                    d->next_irrigation_time = now_sec + (uint32_t)delta_sec;
                 }
             }
         }
@@ -7585,10 +7593,27 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
                     /* Schedule is later today */
                     d->next_irrigation_time = now_utc + (uint32_t)(mins_until * 60);
                 } else {
-                    /* Schedule is tomorrow or later - find next day that matches */
-                    /* For simplicity, assume tomorrow at scheduled time */
-                    int32_t secs_until_tomorrow = (24 * 60 - current_mins + sched_mins) * 60;
-                    d->next_irrigation_time = now_utc + (uint32_t)secs_until_tomorrow;
+                    /* Find the next day that matches the schedule */
+                    uint16_t days_ahead = 1;
+
+                    if (channel->watering_event.schedule_type == SCHEDULE_DAILY) {
+                        uint8_t day_mask = channel->watering_event.schedule.daily.days_of_week;
+                        /* Look ahead up to 7 days to find the next enabled day */
+                        for (uint16_t i = 1; i <= 7; i++) {
+                            uint8_t dow = (uint8_t)((current_day_of_week + i) % 7);
+                            if ((day_mask & (1u << dow)) != 0u) {
+                                days_ahead = i;
+                                break;
+                            }
+                        }
+                    }
+
+                    int32_t secs_until = ((int32_t)days_ahead * 24 * 60 - current_mins + sched_mins) * 60;
+                    if (secs_until < 0) {
+                        /* Safety: never schedule in the past */
+                        secs_until = 60;
+                    }
+                    d->next_irrigation_time = now_utc + (uint32_t)secs_until;
                 }
             }
         }
