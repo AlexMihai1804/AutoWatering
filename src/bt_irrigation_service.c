@@ -7514,10 +7514,13 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
         }
     }
     
-    /* For ALL channels (including manual): calculate next scheduled time if not already set */
+    /* For ALL channels (including manual): calculate next scheduled time if not already set.
+     * For SCHEDULE_AUTO we always recalculate to ensure fresh schedule-based time.
+     */
     uint32_t next_time_before = d->next_irrigation_time;
+    bool force_schedule_calc = (channel->watering_event.schedule_type == SCHEDULE_AUTO);
     
-    if (d->next_irrigation_time == 0 && channel->watering_event.auto_enabled) {
+    if ((d->next_irrigation_time == 0 || force_schedule_calc) && channel->watering_event.auto_enabled) {
         /* Calculate next scheduled irrigation from the channel's schedule */
         uint32_t now_utc = timezone_get_unix_utc();
         if (now_utc != 0U) {
@@ -7643,6 +7646,8 @@ static void notify_auto_calc_status(void) {
     uint8_t cid = payload->channel_id < WATERING_CHANNELS_COUNT ? payload->channel_id : 0;
     watering_channel_t *channel;
     if (watering_get_channel(cid, &channel) == WATERING_SUCCESS) {
+        /* Reset next_irrigation_time so it gets recalculated fresh */
+        payload->next_irrigation_time = 0;
         update_auto_calc_calculations(payload, channel);
     }
 
