@@ -7360,8 +7360,26 @@ static uint32_t calc_channel_next_irrigation_time(watering_channel_t *channel) {
                 if (runs_today && mins_until > 0) {
                     next_time = now_utc + (uint32_t)(mins_until * 60);
                 } else {
-                    int32_t secs_until_tomorrow = (24 * 60 - current_mins + sched_mins) * 60;
-                    next_time = now_utc + (uint32_t)secs_until_tomorrow;
+                    /* Find the next day that matches the schedule */
+                    uint16_t days_ahead = 1;
+
+                    if (channel->watering_event.schedule_type == SCHEDULE_DAILY) {
+                        uint8_t day_mask = channel->watering_event.schedule.daily.days_of_week;
+                        /* Look ahead up to 7 days to find the next enabled day */
+                        for (uint16_t i = 1; i <= 7; i++) {
+                            uint8_t dow = (uint8_t)((current_day_of_week + i) % 7);
+                            if ((day_mask & (1u << dow)) != 0u) {
+                                days_ahead = i;
+                                break;
+                            }
+                        }
+                    }
+
+                    int32_t secs_until = ((int32_t)days_ahead * 24 * 60 - current_mins + sched_mins) * 60;
+                    if (secs_until < 0) {
+                        secs_until = 60; /* Safety fallback */
+                    }
+                    next_time = now_utc + (uint32_t)secs_until;
                 }
             }
         }
