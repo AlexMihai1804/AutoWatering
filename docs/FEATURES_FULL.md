@@ -479,7 +479,8 @@ When `CONFIG_HISTORY_EXTERNAL_FLASH=y`, a LittleFS volume is mounted on `databas
   - Low: 1 s
 - Fragmented environmental/history notifications retry with backoff (up to 5 attempts); buffer exhaustion waits 2 s before retrying.
 
-### Characteristics (29 Documented)
+### Primary Irrigation Service Characteristics (29)
+The primary irrigation service exposes 29 characteristics; the custom configuration service adds 5 more (34 total across services).
 | # | Name | Description |
 |---|------|-------------|
 | 01 | Valve Control | R/W/N - Valve operations for channels 0-7 and master |
@@ -529,6 +530,7 @@ When `CONFIG_HISTORY_EXTERNAL_FLASH=y`, a LittleFS volume is mounted on `databas
 ### Custom Configuration Service (Custom UUID)
 - Separate BLE service exposes custom soil configuration, soil moisture estimates, configuration reset/status, and interval mode configuration.
 - Notifications mirror updates for connected clients.
+- 5 characteristics: Custom Soil Config, Soil Moisture Config, Config Reset, Config Status, Interval Mode Config.
 
 ### Configuration Portals
 Key characteristics accept writes for:

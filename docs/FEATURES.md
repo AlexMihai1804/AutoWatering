@@ -93,7 +93,7 @@ Implementation notes:
 - Sleep pacing and power mode switching: `src/power_management.c`, scheduler loop in `src/watering_tasks.c`.
 
 ### Bluetooth Low Energy
-- Primary irrigation service: **29 documented characteristics** (`docs/ble-api/`), including Bulk Sync Snapshot and Hydraulic Status.
+- Primary irrigation service: **29 characteristics** (`docs/ble-api/`), including Bulk Sync Snapshot and Hydraulic Status; custom configuration service adds 5 more (34 total across services).
 - Notification scheduler: 8-buffer pool, MTU-aware payloads (up to 250 bytes), adaptive throttling (critical 0 ms, high 50 ms, normal 200 ms, low 1 s).
 - Fragmentation for large payloads (TLV-framed, sequence-numbered).
 - History streaming via write-triggered fragment notifications (no client ACK).
