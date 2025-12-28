@@ -1,6 +1,6 @@
 # AutoWatering Capability Compendium (December 2025 build)
 
-Last updated: 2025-12-21
+Last updated: 2025-12-28
 
 This document inventories every capability exposed by the current firmware. It is aimed at integrators who need to understand data paths, feature boundaries, and system behaviour without reading the source directly.
 
@@ -16,7 +16,7 @@ Key upcoming firmware work (by batch):
 - **B1-B2 Packs on external flash (LittleFS + BLE install/list + built-in DB pack)**: https://github.com/AlexMihai1804/AutoWatering/issues/10, https://github.com/AlexMihai1804/AutoWatering/issues/6, https://github.com/AlexMihai1804/AutoWatering/issues/7, https://github.com/AlexMihai1804/AutoWatering/issues/8, https://github.com/AlexMihai1804/AutoWatering/issues/12
 - **B4 Updates (atomic replace + rollback)**: https://github.com/AlexMihai1804/AutoWatering/issues/13
 - **B5 Custom plants integration (channel references custom plant_id)**: https://github.com/AlexMihai1804/AutoWatering/issues/9
-- **B7 Cycle & soak support (firmware settings + BLE)**: https://github.com/AlexMihai1804/AutoWatering/issues/14
+- **B7 Cycle & soak support (app auto-tuning dependency; firmware interval mode + BLE config already present)**: https://github.com/AlexMihai1804/AutoWatering/issues/14
 
 ---
 
@@ -68,6 +68,7 @@ Key upcoming firmware work (by batch):
   - `watering_mode`: duration, volume, or automatic modes
   - Quantity unions (`duration_minutes` or `volume_liters`)
   - `auto_enabled`: scheduler toggle
+  - `use_solar_timing`, `solar_event`, `solar_offset_minutes` (-120..+120): sunrise/sunset scheduling with fallback to `start_time`
 - Schedules stored per channel in NVS and exposed via BLE Channel Configuration characteristic.
 
 ### Coverage and Agronomic Metadata
@@ -85,7 +86,7 @@ Key upcoming firmware work (by batch):
 - Plant lifecycle tracking:
   - `planting_date_unix`: Unix timestamp when plants were established
   - `days_after_planting`: calculated field for FAO-56 crop coefficient staging
-- `latitude_deg` and `sun_exposure_pct`: personalise evapotranspiration calculations.
+- `latitude_deg`, `longitude_deg`, and `sun_exposure_pct`: location + exposure inputs for solar timing and ET0 calculations.
 
 ### Compensation Settings
 - Per-channel rain compensation:
@@ -111,6 +112,11 @@ Key upcoming firmware work (by batch):
   - Name (32 chars), field capacity (%), wilting point (%)
   - Infiltration rate (mm/h), bulk density (g/cm3), organic matter (%)
 - Custom values override database defaults inside FAO-56 water balance routines.
+
+### Antecedent Soil Moisture (Manual)
+- Global soil moisture estimate (`enabled`, `moisture_pct`) stored in NVS; defaults to 50% when disabled.
+- Optional per-channel override (`override_enabled`, `moisture_pct`) stored in NVS.
+- Used by FAO-56 effective rainfall/runoff calculations (no physical soil probes required).
 
 ### Configuration Scoring
 - `config_status` tracks completion flags for:
@@ -144,7 +150,7 @@ The production hardware assumes three physical sensors:
 2. Tipping-bucket rain gauge
 3. BME280 environmental sensor (temperature, humidity, pressure)
 
-No soil moisture probes are present in this build; related fields remain reserved for backward compatibility.
+No physical soil moisture probes are present; antecedent moisture comes from the manual global/per-channel estimates stored in NVS.
 
 ### Flow Sensor (Pulse Meter)
 - **Hardware interface**: Devicetree node `water_flow_sensor` supplies port, pin, and active level; debounce configurable via `sensor_config.debounce_ms` (default 5 ms).
@@ -159,14 +165,14 @@ No soil moisture probes are present in this build; related fields remain reserve
   - `WATERING_STATUS_UNEXPECTED_FLOW` when pulses persist with all valves closed (debounced window)
 
 ### Hydraulic Sentinel (H.H.M.)
-- Auto-learning on first watering runs (2-6 per channel) captures ramp-up time and nominal flow using rolling averages (5s/30s/60s).
+- Auto-learning on first watering runs (2-6 per channel) captures ramp-up time and nominal flow using rolling windows (3s stability, 30s measurement, 60s ring history).
 - Profile selection: explicit user override > auto-learn; fallback uses irrigation method when available (spray vs drip).
-- Start ignore window: Fast `clamp(ramp+5s, 8-20)`, Slow `clamp(ramp+15s, 30-90)`, Unknown `20s`.
+- Start ignore window: Fast `clamp(ramp+5s, 8-20)`, Slow `clamp(ramp+15s, 30-90)`, Default `clamp(ramp+8s, 12-25)`.
 - HIGH FLOW: `avg_5s` over limit for 5s -> close all valves; lock channel if flow stops, lock global if flow persists.
 - NO FLOW: stall detection + 3 toggle retries; then mark NO_FLOW, stop zone, soft lock with auto retry; hard lock after 3 consecutive no-flow runs.
 - LOW FLOW: warning only after 30s below limit; watering continues.
 - UNEXPECTED FLOW: debounced (>10 pulses in 30s for 30s) with 2s post-close ignore; global hard lock if persistent.
-- Nightly Static Test: 03:00, master on 10s, off 5s, monitor 60s; skipped if watering active or tasks queued.
+- Nightly Static Test: 03:00, master on 10s, off 5s, monitor 60s; skipped if watering active, tasks queued, or global lock active.
 - Manual override: explicit BLE direct commands bypass locks temporarily for verification.
 - Anomaly log: append-only ring log stored on external flash (`/lfs/history/hydraulic_events.bin`).
 - BLE characteristic: Hydraulic Status snapshot exposes per-channel profile/flow/tolerances/locks plus global lock state.
@@ -385,6 +391,7 @@ Stored via `nvs_config` helpers (each validates payload size before committing):
 - Channel configuration, custom soil overlays
 - Onboarding flags, schedule flags
 - System flags: flow calibration, master valve, RTC, rain sensor, power mode, location, initial setup
+- Soil moisture estimates (global + per-channel overrides)
 - Automatic calculation state
 - Timezone configuration
 - Days since start
@@ -472,7 +479,7 @@ When `CONFIG_HISTORY_EXTERNAL_FLASH=y`, a LittleFS volume is mounted on `databas
   - Low: 1 s
 - Fragmented environmental/history notifications retry with backoff (up to 5 attempts); buffer exhaustion waits 2 s before retrying.
 
-### Characteristics (27 Documented)
+### Characteristics (29 Documented)
 | # | Name | Description |
 |---|------|-------------|
 | 01 | Valve Control | R/W/N - Valve operations for channels 0-7 and master |
@@ -502,16 +509,26 @@ When `CONFIG_HISTORY_EXTERNAL_FLASH=y`, a LittleFS volume is mounted on `databas
 | 25 | Reset Control | R/W/N - Confirmation code workflow |
 | 26 | Rain Integration Status | R/N - Full integration state |
 | 27 | Channel Compensation Config | R/W/N - Per-channel compensation |
+| 28 | Bulk Sync Snapshot | R - One-shot system snapshot (time/status/env/rain/queue) |
+| 29 | Hydraulic Status | R/W/N - Hydraulic profile/locks/anomaly counters |
 
 ### History Streaming
 - TLV-framed characteristics with fragment sequencing.
 - History transfers are client-driven (write triggers streaming) and do not require acknowledgements.
-- Rain history caps each transfer at 20 fragments.
+- Rain history caps each transfer at 255 fragments.
+
+### Bulk Sync Snapshot (Characteristic 28)
+- Read-only snapshot returns time, system status, environmental data, rain integration, compensation state, queue depth, and per-channel quick status.
+- Used at connect time to replace multiple characteristic reads.
 
 ### Auto Calc Status (Characteristic 15)
 - Write selects channel: 0..7 per-channel, 0xFF = global (earliest next irrigation across auto-enabled schedules), 0xFE = first automatic channel.
 - Read/notify includes next irrigation time derived from water balance (immediate if irrigation_needed) or from the channel schedule (local time with solar timing when enabled).
 - Notifications are cached and throttled to reduce BLE busy errors.
+
+### Custom Configuration Service (Custom UUID)
+- Separate BLE service exposes custom soil configuration, soil moisture estimates, configuration reset/status, and interval mode configuration.
+- Notifications mirror updates for connected clients.
 
 ### Configuration Portals
 Key characteristics accept writes for:
@@ -571,7 +588,7 @@ Every handler validates arguments before updating RAM or NVS.
 
 ### Status Taxonomy
 Base status values:
-- `OK`, `FAULT`, `NO_FLOW`, `UNEXPECTED_FLOW`, `RTC_ERROR`, `LOW_POWER`, `LOCKED`
+- `OK`, `FAULT`, `NO_FLOW`, `UNEXPECTED_FLOW`, `RTC_ERROR`, `LOW_POWER`, `FREEZE_LOCKOUT`, `LOCKED`
 
 Enhanced status module derives:
 - Interval phase
@@ -579,6 +596,10 @@ Enhanced status module derives:
 - Sensor health indicators
 - Configuration completeness
 - Bitmaps of active, interval, and incomplete channels
+
+### Freeze Lockout
+- Blocks task enqueue/scheduling when temperature <= 2 C or environmental data is stale (>10 min).
+- Clears when temperature >= 4 C; raises a BLE alarm while active.
 
 ### Recovery Strategies
 `enhanced_error_handling` maps error codes to strategies:
@@ -669,7 +690,7 @@ Automatic:
 - Manual toggles rejected while auto-management enabled.
 
 ### History Rotation
-- Watering history rotation is scaffolded (NVS-backed).
+- Watering history uses NVS-backed ring buffers with rotation metadata and GC cleanup.
 - Rain/environment history rotation is handled by fixed-size ring files when `CONFIG_HISTORY_EXTERNAL_FLASH=y`.
 - Extremely full NVS partitions might require manual clean-up via reset commands.
 
@@ -686,7 +707,7 @@ Automatic:
 |--------|--------------|---------|
 | Core | `watering.c/h`, `watering_tasks.c`, `watering_internal.h` | Task dispatch, scheduling, channel control |
 | FAO-56 | `fao56_calc.c/h`, `fao56_custom_soil.c/h` | Scientific irrigation calculations |
-| Flow | `flow_sensor.c/h` | Pulse counting, calibration, anomaly detection |
+| Flow | `flow_sensor.c/h`, `watering_monitor.c` | Pulse counting, calibration, hydraulic anomaly detection |
 | Rain | `rain_sensor.c/h`, `rain_history.c/h`, `rain_integration.c/h`, `rain_compensation.c/h` | Rain sensing, history, compensation |
 | Environment | `env_sensors.c/h`, `environmental_data.c/h`, `environmental_history.c/h`, `bme280_driver.c/h` | BME280, data aggregation |
 | Temperature | `temperature_compensation.c/h`, `temperature_compensation_integration.c/h` | Temperature-based adjustments |
@@ -694,7 +715,7 @@ Automatic:
 | BLE | `bt_irrigation_service.c/h`, `bt_*_handlers.c/h` | GATT service, characteristics |
 | Storage (NVS) | `nvs_config.c/h`, `nvs_storage_monitor.c/h` | Persistence, health monitoring |
 | Storage (LittleFS) | `database_flash.c/h`, `history_flash.c/h` | External flash LittleFS mount, flash-backed history + optional binary DB |
-| Config | `configuration_status.c/h`, `onboarding_state.c/h`, `reset_controller.c/h` | Scoring, onboarding, reset |
+| Config | `configuration_status.c/h`, `onboarding_state.c/h`, `reset_controller.c/h`, `soil_moisture_config.c/h` | Scoring, onboarding, reset, soil moisture config |
 | Status | `enhanced_system_status.c/h`, `enhanced_error_handling.c/h` | Diagnostics, recovery |
 | Databases | `plant_full_db.c`, `soil_enhanced_db.c`, `irrigation_methods_db.c` | Generated from CSV |
 

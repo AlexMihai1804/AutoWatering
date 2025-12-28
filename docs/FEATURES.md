@@ -1,7 +1,7 @@
 ## AutoWatering - Key Features (Code-Verified Summary)
 
 Focused, externally facing list. All items map to existing modules or confirmed limits.
-*Last updated: 2025-12-21*
+*Last updated: 2025-12-28*
 
 ---
 
@@ -26,6 +26,7 @@ Implementation notes (where this lives in code):
   - **Daily (bitmask)**: Runs on selected days of the week.
   - **Periodic**: Runs every N days.
   - **AUTO (Smart Schedule)**: FAO-56 based - evaluates soil water deficit daily, irrigates only when deficit exceeds plant's RAW threshold. Requires plant/soil/planting_date and coverage configuration.
+- Solar timing option: sunrise/sunset scheduling with +/-120 min offset using latitude/longitude; falls back to configured start time if solar calc fails.
 - On-demand FAO-56 based irrigation requirement calculation (`watering_run_automatic_calculations()`).
 - AUTO mode features:
   - Daily deficit tracking with ETc (crop evapotranspiration) accumulation.
@@ -44,20 +45,22 @@ Implementation notes:
 
 ### Sensing & Monitoring
 - **Flow sensor**: Pulse counting with calibration (100-10,000 pulses/liter; adjustable via BLE).
-- **Hydraulic Sentinel (H.H.M.)**: Auto-learning at first runs, profile-aware limits, HIGH/LOW/NO/UNEXPECTED flow handling, nightly static mainline test (03:00, skipped when watering).
+- **Hydraulic Sentinel (H.H.M.)**: Auto-learning at first runs, profile-aware limits, HIGH/LOW/NO/UNEXPECTED flow handling, nightly static mainline test (03:00, skipped when watering/queued or global lock active).
 - **Hydraulic Status BLE**: Per-channel profile, tolerances, lock state, anomaly counters, plus global lock snapshot.
 - **Rain gauge**: Tipping-bucket with 0.2 mm/pulse default, debounce, health monitoring.
 - **Environmental sensor** (BME280): Temperature, humidity, pressure; 15/60 min polling intervals.
+- Manual soil moisture estimate (global + per-channel override) feeds effective rainfall modeling; no physical probes.
 - Environmental, rain, and watering history with multi-resolution aggregation.
 - Current task progress & completion notifications via BLE.
 
 Implementation notes:
-- Flow sensor (pulse counting, anomaly detection hooks): `src/flow_sensor.c`.
+- Flow sensor + hydraulic monitor: `src/flow_sensor.c`, `src/watering_monitor.c`.
 - Rain gauge, integration, and history: `src/rain_sensor.c`, `src/rain_integration.c`, `src/rain_history.c`.
 - Environmental sensing and aggregation: `src/env_sensors.c`, `src/environmental_data.c`, `src/environmental_history.c`.
 
 ### Data & Persistence (NVS + LittleFS)
 - Channel configuration, calibration, schedules, custom soil, compensation settings stored in NVS.
+- Soil moisture estimates (global + per-channel overrides) stored in NVS.
 - Plant database: 223 entries (`PLANT_FULL_SPECIES_COUNT`).
 - Soil database: 15 enhanced soils (`SOIL_ENHANCED_TYPES_COUNT`).
 - Irrigation methods database: 15 entries (`IRRIGATION_METHODS_COUNT`).
@@ -90,11 +93,12 @@ Implementation notes:
 - Sleep pacing and power mode switching: `src/power_management.c`, scheduler loop in `src/watering_tasks.c`.
 
 ### Bluetooth Low Energy
-- Custom irrigation service: **29 documented characteristics** (`docs/ble-api/`).
+- Primary irrigation service: **29 documented characteristics** (`docs/ble-api/`), including Bulk Sync Snapshot and Hydraulic Status.
 - Notification scheduler: 8-buffer pool, MTU-aware payloads (up to 250 bytes), adaptive throttling (critical 0 ms, high 50 ms, normal 200 ms, low 1 s).
 - Fragmentation for large payloads (TLV-framed, sequence-numbered).
 - History streaming via write-triggered fragment notifications (no client ACK).
 - Auto Calc Status characteristic: per-channel selection plus global mode (0xFF = earliest next irrigation across channels) and helper select (0xFE = first automatic channel).
+- Custom configuration service (custom UUID) for custom soil config, soil moisture config, config status/reset, and interval mode config.
 
 Implementation notes:
 - GATT service/characteristic table: `src/bt_irrigation_service.c`.
@@ -111,7 +115,8 @@ Implementation notes:
 - Timezone/DST conversion helpers: `src/timezone.c`.
 
 ### Error & Status Reporting
-- Status codes: OK, No-Flow, Unexpected-Flow, Fault, RTC Error, Low Power, Locked.
+- Status codes: OK, No-Flow, Unexpected-Flow, Fault, RTC Error, Low Power, Freeze Lockout, Locked.
+- Freeze lockout blocks watering when temp <= 2 C or environmental data is stale; clears at >= 4 C.
 - Manual override: explicit BLE direct commands can temporarily bypass locks for testing.
 - Enhanced system status: interval phase, compensation flags, sensor health, configuration completeness.
 - Error recovery strategies (retry, fallback, disable, reset, graceful degrade).
@@ -156,7 +161,7 @@ Implementation notes:
 - Background FAO thread (calculations are on-demand).
 - Generic memory/health monitoring subsystems.
 - Multi-task concurrent irrigation (single active task enforced).
-- Soil moisture probes (fields reserved for backward compatibility).
+- Soil moisture probes (no physical sensor integration; manual antecedent moisture estimate only).
 
 This concise sheet avoids speculative metrics (latency, throughput) until measured tests are added.
 
