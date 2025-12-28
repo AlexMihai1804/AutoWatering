@@ -21,6 +21,7 @@
 
 // Enhanced features includes
 #include "environmental_data.h"
+#include "env_sensors.h"
 #include "environmental_history.h"
 #include "bme280_driver.h"
 #include "sensor_manager.h"
@@ -551,6 +552,15 @@ int main(void) {
         } else {
             printk("Warning: I2C device not ready, skipping BME280 initialization\n");
         }
+    }
+
+    // Initialize env_sensors API (used by FAO56/watering scheduler); separate from environmental_data module.
+    printk("Initializing env_sensors subsystem...\n");
+    watering_error_t env_err = env_sensors_init();
+    if (env_err != WATERING_SUCCESS) {
+        printk("Warning: env_sensors initialization failed: %d\n", env_err);
+    } else {
+        printk("env_sensors initialized successfully\n");
     }
 
     // Initialize environmental data system

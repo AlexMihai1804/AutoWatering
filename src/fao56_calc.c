@@ -2390,9 +2390,33 @@ watering_error_t calc_cycle_and_soak(
     irrigation_calculation_t *result
 )
 {
-    if (!method || !soil || !result) {
+    if (!method || !result) {
         LOG_ERR("Invalid parameters for cycle and soak calculation");
         return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    /* Soil may be unavailable in some call paths (e.g., BLE/UI preview).
+     * In that case, default to a single continuous cycle and avoid error spam.
+     */
+    if (!soil) {
+        result->cycle_count = 1;
+        result->soak_interval_min = 0;
+
+        if (application_rate_mm_h <= 0.0f) {
+            application_rate_mm_h = (method->application_rate_min_mm_h +
+                                    method->application_rate_max_mm_h) / 2.0f;
+        }
+
+        if (result->gross_irrigation_mm > 0.0f && application_rate_mm_h > 0.0f) {
+            float duration_hours = result->gross_irrigation_mm / application_rate_mm_h;
+            result->cycle_duration_min = (uint16_t)(duration_hours * 60.0f);
+        } else {
+            result->cycle_duration_min = 0;
+        }
+
+        LOG_DBG("Cycle/soak skipped (no soil data) - single irrigation of %d minutes",
+                result->cycle_duration_min);
+        return WATERING_SUCCESS;
     }
 
     // Get soil infiltration rate
