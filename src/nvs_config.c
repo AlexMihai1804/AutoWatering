@@ -624,7 +624,8 @@ int nvs_validate_enhanced_config(const enhanced_channel_config_t *config)
     }
     
     /* Validate configuration parameters */
-    if (config->max_volume_limit_l < 0.1f || config->max_volume_limit_l > 1000.0f) {
+    if (config->max_volume_limit_l != 0.0f &&
+        (config->max_volume_limit_l < 0.1f || config->max_volume_limit_l > 1000.0f)) {
         return -EINVAL;  /* Volume limit out of reasonable range */
     }
     

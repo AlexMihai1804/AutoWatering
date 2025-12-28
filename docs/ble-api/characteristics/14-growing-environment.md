@@ -32,7 +32,7 @@ Growing Environment stores the per-channel agronomic configuration used by autom
 | 6 | `coverage.area_m2` | `float` | 4 | RW | Used when `use_area_based` = 1; must be > 0 |
 | 6 | `coverage.plant_count` | `uint16_t` | 2 (of 4) | RW | Used when `use_area_based` = 0; must be > 0 |
 | 10 | `auto_mode` | `uint8_t` | 1 | RW | `0`=manual (TIME/VOLUME), `1`=quality (FAO-56 100%), `2`=eco (FAO-56 70%) |
-| 11 | `max_volume_limit_l` | `float` | 4 | RW | Maximum irrigation volume; must be > 0 |
+| 11 | `max_volume_limit_l` | `float` | 4 | RW | Maximum irrigation volume; `>= 0` (0 disables limit) |
 | 15 | `enable_cycle_soak` | `uint8_t` | 1 | RW | Non-zero enables cycle-and-soak |
 | 16 | `planting_date_unix` | `uint32_t` | 4 | RW | Unix timestamp (UTC) |
 | 20 | `days_after_planting` | `uint16_t` | 2 | RW | Stored value; handler does not recompute |
@@ -96,7 +96,7 @@ Little-endian encoding is used for all multi-byte fields. The union at offset 6 
 | `soil_db_index` | `< SOIL_ENHANCED_TYPES_COUNT` or `0xFF` | `-EINVAL` |
 | `irrigation_method_index` | `< IRRIGATION_METHODS_COUNT` or `0xFF` | `-EINVAL` |
 | `latitude_deg` | `-90.0 <= value <= 90.0` | `-EINVAL` |
-| `max_volume_limit_l` | `> 0.0` | `-EINVAL` |
+| `max_volume_limit_l` | `>= 0.0` | `-EINVAL` |
 | `coverage.area_m2` | `> 0.0` when `use_area_based != 0` | `-EINVAL` |
 | `coverage.plant_count` | `> 0` when `use_area_based == 0` | `-EINVAL` |
 

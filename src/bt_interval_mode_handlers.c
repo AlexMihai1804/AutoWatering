@@ -205,7 +205,9 @@ int bt_interval_mode_set_config(const struct interval_mode_config_data *config_d
     channel->interval_config.watering_seconds = tmp_cfg.watering_seconds;
     channel->interval_config.pause_minutes = tmp_cfg.pause_minutes;
     channel->interval_config.pause_seconds = tmp_cfg.pause_seconds;
-    channel->interval_config.configured = tmp_cfg.configured;
+    /* In this firmware, 'configured' is the runtime enable gate for interval execution.
+     * Treat config_data->enabled as authoritative ON/OFF, while still validating/storing durations. */
+    channel->interval_config.configured = (config_data->enabled != 0) ? tmp_cfg.configured : false;
     channel->interval_config.phase_start_time = (uint64_t)tmp_cfg.phase_start_time;
 
     // Update configuration status
@@ -213,13 +215,12 @@ int bt_interval_mode_set_config(const struct interval_mode_config_data *config_d
     // Track last change time using existing reset timestamp field for reporting
     channel->config_status.last_reset_timestamp = k_uptime_get_32();
 
-    // Recalculate configuration score
-    channel->config_status.configuration_score = 
-        channel_calculate_config_score((const enhanced_watering_channel_t *)channel);
-
     LOG_INF("Set interval config for channel %u: %u:%02u water, %u:%02u pause, enabled=%u",
             config_data->channel_id, config_data->watering_minutes, config_data->watering_seconds,
             config_data->pause_minutes, config_data->pause_seconds, config_data->enabled);
+
+    /* Persist configuration (debounced) */
+    (void)watering_save_config_priority(true);
 
     return 0;
 }

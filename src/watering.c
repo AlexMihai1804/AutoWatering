@@ -720,33 +720,59 @@ bool watering_channel_auto_mode_valid(const watering_channel_t *channel)
     if (!channel) {
         return false;
     }
-    
-    // Check plant database index is set (UINT16_MAX means not configured)
-    if (channel->plant_db_index == UINT16_MAX) {
-        return false;
-    }
-    
-    // Check soil database index is set (UINT8_MAX means not configured)
-    if (channel->soil_db_index == UINT8_MAX) {
-        return false;
-    }
-    
-    // Check planting date is set (0 means not configured)
-    if (channel->planting_date_unix == 0) {
-        return false;
-    }
-    
+
+    bool missing_plant = (channel->plant_db_index == UINT16_MAX);
+    bool missing_soil = (channel->soil_db_index == UINT8_MAX);
+    bool missing_date = (channel->planting_date_unix == 0);
+    bool missing_coverage = false;
+
     // Check coverage is configured (need area or plant count for volume calculation)
     if (channel->use_area_based) {
-        if (channel->coverage.area_m2 <= 0) {
-            return false;
-        }
+        missing_coverage = (channel->coverage.area_m2 <= 0.0f);
     } else {
-        if (channel->coverage.plant_count == 0) {
-            return false;
-        }
+        missing_coverage = (channel->coverage.plant_count == 0);
     }
-    
+
+    if (missing_plant || missing_soil || missing_date || missing_coverage) {
+        uint8_t channel_id = 0xFF;
+        if (channel >= watering_channels &&
+            channel < (watering_channels + WATERING_CHANNELS_COUNT)) {
+            channel_id = (uint8_t)(channel - watering_channels);
+        }
+
+        uint32_t now_ms = k_uptime_get_32();
+        if (channel_id < WATERING_CHANNELS_COUNT) {
+            static uint32_t last_log_ms[WATERING_CHANNELS_COUNT];
+            if (now_ms - last_log_ms[channel_id] > 60000U) {
+                LOG_WRN("AUTO config missing ch=%u: plant=%u soil=%u date=%u coverage=%u area=%.2f count=%u use_area=%u",
+                        channel_id,
+                        channel->plant_db_index,
+                        channel->soil_db_index,
+                        channel->planting_date_unix,
+                        missing_coverage ? 1U : 0U,
+                        (double)channel->coverage.area_m2,
+                        channel->coverage.plant_count,
+                        channel->use_area_based ? 1U : 0U);
+                last_log_ms[channel_id] = now_ms;
+            }
+        } else {
+            static uint32_t last_unknown_log_ms;
+            if (now_ms - last_unknown_log_ms > 60000U) {
+                LOG_WRN("AUTO config missing for unknown channel: plant=%u soil=%u date=%u coverage=%u area=%.2f count=%u use_area=%u",
+                        channel->plant_db_index,
+                        channel->soil_db_index,
+                        channel->planting_date_unix,
+                        missing_coverage ? 1U : 0U,
+                        (double)channel->coverage.area_m2,
+                        channel->coverage.plant_count,
+                        channel->use_area_based ? 1U : 0U);
+                last_unknown_log_ms = now_ms;
+            }
+        }
+
+        return false;
+    }
+
     return true;
 }
 

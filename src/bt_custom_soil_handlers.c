@@ -9,6 +9,7 @@
 #include "soil_moisture_config.h"
 #include "configuration_status.h"
 #include "onboarding_state.h"
+#include "bt_interval_mode_handlers.h"
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
@@ -22,12 +23,17 @@ static struct config_reset_response_data reset_response;
 static struct config_status_response_data status_response;
 static struct enhanced_channel_config_data enhanced_config_response;
 static struct soil_moisture_config_data soil_moisture_response;
+static struct interval_mode_config_data interval_mode_response;
 
 /* Notification state tracking */
 static bool custom_soil_notifications_enabled = false;
 static bool config_reset_notifications_enabled = false;
 static bool config_status_notifications_enabled = false;
 static bool soil_moisture_notifications_enabled = false;
+static bool interval_mode_notifications_enabled = false;
+
+/* Interval mode channel selection for reads (mirrors Growing Environment pattern) */
+static uint8_t interval_mode_last_channel = 0;
 
 /* Custom UUIDs for the configuration service */
 #define BT_UUID_CUSTOM_CONFIG_SERVICE_VAL \
@@ -40,23 +46,36 @@ static bool soil_moisture_notifications_enabled = false;
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x9abc, 0xdef123456783)
 #define BT_UUID_CUSTOM_SOIL_MOISTURE_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x9abc, 0xdef123456784)
+#define BT_UUID_CUSTOM_INTERVAL_MODE_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x9abc, 0xdef123456785)
 
 static struct bt_uuid_128 custom_config_service_uuid = BT_UUID_INIT_128(BT_UUID_CUSTOM_CONFIG_SERVICE_VAL);
 static struct bt_uuid_128 custom_soil_config_uuid = BT_UUID_INIT_128(BT_UUID_CUSTOM_SOIL_CONFIG_VAL);
 static struct bt_uuid_128 custom_config_reset_uuid = BT_UUID_INIT_128(BT_UUID_CUSTOM_CONFIG_RESET_VAL);
 static struct bt_uuid_128 custom_config_status_uuid = BT_UUID_INIT_128(BT_UUID_CUSTOM_CONFIG_STATUS_VAL);
 static struct bt_uuid_128 custom_soil_moisture_uuid = BT_UUID_INIT_128(BT_UUID_CUSTOM_SOIL_MOISTURE_VAL);
+static struct bt_uuid_128 custom_interval_mode_uuid = BT_UUID_INIT_128(BT_UUID_CUSTOM_INTERVAL_MODE_VAL);
 
 /* Attribute indices inside the custom configuration service */
 #define CUSTOM_CFG_ATTR_SOIL_VALUE     2
 #define CUSTOM_CFG_ATTR_MOISTURE_VALUE 5
 #define CUSTOM_CFG_ATTR_RESET_VALUE    8
 #define CUSTOM_CFG_ATTR_STATUS_VALUE   11
+#define CUSTOM_CFG_ATTR_INTERVAL_VALUE 14
 
 static void custom_soil_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void custom_soil_moisture_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void custom_config_reset_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
 static void custom_config_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+static void custom_interval_mode_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value);
+
+static ssize_t bt_interval_mode_config_read(struct bt_conn *conn,
+                                           const struct bt_gatt_attr *attr,
+                                           void *buf, uint16_t len, uint16_t offset);
+static ssize_t bt_interval_mode_config_write(struct bt_conn *conn,
+                                            const struct bt_gatt_attr *attr,
+                                            const void *buf, uint16_t len,
+                                            uint16_t offset, uint8_t flags);
 
 ssize_t bt_soil_moisture_config_read(struct bt_conn *conn,
                                     const struct bt_gatt_attr *attr,
@@ -93,7 +112,15 @@ BT_GATT_SERVICE_DEFINE(custom_config_svc,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
                            bt_config_status_read, bt_config_status_write, &status_response),
-    BT_GATT_CCC(custom_config_status_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT)
+    BT_GATT_CCC(custom_config_status_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT),
+
+    /* Interval Mode (Cycle & Soak) configuration: ON/OFF durations */
+    BT_GATT_CHARACTERISTIC(&custom_interval_mode_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
+                           bt_interval_mode_config_read, bt_interval_mode_config_write,
+                           &interval_mode_response),
+    BT_GATT_CCC(custom_interval_mode_ccc_changed, BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT)
 );
 
 int bt_custom_soil_handlers_init(void)
@@ -106,9 +133,113 @@ int bt_custom_soil_handlers_init(void)
     memset(&status_response, 0, sizeof(status_response));
     memset(&enhanced_config_response, 0, sizeof(enhanced_config_response));
     memset(&soil_moisture_response, 0, sizeof(soil_moisture_response));
+    memset(&interval_mode_response, 0, sizeof(interval_mode_response));
+
+    interval_mode_notifications_enabled = false;
+    interval_mode_last_channel = 0;
     
     LOG_INF("Custom soil BLE handlers initialized");
     return 0;
+}
+
+static void custom_interval_mode_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    ARG_UNUSED(attr);
+    interval_mode_notifications_enabled = (value == BT_GATT_CCC_NOTIFY);
+    LOG_INF("Interval mode config notifications %s",
+            interval_mode_notifications_enabled ? "enabled" : "disabled");
+
+    if (interval_mode_notifications_enabled) {
+        (void)bt_gatt_notify(NULL,
+                             &custom_config_svc.attrs[CUSTOM_CFG_ATTR_INTERVAL_VALUE],
+                             &interval_mode_response,
+                             sizeof(interval_mode_response));
+    }
+}
+
+static ssize_t bt_interval_mode_config_read(struct bt_conn *conn,
+                                           const struct bt_gatt_attr *attr,
+                                           void *buf, uint16_t len, uint16_t offset)
+{
+    LOG_DBG("Interval mode config read request, offset=%d, len=%d", offset, len);
+
+    /* Refresh response from live channel on every read, based on last selected channel. */
+    uint8_t ch = interval_mode_last_channel;
+    if (ch >= WATERING_CHANNELS_COUNT) {
+        ch = 0;
+    }
+
+    (void)bt_interval_mode_get_config(ch, &interval_mode_response);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                             &interval_mode_response, sizeof(interval_mode_response));
+}
+
+static ssize_t bt_interval_mode_config_write(struct bt_conn *conn,
+                                            const struct bt_gatt_attr *attr,
+                                            const void *buf, uint16_t len,
+                                            uint16_t offset, uint8_t flags)
+{
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    ARG_UNUSED(flags);
+
+    if (offset != 0) {
+        LOG_ERR("Interval mode config write with non-zero offset not supported");
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+
+    if (!buf) {
+        LOG_ERR("Interval mode config write with NULL buffer");
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+
+    /* Channel select byte (len=1): sets cached channel context for subsequent reads. */
+    if (len == 1) {
+        uint8_t ch = *((const uint8_t *)buf);
+        if (ch >= WATERING_CHANNELS_COUNT) {
+            LOG_ERR("Interval mode channel select invalid: %u", ch);
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+
+        interval_mode_last_channel = ch;
+        (void)bt_interval_mode_get_config(ch, &interval_mode_response);
+        LOG_DBG("Interval mode channel context set to %u", ch);
+        return len;
+    }
+
+    if (len != sizeof(struct interval_mode_config_data)) {
+        LOG_ERR("Invalid interval mode config length: %d, expected %zu (or 1 for channel select)",
+                len, sizeof(struct interval_mode_config_data));
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+
+    const struct interval_mode_config_data *req = (const struct interval_mode_config_data *)buf;
+    if (req->channel_id >= WATERING_CHANNELS_COUNT) {
+        LOG_ERR("Invalid channel ID in interval mode config: %u", req->channel_id);
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+
+    int ret = bt_interval_mode_set_config(req);
+    if (ret != 0) {
+        LOG_ERR("Failed to set interval mode config (ch=%u): %d", req->channel_id, ret);
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+    }
+
+    interval_mode_last_channel = req->channel_id;
+    (void)bt_interval_mode_get_config(req->channel_id, &interval_mode_response);
+
+    if (interval_mode_notifications_enabled) {
+        (void)bt_gatt_notify(NULL,
+                             &custom_config_svc.attrs[CUSTOM_CFG_ATTR_INTERVAL_VALUE],
+                             &interval_mode_response,
+                             sizeof(interval_mode_response));
+    }
+
+    LOG_INF("Interval mode updated ch=%u enabled=%u water=%u:%02u pause=%u:%02u",
+            req->channel_id, req->enabled,
+            req->watering_minutes, req->watering_seconds,
+            req->pause_minutes, req->pause_seconds);
+    return len;
 }
 
 static void custom_soil_moisture_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
@@ -319,8 +450,15 @@ ssize_t bt_custom_soil_config_write(struct bt_conn *conn,
     /* Process the custom soil configuration */
     watering_error_t result = bt_process_custom_soil_from_ble(soil_config);
     
-    /* Prepare response */
-    memcpy(&custom_soil_response, soil_config, sizeof(custom_soil_response));
+    /* Prepare response - for read operations, bt_process_custom_soil_from_ble
+     * already fills custom_soil_response via bt_get_custom_soil_for_ble.
+     * For other operations, copy the request data to response. */
+    if (soil_config->operation != 0) {
+        /* Create/Update/Delete: copy request to response */
+        memcpy(&custom_soil_response, soil_config, sizeof(custom_soil_response));
+    }
+    /* For Read: custom_soil_response was already filled by bt_get_custom_soil_for_ble */
+    custom_soil_response.operation = soil_config->operation;
     custom_soil_response.status = (uint8_t)result;
     
     /* Send notification if enabled */

@@ -6716,6 +6716,9 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         printk("🔍 BLE: Growing env data bytes: [0]=%02x\n", data[0]);
     }
     
+    /* Check for fragmentation timeout */
+    check_fragmentation_timeout();
+
     /* Check for single-byte channel selection */
     if (len == 1) {
         uint8_t channel_id = data[0];
@@ -6788,7 +6791,7 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
     }
     
     /* Check for fragmentation protocol header */
-    if (len >= 4 && (data[1] == 2 || data[1] == 3)) { /* frag_type = 2 or 3 for growing environment */
+    if (!growing_env_frag.in_progress && len >= 4 && (data[1] == 2 || data[1] == 3)) { /* frag_type = 2 or 3 for growing environment */
         uint8_t channel_id = data[0];
         uint8_t frag_type = data[1];
         uint16_t total_size;
@@ -6912,8 +6915,8 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
                 return -EINVAL;
             }
 
-            /* Validate max volume limit (must be > 0) */
-            if (env_data->max_volume_limit_l <= 0.0f) {
+            /* Validate max volume limit (must be >= 0; 0 disables limit) */
+            if (env_data->max_volume_limit_l < 0.0f) {
                 printk("❌ Invalid max_volume_limit_l %.2f\n", (double)env_data->max_volume_limit_l);
                 growing_env_frag.in_progress = false;
                 return -EINVAL;
@@ -7093,7 +7096,7 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         printk("❌ Invalid latitude %.2f\n", (double)env_data->latitude_deg);
         return -EINVAL;
     }
-    if (env_data->max_volume_limit_l <= 0.0f) {
+    if (env_data->max_volume_limit_l < 0.0f) {
         printk("❌ Invalid max_volume_limit_l %.2f\n", (double)env_data->max_volume_limit_l);
         return -EINVAL;
     }
@@ -7399,6 +7402,8 @@ static uint32_t get_global_next_irrigation_time(uint8_t *out_channel_id) {
             /* Only consider channels with schedule enabled */
             if (channel->watering_event.auto_enabled) {
                 uint32_t ch_next = calc_channel_next_irrigation_time(channel);
+                LOG_INF("GLOBAL ch=%u: auto_en=1, sched_type=%u, next=%u", 
+                    ch, channel->watering_event.schedule_type, ch_next);
                 if (ch_next != 0 && ch_next < earliest_time) {
                     earliest_time = ch_next;
                     earliest_channel = ch;
@@ -7406,6 +7411,8 @@ static uint32_t get_global_next_irrigation_time(uint8_t *out_channel_id) {
             }
         }
     }
+    
+    LOG_INF("GLOBAL result: earliest_ch=%u, earliest_time=%u", earliest_channel, earliest_time);
     
     if (out_channel_id) {
         *out_channel_id = earliest_channel;
@@ -7418,9 +7425,15 @@ static uint32_t get_global_next_irrigation_time(uint8_t *out_channel_id) {
 /* --- FAO-56 Auto Calc dynamic computation helper --- */
 static void update_auto_calc_calculations(struct auto_calc_status_data *d, watering_channel_t *channel) {
     if (!d || !channel) return;
+    uint8_t channel_id = d->channel_id;
+    uint32_t now_ms = k_uptime_get_32();
+    bool missing_plant = (channel->plant_db_index >= PLANT_FULL_SPECIES_COUNT);
+    bool missing_method = (channel->irrigation_method_index >= IRRIGATION_METHODS_COUNT);
+    bool missing_balance = (channel->water_balance == NULL);
+    const plant_full_data_t *plant = NULL;
     /* Plant & phenological stage */
-    if (channel->plant_db_index < PLANT_FULL_SPECIES_COUNT) {
-    const plant_full_data_t *plant = &plant_full_database[channel->plant_db_index];
+    if (!missing_plant) {
+        plant = &plant_full_database[channel->plant_db_index];
         uint16_t dap = channel->days_after_planting;
         phenological_stage_t stage = calc_phenological_stage(plant, dap);
         d->phenological_stage = (uint8_t)stage;
@@ -7432,7 +7445,9 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
     /* Environmental snapshot → ET0 estimate (fallback HS) */
     environmental_data_t env_raw = {0};
     bme280_environmental_data_t env_bme280 = {0};
-    if (environmental_data_get_current(&env_bme280) == 0 && env_bme280.current.valid) {
+    int env_rc = environmental_data_get_current(&env_bme280);
+    bool env_valid = (env_rc == 0 && env_bme280.current.valid);
+    if (env_valid) {
         /* Map BME280 readings into the FAO-56 environmental structure */
         env_raw.air_temp_mean_c = env_bme280.current.temperature;
         env_raw.air_temp_min_c = env_bme280.current.temperature; /* best effort */
@@ -7463,6 +7478,23 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
             d->et0_mm_day = et0;
         }
     }
+    if ((missing_plant || missing_method || missing_balance || !env_valid) &&
+        channel_id < WATERING_CHANNELS_COUNT) {
+        static uint32_t last_missing_log_ms[WATERING_CHANNELS_COUNT];
+        if (now_ms - last_missing_log_ms[channel_id] > 60000U) {
+            LOG_WRN("Auto calc data missing ch=%u: env=%u(rc=%d valid=%u) balance=%u plant=%u(idx=%u) method=%u(idx=%u)",
+                    channel_id,
+                    env_valid ? 0U : 1U,
+                    env_rc,
+                    env_bme280.current.valid ? 1U : 0U,
+                    missing_balance ? 1U : 0U,
+                    missing_plant ? 1U : 0U,
+                    channel->plant_db_index,
+                    missing_method ? 1U : 0U,
+                    channel->irrigation_method_index);
+            last_missing_log_ms[channel_id] = now_ms;
+        }
+    }
     if (d->et0_mm_day < 0.01f) d->et0_mm_day = 3.0f; /* fallback */
     if (d->crop_coefficient < 0.01f) d->crop_coefficient = 1.0f;
     d->etc_mm_day = d->et0_mm_day * d->crop_coefficient;
@@ -7472,12 +7504,8 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
         water_balance_t *balance = (water_balance_t*)channel->water_balance;
         d->current_deficit_mm = balance->current_deficit_mm;
         const irrigation_method_data_t *method = NULL;
-    if (channel->irrigation_method_index < IRRIGATION_METHODS_COUNT) {
+        if (channel->irrigation_method_index < IRRIGATION_METHODS_COUNT) {
             method = &irrigation_methods_database[channel->irrigation_method_index];
-        }
-        const plant_full_data_t *plant = NULL;
-    if (channel->plant_db_index < PLANT_FULL_SPECIES_COUNT) {
-            plant = &plant_full_database[channel->plant_db_index];
         }
         irrigation_calculation_t calc = {0};
         bool eco = (channel->auto_mode == WATERING_AUTOMATIC_ECO);
@@ -7620,6 +7648,9 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
                 if (runs_today && mins_until > 0) {
                     /* Schedule is later today */
                     d->next_irrigation_time = now_utc + (uint32_t)(mins_until * 60);
+                    LOG_INF("SCHED ch=%u: TODAY sched=%02u:%02u, now=%02u:%02u, mins_until=%d, now_utc=%u, result=%u",
+                        d->channel_id, sched_hour, sched_minute, current_hour, current_minute,
+                        (int)mins_until, now_utc, d->next_irrigation_time);
                 } else {
                     /* Find the next day that matches the schedule */
                     uint16_t days_ahead = 1;
@@ -7642,6 +7673,9 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
                         secs_until = 60;
                     }
                     d->next_irrigation_time = now_utc + (uint32_t)secs_until;
+                    LOG_INF("SCHED ch=%u: FUTURE days=%u, sched=%02u:%02u, now=%02u:%02u, secs=%d, now_utc=%u, result=%u",
+                        d->channel_id, days_ahead, sched_hour, sched_minute, current_hour, current_minute,
+                        (int)secs_until, now_utc, d->next_irrigation_time);
                 }
             }
         }

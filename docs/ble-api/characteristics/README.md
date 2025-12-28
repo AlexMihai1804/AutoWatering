@@ -76,6 +76,7 @@ See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fr
 |---|----------------|-------------|------|------------|---------|
 | 30 | **[Custom Soil Configuration](27-custom-soil-configuration.md)** | 12345678-1234-5678-9abc-def123456781 | 76B | R/W/N | Create/update/delete per-channel custom soil |
 | 31 | **[Soil Moisture Configuration](30-soil-moisture-configuration.md)** | 12345678-1234-5678-9abc-def123456784 | 8B | R/W/N | Configure antecedent soil moisture (global + per-channel override) |
+| 32 | **[Interval Mode Configuration](32-interval-mode-configuration.md)** | 12345678-1234-5678-9abc-def123456785 | 16B | R/W/N | Configure Cycle & Soak ON/OFF durations per-channel |
 
 **Legend**: R=Read, W=Write, N=Notify
 
