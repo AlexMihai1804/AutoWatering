@@ -1,3 +1,4 @@
+#include <zephyr/autoconf.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <stdio.h> /* ensure snprintf prototype visible on all build paths */
@@ -13,6 +14,10 @@
 #include "rain_history.h"            /* Rain history monitoring */
 #include "timezone.h"
 /* stdio already included above for snprintf */
+
+#ifdef CONFIG_BT
+int bt_irrigation_hydraulic_status_notify(uint8_t channel_id);
+#endif
 
 /**
  * @file watering_monitor.c

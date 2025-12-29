@@ -1,3 +1,10 @@
+#include <zephyr/autoconf.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/printk.h>
+#include <zephyr/random/random.h>
+#include <string.h>
+#include <errno.h>
+
 #include "reset_controller.h"
 #include "onboarding_state.h"
 #include "nvs_config.h"
@@ -10,14 +17,18 @@
 #include "rain_config.h"
 #include "rain_compensation.h"
 
-#ifdef CONFIG_BT
+/* bt_irrigation_service.h is itself guarded by CONFIG_BT, but we must include
+ * Zephyr headers first so CONFIG_* macros are defined before this include. */
 #include "bt_irrigation_service.h"
+
+#ifdef CONFIG_BT
+/* Some translation units may include bt_irrigation_service.h before CONFIG_* is
+ * available, leaving prototypes unseen due to include guards. Keep local
+ * forward declarations to avoid implicit-declaration warnings. */
+int bt_irrigation_onboarding_status_notify(void);
+int bt_irrigation_hydraulic_status_notify(uint8_t channel_id);
+int bt_irrigation_channel_comp_config_notify(uint8_t channel_id);
 #endif
-#include <zephyr/kernel.h>
-#include <zephyr/sys/printk.h>
-#include <zephyr/random/random.h>
-#include <string.h>
-#include <errno.h>
 
 /**
  * @file reset_controller.c
@@ -440,24 +451,6 @@ const char* reset_controller_get_status_description(reset_status_t status) {
 /* Individual reset operation implementations */
 
 static int reset_controller_reset_channel_config(uint8_t channel_id) {
-    /* First, clear ALL channel flags before saving any config */
-    /* This ensures flags are reset even if nvs_save_* functions update them */
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_PLANT_TYPE_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_SOIL_TYPE_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_IRRIGATION_METHOD_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_COVERAGE_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_SUN_EXPOSURE_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_NAME_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_ENABLED, false);
-    
-    /* Also clear extended flags for this channel */
-    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_FAO56_READY, false);
-    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_RAIN_COMP_SET, false);
-    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_TEMP_COMP_SET, false);
-    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_CONFIG_COMPLETE, false);
-    onboarding_update_channel_extended_flag(channel_id, CHANNEL_EXT_FLAG_LATITUDE_SET, false);
-    
     /* Reset COMPLETE channel configuration (RAM + NVS) */
     struct water_balance_t *existing_balance = watering_channels[channel_id].water_balance;
     watering_channel_t default_channel;
@@ -484,17 +477,10 @@ static int reset_controller_reset_channel_config(uint8_t channel_id) {
 
     /* Also clear rain compensation statistics for this channel */
     (void)rain_compensation_reset_statistics(channel_id);
-    
-    /* Re-clear flags after save operations to ensure they stay cleared */
-    /* (in case nvs_save_* functions updated them based on saved values) */
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_PLANT_TYPE_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_SOIL_TYPE_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_IRRIGATION_METHOD_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_COVERAGE_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_SUN_EXPOSURE_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_NAME_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, false);
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_ENABLED, false);
+
+    /* Clear onboarding flags for this channel with a single NVS write.
+     * This avoids dozens of per-flag NVS saves during reset flows. */
+    (void)onboarding_clear_channel_onboarding(channel_id, true);
     
     printk("Channel %d configuration reset to defaults\n", channel_id);
 
@@ -540,16 +526,29 @@ static int reset_controller_reset_channel_schedule(uint8_t channel_id) {
 
 static int reset_controller_reset_all_channels(void) {
     int ret;
+
+    uint32_t start_ms = k_uptime_get_32();
+    uint32_t max_channel_ms = 0;
     
     /* Reset all channel configurations */
     for (int ch = 0; ch < 8; ch++) {
+        uint32_t ch_start = k_uptime_get_32();
         ret = reset_controller_reset_channel_config(ch);
         if (ret < 0) {
             return ret;
         }
+
+        uint32_t ch_ms = k_uptime_get_32() - ch_start;
+        if (ch_ms > max_channel_ms) {
+            max_channel_ms = ch_ms;
+        }
     }
     
     printk("All channel configurations reset to defaults\n");
+
+    printk("Reset all channels timing: total=%ums, max_channel=%ums\n",
+           (uint32_t)(k_uptime_get_32() - start_ms),
+           max_channel_ms);
     return 0;
 }
 
@@ -583,14 +582,15 @@ static int reset_controller_reset_system_config(void) {
         return ret;
     }
     
-    /* Clear system configuration flags */
-    onboarding_update_system_flag(SYSTEM_FLAG_RTC_CONFIGURED, false);
-    onboarding_update_system_flag(SYSTEM_FLAG_MASTER_VALVE_SET, false);
-    onboarding_update_system_flag(SYSTEM_FLAG_POWER_MODE_SET, false);
-    onboarding_update_system_flag(SYSTEM_FLAG_LOCATION_SET, false);
-    onboarding_update_system_flag(SYSTEM_FLAG_INITIAL_SETUP_DONE, false);
-    onboarding_update_system_flag(SYSTEM_FLAG_TIMEZONE_SET, false);
-    onboarding_update_system_flag(SYSTEM_FLAG_RAIN_SENSOR_SET, false);
+    /* Clear system configuration flags (single NVS write) */
+    (void)onboarding_clear_system_flags(
+        SYSTEM_FLAG_RTC_CONFIGURED |
+        SYSTEM_FLAG_MASTER_VALVE_SET |
+        SYSTEM_FLAG_POWER_MODE_SET |
+        SYSTEM_FLAG_LOCATION_SET |
+        SYSTEM_FLAG_INITIAL_SETUP_DONE |
+        SYSTEM_FLAG_TIMEZONE_SET |
+        SYSTEM_FLAG_RAIN_SENSOR_SET);
     
     printk("System configuration reset to defaults\n");
 
@@ -641,49 +641,59 @@ static int reset_controller_reset_history(void) {
 
 static int reset_controller_factory_reset(void) {
     int ret;
+
+    uint32_t t0 = k_uptime_get_32();
+    printk("Factory reset: start\n");
     
     /* Reset all channels */
+    uint32_t t_step = k_uptime_get_32();
     ret = reset_controller_reset_all_channels();
     if (ret < 0) {
         return ret;
     }
-    
-    /* Reset all schedules */
-    ret = reset_controller_reset_all_schedules();
-    if (ret < 0) {
-        return ret;
-    }
+    printk("Factory reset: channels done in %ums\n", (uint32_t)(k_uptime_get_32() - t_step));
     
     /* Reset system configuration */
+    t_step = k_uptime_get_32();
     ret = reset_controller_reset_system_config();
     if (ret < 0) {
         return ret;
     }
+    printk("Factory reset: system config done in %ums\n", (uint32_t)(k_uptime_get_32() - t_step));
     
     /* Reset calibration */
+    t_step = k_uptime_get_32();
     ret = reset_controller_reset_calibration();
     if (ret < 0) {
         return ret;
     }
+    printk("Factory reset: calibration done in %ums\n", (uint32_t)(k_uptime_get_32() - t_step));
     
     /* Reset history */
+    t_step = k_uptime_get_32();
     ret = reset_controller_reset_history();
     if (ret < 0) {
         return ret;
     }
+    printk("Factory reset: history done in %ums\n", (uint32_t)(k_uptime_get_32() - t_step));
     
     /* Clear all onboarding data */
+    t_step = k_uptime_get_32();
     ret = nvs_clear_onboarding_data();
     if (ret < 0) {
         return ret;
     }
+    printk("Factory reset: cleared onboarding NVS keys in %ums\n", (uint32_t)(k_uptime_get_32() - t_step));
     
     /* Reset onboarding state */
+    t_step = k_uptime_get_32();
     ret = onboarding_reset_state();
     if (ret < 0) {
         return ret;
     }
+    printk("Factory reset: onboarding state reset in %ums\n", (uint32_t)(k_uptime_get_32() - t_step));
     
     printk("Factory reset completed - all data cleared\n");
+    printk("Factory reset total time: %ums\n", (uint32_t)(k_uptime_get_32() - t0));
     return 0;
 }

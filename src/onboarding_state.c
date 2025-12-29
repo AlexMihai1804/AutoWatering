@@ -348,6 +348,47 @@ int onboarding_update_channel_flag(uint8_t channel_id, uint8_t flag, bool set) {
     return ret;
 }
 
+int onboarding_clear_channel_onboarding(uint8_t channel_id, bool clear_schedule)
+{
+    if (channel_id >= 8) {
+        return -EINVAL;
+    }
+
+    if (!state_initialized) {
+        return -ENODEV;
+    }
+
+    k_mutex_lock(&onboarding_mutex, K_FOREVER);
+
+    uint8_t shift = channel_id * 8;
+    uint64_t channel_mask = 0xFFULL << shift;
+
+    current_state.channel_config_flags &= ~channel_mask;
+    current_state.channel_extended_flags &= ~channel_mask;
+    if (clear_schedule) {
+        current_state.schedule_config_flags &= (uint8_t)~(1U << channel_id);
+    }
+
+    /* Keep derived completion flags consistent */
+    update_channel_complete_flag_locked(channel_id);
+
+    current_state.last_update_time = get_current_timestamp();
+    current_state.onboarding_completion_pct = onboarding_calculate_completion_for(&current_state);
+
+    int ret = nvs_save_onboarding_state(&current_state);
+    if (ret < 0) {
+        printk("Failed to save onboarding state: %d\n", ret);
+    }
+
+    k_mutex_unlock(&onboarding_mutex);
+
+    /* Schedule debounced BLE notification for onboarding progress update */
+    schedule_onboarding_notify();
+
+    printk("Channel %u onboarding flags cleared (bulk)\n", channel_id);
+    return ret;
+}
+
 int onboarding_update_system_flag(uint32_t flag, bool set) {
     if (!state_initialized) {
         return -ENODEV;
@@ -380,6 +421,35 @@ int onboarding_update_system_flag(uint32_t flag, bool set) {
     schedule_onboarding_notify();
     
     printk("System flag 0x%x %s\n", flag, set ? "set" : "cleared");
+    return ret;
+}
+
+int onboarding_clear_system_flags(uint32_t flags_to_clear)
+{
+    if (!state_initialized) {
+        return -ENODEV;
+    }
+
+    k_mutex_lock(&onboarding_mutex, K_FOREVER);
+
+    current_state.system_config_flags &= ~flags_to_clear;
+
+    /* Note: check_and_set_initial_setup_done() only sets flags. During resets,
+     * clearing is handled explicitly by callers (or full onboarding_reset_state()). */
+
+    current_state.last_update_time = get_current_timestamp();
+    current_state.onboarding_completion_pct = onboarding_calculate_completion_for(&current_state);
+
+    int ret = nvs_save_onboarding_state(&current_state);
+    if (ret < 0) {
+        printk("Failed to save onboarding state: %d\n", ret);
+    }
+
+    k_mutex_unlock(&onboarding_mutex);
+
+    schedule_onboarding_notify();
+
+    printk("System flags 0x%x cleared (bulk)\n", flags_to_clear);
     return ret;
 }
 

@@ -39,6 +39,20 @@ int onboarding_get_state(onboarding_state_t *state);
 int onboarding_update_channel_flag(uint8_t channel_id, uint8_t flag, bool set);
 
 /**
+ * @brief Clear all onboarding flags for a channel in a single NVS write
+ *
+ * Clears:
+ * - channel_config_flags (8 bits)
+ * - channel_extended_flags (8 bits)
+ * - optionally schedule_config_flags (1 bit)
+ *
+ * @param channel_id Channel ID (0-7)
+ * @param clear_schedule Also clear the schedule flag for this channel
+ * @return 0 on success, negative error code on failure
+ */
+int onboarding_clear_channel_onboarding(uint8_t channel_id, bool clear_schedule);
+
+/**
  * @brief Update a system configuration flag
  * 
  * @param flag Flag bit to update (SYSTEM_FLAG_*)
@@ -46,6 +60,14 @@ int onboarding_update_channel_flag(uint8_t channel_id, uint8_t flag, bool set);
  * @return 0 on success, negative error code on failure
  */
 int onboarding_update_system_flag(uint32_t flag, bool set);
+
+/**
+ * @brief Clear multiple system flags in a single NVS write
+ *
+ * @param flags_to_clear Bitmask of SYSTEM_FLAG_* to clear
+ * @return 0 on success, negative error code on failure
+ */
+int onboarding_clear_system_flags(uint32_t flags_to_clear);
 
 /**
  * @brief Calculate the overall onboarding completion percentage

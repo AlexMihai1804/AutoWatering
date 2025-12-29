@@ -1,6 +1,8 @@
 #ifndef BT_IRRIGATION_SERVICE_H_
 #define BT_IRRIGATION_SERVICE_H_
 
+#include <zephyr/autoconf.h>
+
 #ifdef CONFIG_BT
 
 #ifndef CONFIG_BT_MAX_PAIRED

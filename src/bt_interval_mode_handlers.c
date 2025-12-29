@@ -220,7 +220,7 @@ int bt_interval_mode_set_config(const struct interval_mode_config_data *config_d
             config_data->pause_minutes, config_data->pause_seconds, config_data->enabled);
 
     /* Persist configuration (debounced) */
-    (void)watering_save_config_priority(true);
+    (void)watering_save_channel_config_priority(config_data->channel_id, true);
 
     return 0;
 }

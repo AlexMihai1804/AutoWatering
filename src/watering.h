@@ -1032,6 +1032,18 @@ watering_error_t watering_save_config(void);
 watering_error_t watering_save_config_priority(bool is_priority);
 
 /**
+ * @brief Save a single channel configuration to persistent storage
+ *
+ * This is a fast-path intended for BLE writes where saving all channels would
+ * block too long and cause client timeouts.
+ *
+ * @param channel_id Channel index to save
+ * @param is_priority If true, uses priority handling where applicable
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t watering_save_channel_config_priority(uint8_t channel_id, bool is_priority);
+
+/**
  * @brief Load system configuration from persistent storage
  * 
  * @return WATERING_SUCCESS on success, error code on failure

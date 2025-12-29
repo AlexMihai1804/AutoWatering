@@ -244,6 +244,44 @@ watering_error_t watering_save_config_priority(bool is_priority) {
     return WATERING_SUCCESS;
 }
 
+watering_error_t watering_save_channel_config_priority(uint8_t channel_id, bool is_priority) {
+    ARG_UNUSED(is_priority);
+
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return WATERING_ERROR_INVALID_PARAM;
+    }
+
+    if (using_default_settings) {
+        printk("🔧 SAVE: First time saving configuration - transitioning from defaults\n");
+    } else {
+        printk("🔧 SAVE: Saving configuration (single channel)\n");
+    }
+
+    if (k_mutex_lock(&config_mutex, K_MSEC(500)) != 0) {
+        printk("Config save failed: mutex timeout\n");
+        return WATERING_ERROR_TIMEOUT;
+    }
+
+    last_save_timestamp = k_uptime_get_32();
+
+    int ret = nvs_save_complete_channel_config(channel_id, &watering_channels[channel_id]);
+    if (ret < 0) {
+        LOG_ERROR("Error saving enhanced channel configuration", ret);
+        k_mutex_unlock(&config_mutex);
+        return WATERING_ERROR_STORAGE;
+    }
+
+    printk("🔧 SUCCESS: Enhanced channel %u configuration saved\n", channel_id);
+
+    k_mutex_unlock(&config_mutex);
+
+    printk("🔧 SAVE: Marking using_default_settings = false (was %s)\n",
+           using_default_settings ? "true" : "false");
+    using_default_settings = false;
+
+    return WATERING_SUCCESS;
+}
+
 
 
 /**

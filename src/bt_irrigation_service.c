@@ -135,6 +135,8 @@ typedef struct {
     const struct bt_gatt_attr *attr; /* Target attribute */
     notify_priority_t priority;    /* Notification priority */
     uint32_t timestamp;            /* When queued */
+    uint8_t retry_count;           /* Number of retries attempted */
+    bool pending_retry;            /* Notification is scheduled for retry */
     bool in_use;                   /* Buffer allocation status */
 } ble_notification_buffer_t;
 
@@ -164,6 +166,64 @@ static struct {
 /* Global BLE connection reference */
 static struct bt_conn *default_conn;
 static bool connection_active = false;  /* Track connection state */
+
+/* ------------------------------------------------------------------ */
+/* Deferred notification retry (avoid -EBUSY bubbling to callers)      */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    struct k_work_delayable work;
+    uint8_t pool_idx;
+} notify_retry_state_t;
+
+static void notify_retry_work_handler(struct k_work *work);
+static notify_retry_state_t notify_retry_state[BLE_BUFFER_POOL_SIZE];
+
+static uint32_t notify_retry_backoff_ms(notify_priority_t priority, uint8_t retry_count)
+{
+    uint32_t base = (priority == NOTIFY_PRIORITY_CRITICAL) ? 5U :
+                    (priority == NOTIFY_PRIORITY_HIGH) ? 10U :
+                    (priority == NOTIFY_PRIORITY_NORMAL) ? 25U : 50U;
+    uint32_t delay = base;
+    for (uint8_t i = 0; i < retry_count; i++) {
+        delay = delay * 2U;
+        if (delay > 500U) {
+            delay = 500U;
+            break;
+        }
+    }
+    return delay;
+}
+
+static void notify_retry_reset(uint8_t idx)
+{
+    if (idx >= BLE_BUFFER_POOL_SIZE) {
+        return;
+    }
+
+    (void)k_work_cancel_delayable(&notify_retry_state[idx].work);
+    notification_pool[idx].pending_retry = false;
+    notification_pool[idx].retry_count = 0;
+}
+
+static int notify_retry_schedule(ble_notification_buffer_t *buffer, uint32_t delay_ms)
+{
+    if (!buffer) {
+        return -EINVAL;
+    }
+
+    int idx = (int)(buffer - notification_pool);
+    if (idx < 0 || idx >= BLE_BUFFER_POOL_SIZE) {
+        return -EINVAL;
+    }
+
+    buffer->pending_retry = true;
+    if (delay_ms == 0U) {
+        delay_ms = 1U;
+    }
+    k_work_reschedule(&notify_retry_state[idx].work, K_MSEC(delay_ms));
+    return 0;
+}
 
 /* Forward declarations */
 static bool should_throttle_channel_name_notification(uint8_t channel_id);
@@ -339,6 +399,9 @@ static void init_notification_pool(void);
 static void buffer_pool_maintenance(void);
 static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                           const void *data, uint16_t len);
+
+/* Defined later (after helper functions) to avoid implicit declarations. */
+static void notify_retry_work_handler(struct k_work *work);
 
 /* Safe notification function with connection validation - now uses advanced system */
 static int safe_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr,
@@ -538,6 +601,10 @@ static ble_notification_buffer_t* allocate_notification_buffer(void) {
 /* Release a buffer back to the pool */
 static void release_notification_buffer(ble_notification_buffer_t* buffer) {
     if (buffer) {
+        int idx = (int)(buffer - notification_pool);
+        if (idx >= 0 && idx < BLE_BUFFER_POOL_SIZE) {
+            notify_retry_reset((uint8_t)idx);
+        }
         k_mutex_lock(&notification_mutex, K_FOREVER);
         if (buffer->in_use) {
             buffer->in_use = false;
@@ -666,6 +733,86 @@ static bool should_throttle_notification(notify_priority_t priority) {
     return false;
 }
 
+static void notify_retry_work_handler(struct k_work *work)
+{
+    notify_retry_state_t *state = CONTAINER_OF(work, notify_retry_state_t, work.work);
+    if (!state || state->pool_idx >= BLE_BUFFER_POOL_SIZE) {
+        return;
+    }
+
+    uint8_t idx = state->pool_idx;
+
+    /* Grab a snapshot of buffer fields under mutex */
+    k_mutex_lock(&notification_mutex, K_FOREVER);
+    ble_notification_buffer_t *buffer = &notification_pool[idx];
+    if (!buffer->in_use || !buffer->pending_retry) {
+        k_mutex_unlock(&notification_mutex);
+        return;
+    }
+
+    const struct bt_gatt_attr *attr = buffer->attr;
+    uint16_t len = buffer->len;
+    notify_priority_t priority = buffer->priority;
+    k_mutex_unlock(&notification_mutex);
+
+    /* Connection may have dropped; if so, drop pending notification. */
+    if (!notification_system_enabled || !connection_active || !default_conn) {
+        release_notification_buffer(buffer);
+        return;
+    }
+
+    /* Respect MTU limits (should already be enforced at enqueue time). */
+    uint16_t mtu = bt_gatt_get_mtu(default_conn);
+    uint16_t max_payload = (mtu > 3) ? (mtu - 3) : 20;
+    if (len > max_payload) {
+        release_notification_buffer(buffer);
+        return;
+    }
+
+    /* If still throttled, reschedule rather than failing. */
+    if (should_throttle_notification(priority)) {
+        uint32_t now = k_uptime_get_32();
+        uint32_t elapsed = now - priority_state[priority].last_notification_time;
+        uint32_t remaining = 0U;
+        if (elapsed < priority_state[priority].throttle_interval) {
+            remaining = priority_state[priority].throttle_interval - elapsed;
+        }
+        (void)notify_retry_schedule(buffer, remaining + 1U);
+        return;
+    }
+
+    /* Attempt to send */
+    int err = bt_gatt_notify(default_conn, attr, buffer->data, buffer->len);
+    if (err == 0) {
+        uint32_t now = k_uptime_get_32();
+        priority_state[priority].last_notification_time = now;
+        update_adaptive_throttling(priority, true);
+        release_notification_buffer(buffer);
+        return;
+    }
+
+    if (err == -EBUSY || err == -ENOMEM) {
+        k_mutex_lock(&notification_mutex, K_FOREVER);
+        if (buffer->retry_count < MAX_NOTIFICATION_RETRIES) {
+            buffer->retry_count++;
+            uint32_t delay_ms = notify_retry_backoff_ms(priority, buffer->retry_count);
+            buffer->timestamp = k_uptime_get_32();
+            k_mutex_unlock(&notification_mutex);
+            update_adaptive_throttling(priority, false);
+            (void)notify_retry_schedule(buffer, delay_ms);
+            return;
+        }
+        k_mutex_unlock(&notification_mutex);
+        /* Retries exhausted: drop */
+        update_adaptive_throttling(priority, false);
+        release_notification_buffer(buffer);
+        return;
+    }
+
+    /* Non-transient error: drop to avoid stuck buffers. */
+    release_notification_buffer(buffer);
+}
+
 /* Advanced notification function with buffer pooling and adaptive throttling */
 static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                           const void *data, uint16_t len) {
@@ -692,18 +839,32 @@ static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr
     
     /* Get notification priority */
     notify_priority_t priority = get_notification_priority(attr);
-    
-    /* Check throttling */
+
+    /* If we're throttled and already have a pending retry for this attr, coalesce into it. */
     if (should_throttle_notification(priority)) {
-        update_adaptive_throttling(priority, false); /* Mark as throttled failure */
-        return -EBUSY;
+        k_mutex_lock(&notification_mutex, K_FOREVER);
+        for (int i = 0; i < BLE_BUFFER_POOL_SIZE; i++) {
+            if (notification_pool[i].in_use && notification_pool[i].pending_retry && notification_pool[i].attr == attr) {
+                /* Update payload and reschedule soon; keep a single pending notification per attr. */
+                memcpy(notification_pool[i].data, data, len);
+                notification_pool[i].len = len;
+                notification_pool[i].priority = priority;
+                notification_pool[i].timestamp = k_uptime_get_32();
+                notification_pool[i].retry_count = 0;
+                k_mutex_unlock(&notification_mutex);
+
+                (void)notify_retry_schedule(&notification_pool[i], 1U);
+                return 0;
+            }
+        }
+        k_mutex_unlock(&notification_mutex);
     }
-    
-    /* Try to allocate buffer */
+
+    /* Try to allocate buffer (or drop silently if pool is exhausted). */
     ble_notification_buffer_t* buffer = allocate_notification_buffer();
     if (!buffer) {
-        update_adaptive_throttling(priority, false);
-        return -ENOMEM;
+        /* Avoid surfacing -ENOMEM/-EBUSY to callers; best-effort delivery. */
+        return 0;
     }
     
     /* Copy data to buffer */
@@ -711,11 +872,40 @@ static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr
     buffer->len = len;
     buffer->attr = attr;
     buffer->priority = priority;
+
+    /* If throttled, defer instead of failing with -EBUSY (prevents noisy logs upstream). */
+    if (should_throttle_notification(priority)) {
+        uint32_t now = k_uptime_get_32();
+        uint32_t elapsed = now - priority_state[priority].last_notification_time;
+        uint32_t remaining = 0U;
+        if (elapsed < priority_state[priority].throttle_interval) {
+            remaining = priority_state[priority].throttle_interval - elapsed;
+        }
+
+        (void)notify_retry_schedule(buffer, remaining + 1U);
+        return 0;
+    }
     
     /* Send notification */
     int err = bt_gatt_notify(conn, attr, buffer->data, buffer->len);
     
-    /* Enhanced error handling and logging */
+    /* Handle transient busy/memory errors by deferring + retrying (no error returned to caller). */
+    if (err == -EBUSY || err == -ENOMEM) {
+        update_adaptive_throttling(priority, false);
+        buffer->retry_count++;
+
+        if (buffer->retry_count <= MAX_NOTIFICATION_RETRIES) {
+            uint32_t delay_ms = notify_retry_backoff_ms(priority, buffer->retry_count);
+            (void)notify_retry_schedule(buffer, delay_ms);
+            return 0;
+        }
+
+        /* Retries exhausted: drop and free buffer. */
+        release_notification_buffer(buffer);
+        return 0;
+    }
+
+    /* Enhanced error handling and logging (non-transient errors only) */
     if (err != 0) {
         LOG_ERR("🚨 BLE notification failed: err=%d, priority=%d, len=%u", err, priority, len);
         
@@ -724,17 +914,11 @@ static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr
             case -EINVAL:
                 LOG_ERR("  → Invalid parameters or client not subscribed to notifications");
                 break;
-            case -ENOMEM:
-                LOG_ERR("  → Out of memory for BLE buffers");
-                break;
             case -EMSGSIZE:
                 LOG_ERR("  → Payload (%u) > MTU (%u) - fragmentation required", len, bt_gatt_get_mtu(conn));
                 break;
             case -ENOTCONN:
                 LOG_ERR("  → No active BLE connection");
-                break;
-            case -EBUSY:
-                LOG_ERR("  → BLE stack busy, try again later");
                 break;
             default:
                 LOG_ERR("  → Unknown BLE error: %d", err);
@@ -747,10 +931,10 @@ static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr
     /* Update state */
     uint32_t now = k_uptime_get_32();
     priority_state[priority].last_notification_time = now;
-    
+
     bool success = (err == 0);
     update_adaptive_throttling(priority, success);
-    
+
     /* Log adaptive behavior occasionally */
     static uint32_t last_log_time = 0;
     if (now - last_log_time > 10000) { /* Every 10 seconds */
@@ -760,10 +944,10 @@ static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr
                 buffers_in_use, BLE_BUFFER_POOL_SIZE);
         last_log_time = now;
     }
-    
+
     /* Release buffer */
     release_notification_buffer(buffer);
-    
+
     return err;
 }
 
@@ -2197,6 +2381,58 @@ static void onboarding_status_ccc_changed(const struct bt_gatt_attr *attr, uint1
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Async reset execution (avoid long blocking in GATT write callback)   */
+/* ------------------------------------------------------------------ */
+
+#ifndef RESET_WORKQ_STACK_SIZE
+#define RESET_WORKQ_STACK_SIZE 4096
+#endif
+
+#ifndef RESET_WORKQ_PRIORITY
+#define RESET_WORKQ_PRIORITY K_PRIO_PREEMPT(8)
+#endif
+
+static struct k_work_q reset_work_q;
+K_THREAD_STACK_DEFINE(reset_work_q_stack, RESET_WORKQ_STACK_SIZE);
+
+static struct k_work reset_execute_work;
+static struct k_mutex reset_async_mutex;
+static bool reset_async_in_progress;
+static reset_request_t reset_async_request;
+
+static void reset_execute_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+
+    reset_request_t request;
+    k_mutex_lock(&reset_async_mutex, K_FOREVER);
+    request = reset_async_request;
+    k_mutex_unlock(&reset_async_mutex);
+
+    reset_status_t status = reset_controller_execute(&request);
+
+    k_mutex_lock(&reset_async_mutex, K_FOREVER);
+    reset_async_in_progress = false;
+    k_mutex_unlock(&reset_async_mutex);
+
+    if (status == RESET_STATUS_SUCCESS) {
+        LOG_INF("Async reset completed successfully: type=%u, channel=%u",
+                request.type, request.channel_id);
+    } else {
+        LOG_ERR("Async reset failed: type=%u, channel=%u, status=%u (%s)",
+                request.type, request.channel_id, status,
+                reset_controller_get_status_description(status));
+    }
+
+    /* Notify clients that reset state changed/completed */
+    bt_irrigation_reset_control_notify();
+
+    /* Also trigger onboarding status update */
+    if (notification_state.onboarding_status_notifications_enabled) {
+        bt_irrigation_onboarding_status_notify();
+    }
+}
+
 /* Helper function to convert internal reset_type_t to BLE spec values */
 static uint8_t reset_type_to_ble_spec(reset_type_t type) {
     switch (type) {
@@ -2317,51 +2553,59 @@ static ssize_t write_reset_control(struct bt_conn *conn, const struct bt_gatt_at
         
         return len;
     }
-    
-    /* Execute reset operation */
+
+    /* Validate confirmation code quickly (avoid blocking in write callback) */
+    if (!reset_controller_validate_confirmation_code(reset_data->confirmation_code,
+                                                     mapped_type,
+                                                     reset_data->channel_id)) {
+        return BT_GATT_ERR(BT_ATT_ERR_AUTHENTICATION);
+    }
+
+    /* Queue reset operation asynchronously to avoid client write timeouts */
     reset_request_t request = {
         .type = mapped_type,
         .channel_id = reset_data->channel_id,
-        .confirmation_code = reset_data->confirmation_code
+        .confirmation_code = reset_data->confirmation_code,
     };
-    
-    reset_status_t status = reset_controller_execute(&request);
-    
-    if (status == RESET_STATUS_SUCCESS) {
-        LOG_INF("Reset operation completed successfully: type=%u, channel=%u", 
+
+    k_mutex_lock(&reset_async_mutex, K_FOREVER);
+    if (reset_async_in_progress) {
+        /* Idempotent behavior: if the same request is already running, accept the write */
+        bool same = (reset_async_request.type == request.type) &&
+                    (reset_async_request.channel_id == request.channel_id) &&
+                    (reset_async_request.confirmation_code == request.confirmation_code);
+        k_mutex_unlock(&reset_async_mutex);
+
+        if (same) {
+            bt_irrigation_reset_control_notify();
+            return len;
+        }
+
+        LOG_WRN("Reset already in progress; rejecting new request type=%u channel=%u",
                 request.type, request.channel_id);
-        
-        /* Notify clients of successful reset */
-        bt_irrigation_reset_control_notify();
-        
-        /* Also trigger onboarding status update */
-        if (notification_state.onboarding_status_notifications_enabled) {
-            bt_irrigation_onboarding_status_notify();
-        }
-        
-        return len;
-    } else {
-        LOG_ERR("Reset operation failed: type=%u, channel=%u, status=%u (%s)", 
-                request.type, request.channel_id, status, 
-                reset_controller_get_status_description(status));
-        
-        /* Map reset status to BLE error codes */
-        switch (status) {
-            case RESET_STATUS_INVALID_TYPE:
-            case RESET_STATUS_INVALID_CHANNEL:
-                return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
-            case RESET_STATUS_INVALID_CODE:
-                /* Incorrect confirmation code */
-                return BT_GATT_ERR(BT_ATT_ERR_AUTHENTICATION);
-            case RESET_STATUS_CODE_EXPIRED:
-                /* Code expired - treat as authorization failure */
-                return BT_GATT_ERR(BT_ATT_ERR_AUTHORIZATION);
-            case RESET_STATUS_STORAGE_ERROR:
-                return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
-            default:
-                return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
-        }
+        return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
+
+    reset_async_request = request;
+    reset_async_in_progress = true;
+    k_mutex_unlock(&reset_async_mutex);
+
+    int qret = k_work_submit_to_queue(&reset_work_q, &reset_execute_work);
+    if (qret < 0) {
+        k_mutex_lock(&reset_async_mutex, K_FOREVER);
+        reset_async_in_progress = false;
+        k_mutex_unlock(&reset_async_mutex);
+
+        LOG_ERR("Failed to queue async reset: %d", qret);
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
+
+    LOG_INF("Queued async reset: type=%u, channel=%u", request.type, request.channel_id);
+
+    /* Notify clients that reset is accepted (still pending until completion) */
+    bt_irrigation_reset_control_notify();
+
+    return len;
 }
 
 /* Reset control CCC callback */
@@ -2864,8 +3108,12 @@ static ssize_t write_schedule(struct bt_conn *conn, const struct bt_gatt_attr *a
             channel->watering_event.watering.by_volume.volume_liters = value->value;
         }
 
-        /* Save configuration to persistent storage */
-        watering_save_config_priority(true);
+        /* Save configuration to persistent storage (single-channel fast path) */
+        watering_error_t save_err = watering_save_channel_config_priority(value->channel_id, true);
+        if (save_err != WATERING_SUCCESS) {
+            LOG_ERR("Schedule save failed for channel %u: %d", value->channel_id, save_err);
+            return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+        }
         
         /* Invalidate cache since configuration changed */
         invalidate_channel_cache();
@@ -5645,7 +5893,12 @@ static ssize_t write_channel_config(struct bt_conn *conn,
                 }
                 
                 /* Save configuration */
-                watering_save_config_priority(true);
+                watering_error_t save_err = watering_save_channel_config_priority(channel_frag.id, true);
+                if (save_err != WATERING_SUCCESS) {
+                    printk("❌ BLE: Failed to save config for channel %u: %d\n", channel_frag.id, save_err);
+                    channel_frag.in_progress = false;
+                    return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+                }
                 printk("🔧 BLE: Config saved for channel %u\n", channel_frag.id);
                 
                 /* Send notification with throttling for name changes */
@@ -5843,7 +6096,11 @@ process_full_config:
         /* Save configuration using priority save system (250ms throttle for BLE) */
         printk("🔧 BLE: About to save config for channel %u with name: \"%s\"\n", 
                value->channel_id, ch->name);
-        watering_save_config_priority(true);
+        watering_error_t save_err = watering_save_channel_config_priority(value->channel_id, true);
+        if (save_err != WATERING_SUCCESS) {
+            printk("❌ BLE: Config save failed for channel %u: %d\n", value->channel_id, save_err);
+            return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
+        }
         printk("🔧 BLE: Config save completed for channel %u\n", value->channel_id);
         
         /* FORCE notification - no matter what the client state is */
@@ -6428,7 +6685,6 @@ static ssize_t write_calibration(struct bt_conn *conn, const struct bt_gatt_attr
                 LOG_ERR("❌ Failed to apply calibration: %d", err);
                 return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
             }
-            watering_save_config_priority(true);
             /* After apply, return to idle with system value reflected */
             value->action = 0; /* STOP/idle */
             value->pulses = 0;
@@ -6446,7 +6702,6 @@ static ssize_t write_calibration(struct bt_conn *conn, const struct bt_gatt_attr
                 LOG_ERR("❌ Failed to reset calibration: %d", err);
                 return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
             }
-            watering_save_config_priority(true);
             calibration_active = false;
             value->action = 0;
             value->pulses = 0;
@@ -6947,46 +7202,49 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
                 return -EINVAL;
             }
             
+            /* Build updated config locally so we can fail the write if persistence fails */
+            watering_channel_t updated = *channel;
+
             /* Update channel data with enhanced database indices */
-            channel->plant_db_index = env_data->plant_db_index;
-            channel->soil_db_index = env_data->soil_db_index;
-            channel->irrigation_method_index = env_data->irrigation_method_index;
-            
+            updated.plant_db_index = env_data->plant_db_index;
+            updated.soil_db_index = env_data->soil_db_index;
+            updated.irrigation_method_index = env_data->irrigation_method_index;
+
             /* Coverage specification */
-            channel->use_area_based = (env_data->use_area_based != 0);
-            if (channel->use_area_based) {
-                channel->coverage.area_m2 = env_data->coverage.area_m2;
+            updated.use_area_based = (env_data->use_area_based != 0);
+            if (updated.use_area_based) {
+                updated.coverage.area_m2 = env_data->coverage.area_m2;
             } else {
-                channel->coverage.plant_count = env_data->coverage.plant_count;
+                updated.coverage.plant_count = env_data->coverage.plant_count;
             }
-            
+
             /* Automatic mode settings */
-            channel->auto_mode = (watering_mode_t)env_data->auto_mode;
-            channel->max_volume_limit_l = env_data->max_volume_limit_l;
-            channel->enable_cycle_soak = (env_data->enable_cycle_soak != 0);
-            
+            updated.auto_mode = (watering_mode_t)env_data->auto_mode;
+            updated.max_volume_limit_l = env_data->max_volume_limit_l;
+            updated.enable_cycle_soak = (env_data->enable_cycle_soak != 0);
+
             /* Plant lifecycle tracking */
-            channel->planting_date_unix = env_data->planting_date_unix;
-            channel->days_after_planting = env_data->days_after_planting;
-            
+            updated.planting_date_unix = env_data->planting_date_unix;
+            updated.days_after_planting = env_data->days_after_planting;
+
             /* Environmental overrides */
-            channel->latitude_deg = env_data->latitude_deg;
-            channel->sun_exposure_pct = env_data->sun_exposure_pct;
-            
+            updated.latitude_deg = env_data->latitude_deg;
+            updated.sun_exposure_pct = env_data->sun_exposure_pct;
+
             /* Custom plant fields */
             if (env_data->plant_type == PLANT_TYPE_OTHER) {
                 /* Copy custom name with null termination */
                 size_t name_len = strnlen(env_data->custom_name, sizeof(env_data->custom_name));
-                if (name_len >= sizeof(channel->custom_plant.custom_name)) {
-                    name_len = sizeof(channel->custom_plant.custom_name) - 1;
+                if (name_len >= sizeof(updated.custom_plant.custom_name)) {
+                    name_len = sizeof(updated.custom_plant.custom_name) - 1;
                 }
-                memcpy(channel->custom_plant.custom_name, env_data->custom_name, name_len);
-                channel->custom_plant.custom_name[name_len] = '\0';
-                
-                channel->custom_plant.water_need_factor = env_data->water_need_factor;
-                channel->custom_plant.irrigation_freq = env_data->irrigation_freq_days;
-                channel->custom_plant.prefer_area_based = (env_data->prefer_area_based != 0);
-                
+                memcpy(updated.custom_plant.custom_name, env_data->custom_name, name_len);
+                updated.custom_plant.custom_name[name_len] = '\0';
+
+                updated.custom_plant.water_need_factor = env_data->water_need_factor;
+                updated.custom_plant.irrigation_freq = env_data->irrigation_freq_days;
+                updated.custom_plant.prefer_area_based = (env_data->prefer_area_based != 0);
+
                 /* Update onboarding flag - water need factor has been set for custom plant */
                 onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
             }
@@ -7019,11 +7277,19 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
             /* Water factor exists via DB presets or custom config; mark as set */
             onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
             
+            /* Persist only this channel to reduce write time and avoid losing config on quick reset */
+            int save_ret = nvs_save_complete_channel_config(env_data->channel_id, &updated);
+            if (save_ret < 0) {
+                printk("\u274c NVS save failed for growing env ch=%u (err=%d)\n", env_data->channel_id, save_ret);
+                growing_env_frag.in_progress = false;
+                return -EIO;
+            }
+
+            /* Commit to in-memory state only after persistence succeeds */
+            *channel = updated;
+
             /* Update global buffer for notifications */
             memcpy(growing_env_value, env_data, sizeof(struct growing_env_data));
-            
-            /* Save with priority (250ms throttle) */
-            watering_save_config_priority(true);
             
             /* Debug: print latitude value */
             printk("Growing env latitude_deg=%d.%03d for channel %u\n", 
@@ -7121,46 +7387,49 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         return -EINVAL;
     }
     
+    /* Build updated config locally so we can fail the write if persistence fails */
+    watering_channel_t updated = *channel;
+
     /* Update channel data with enhanced database indices */
-    channel->plant_db_index = env_data->plant_db_index;
-    channel->soil_db_index = env_data->soil_db_index;
-    channel->irrigation_method_index = env_data->irrigation_method_index;
-    
+    updated.plant_db_index = env_data->plant_db_index;
+    updated.soil_db_index = env_data->soil_db_index;
+    updated.irrigation_method_index = env_data->irrigation_method_index;
+
     /* Coverage specification */
-    channel->use_area_based = (env_data->use_area_based != 0);
-    if (channel->use_area_based) {
-        channel->coverage.area_m2 = env_data->coverage.area_m2;
+    updated.use_area_based = (env_data->use_area_based != 0);
+    if (updated.use_area_based) {
+        updated.coverage.area_m2 = env_data->coverage.area_m2;
     } else {
-        channel->coverage.plant_count = env_data->coverage.plant_count;
+        updated.coverage.plant_count = env_data->coverage.plant_count;
     }
-    
+
     /* Automatic mode settings */
-    channel->auto_mode = (watering_mode_t)env_data->auto_mode;
-    channel->max_volume_limit_l = env_data->max_volume_limit_l;
-    channel->enable_cycle_soak = (env_data->enable_cycle_soak != 0);
-    
+    updated.auto_mode = (watering_mode_t)env_data->auto_mode;
+    updated.max_volume_limit_l = env_data->max_volume_limit_l;
+    updated.enable_cycle_soak = (env_data->enable_cycle_soak != 0);
+
     /* Plant lifecycle tracking */
-    channel->planting_date_unix = env_data->planting_date_unix;
-    channel->days_after_planting = env_data->days_after_planting;
-    
+    updated.planting_date_unix = env_data->planting_date_unix;
+    updated.days_after_planting = env_data->days_after_planting;
+
     /* Environmental overrides */
-    channel->latitude_deg = env_data->latitude_deg;
-    channel->sun_exposure_pct = env_data->sun_exposure_pct;
-    
+    updated.latitude_deg = env_data->latitude_deg;
+    updated.sun_exposure_pct = env_data->sun_exposure_pct;
+
     /* Custom plant fields */
     if (env_data->plant_type == PLANT_TYPE_OTHER) {
         /* Copy custom name with null termination */
         size_t name_len = strnlen(env_data->custom_name, sizeof(env_data->custom_name));
-        if (name_len >= sizeof(channel->custom_plant.custom_name)) {
-            name_len = sizeof(channel->custom_plant.custom_name) - 1;
+        if (name_len >= sizeof(updated.custom_plant.custom_name)) {
+            name_len = sizeof(updated.custom_plant.custom_name) - 1;
         }
-        memcpy(channel->custom_plant.custom_name, env_data->custom_name, name_len);
-        channel->custom_plant.custom_name[name_len] = '\0';
-        
-        channel->custom_plant.water_need_factor = env_data->water_need_factor;
-        channel->custom_plant.irrigation_freq = env_data->irrigation_freq_days;
-        channel->custom_plant.prefer_area_based = (env_data->prefer_area_based != 0);
-        
+        memcpy(updated.custom_plant.custom_name, env_data->custom_name, name_len);
+        updated.custom_plant.custom_name[name_len] = '\0';
+
+        updated.custom_plant.water_need_factor = env_data->water_need_factor;
+        updated.custom_plant.irrigation_freq = env_data->irrigation_freq_days;
+        updated.custom_plant.prefer_area_based = (env_data->prefer_area_based != 0);
+
         /* Update onboarding flag - water need factor has been set for custom plant */
         onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
     }
@@ -7184,11 +7453,18 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
     /* Water factor exists via DB presets or custom config; mark as set */
     onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
     
+    /* Persist only this channel to reduce write time and avoid losing config on quick reset */
+    int save_ret = nvs_save_complete_channel_config(env_data->channel_id, &updated);
+    if (save_ret < 0) {
+        printk("\u274c NVS save failed for growing env ch=%u (err=%d)\n", env_data->channel_id, save_ret);
+        return -EIO;
+    }
+
+    /* Commit to in-memory state only after persistence succeeds */
+    *channel = updated;
+
     /* Update global buffer for notifications */
     memcpy(growing_env_value, env_data, sizeof(struct growing_env_data));
-    
-    /* Save with priority (250ms throttle) */
-    watering_save_config_priority(true);
     
     /* Update onboarding flags if location (latitude) is set to a valid value */
     if (env_data->latitude_deg != 0.0f) {
@@ -7478,7 +7754,14 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
             d->et0_mm_day = et0;
         }
     }
+    bool auto_expected =
+        (channel->watering_event.auto_enabled) ||
+        (channel->watering_event.schedule_type == SCHEDULE_AUTO) ||
+        (channel->auto_mode == WATERING_AUTOMATIC_QUALITY) ||
+        (channel->auto_mode == WATERING_AUTOMATIC_ECO);
+
     if ((missing_plant || missing_method || missing_balance || !env_valid) &&
+        auto_expected &&
         channel_id < WATERING_CHANNELS_COUNT) {
         static uint32_t last_missing_log_ms[WATERING_CHANNELS_COUNT];
         if (now_ms - last_missing_log_ms[channel_id] > 60000U) {
@@ -8333,6 +8616,15 @@ int bt_irrigation_service_init(void) {
     
     /* Initialize advanced notification system first */
     init_notification_pool();
+
+    /* Initialize async reset worker */
+    k_mutex_init(&reset_async_mutex);
+    k_work_init(&reset_execute_work, reset_execute_work_handler);
+    k_work_queue_start(&reset_work_q,
+                       reset_work_q_stack,
+                       K_THREAD_STACK_SIZEOF(reset_work_q_stack),
+                       RESET_WORKQ_PRIORITY,
+                       NULL);
     
     /* Initialize Bluetooth stack */
     err = bt_enable(NULL);
@@ -9971,6 +10263,13 @@ int bt_irrigation_diagnostics_update(uint16_t error_count, uint8_t last_error, u
 /* Advanced Notification System Implementation */
 static void init_notification_pool(void) {
     memset(&notification_pool, 0, sizeof(notification_pool));
+
+    /* Init retry workers (one per pool entry) */
+    for (uint8_t i = 0; i < BLE_BUFFER_POOL_SIZE; i++) {
+        notify_retry_state[i].pool_idx = i;
+        k_work_init_delayable(&notify_retry_state[i].work, notify_retry_work_handler);
+        (void)k_work_cancel_delayable(&notify_retry_state[i].work);
+    }
     
     /* Reset priority throttling states to defaults */
     priority_state[0].last_notification_time = 0;
@@ -10012,6 +10311,12 @@ static void buffer_pool_maintenance(void) {
         if (notification_pool[i].in_use) {
             // Check if buffer has been in use too long (over 60 seconds)
             if ((k_uptime_get_32() - notification_pool[i].timestamp) > 60000) {
+                /* Cancel any pending retry work before freeing buffer */
+                if (notification_pool[i].pending_retry) {
+                    (void)k_work_cancel_delayable(&notify_retry_state[i].work);
+                    notification_pool[i].pending_retry = false;
+                    notification_pool[i].retry_count = 0;
+                }
                 notification_pool[i].in_use = false;
                 if (buffers_in_use > 0) {
                     buffers_in_use--;
@@ -11271,10 +11576,11 @@ static ssize_t write_channel_comp_config(struct bt_conn *conn, const struct bt_g
     channel->temp_compensation.max_factor = config->temp_max_factor;
     
     /* Persist configuration */
-    watering_error_t result = watering_save_config_priority(true);
+    watering_error_t result = watering_save_channel_config_priority(config->channel_id, true);
     if (result != WATERING_SUCCESS) {
-        LOG_WRN("Failed to persist compensation config for channel %u: %d", 
+        LOG_WRN("Failed to persist compensation config for channel %u: %d",
                 config->channel_id, result);
+        return BT_GATT_ERR(BT_ATT_ERR_INSUFFICIENT_RESOURCES);
     }
     
     /* Update onboarding flags */

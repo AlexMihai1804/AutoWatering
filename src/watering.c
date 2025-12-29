@@ -1,3 +1,4 @@
+#include <zephyr/autoconf.h>
 #include "watering.h"
 #include <zephyr/device.h>
 #include <zephyr/kernel.h>
@@ -8,7 +9,9 @@
 #include "flow_sensor.h"
 #include "watering_internal.h"
 #include "watering_history.h"          /* Add history integration */
+#ifdef CONFIG_BT
 #include "bt_irrigation_service.h"     /* + BLE status update */
+#endif
 #include "plant_db.h"                  /* Add plant database */
 #include "fao56_calc.h"                /* Add FAO-56 calculations */
 #include "rain_sensor.h"               /* Rain sensor integration */
@@ -17,6 +20,10 @@
 #include "onboarding_state.h"          /* Onboarding state management */
 #include "timezone.h"                  /* For UTC timestamping */
 #include "nvs_config.h"                /* For lock persistence */
+
+#ifdef CONFIG_BT
+int bt_irrigation_hydraulic_status_notify(uint8_t channel_id);
+#endif
 
 LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -150,7 +157,9 @@ void watering_hydraulic_set_manual_override(uint8_t channel_id, uint32_t duratio
 {
     manual_override_channel = channel_id;
     manual_override_until_ms = k_uptime_get_32() + duration_ms;
+#ifdef CONFIG_BT
     bt_irrigation_hydraulic_status_notify(channel_id);
+#endif
 }
 
 void watering_hydraulic_clear_manual_override(void)
@@ -158,11 +167,13 @@ void watering_hydraulic_clear_manual_override(void)
     uint8_t previous_channel = manual_override_channel;
     manual_override_channel = 0xFF;
     manual_override_until_ms = 0;
+#ifdef CONFIG_BT
     if (previous_channel < WATERING_CHANNELS_COUNT) {
         bt_irrigation_hydraulic_status_notify(previous_channel);
     } else {
         bt_irrigation_hydraulic_status_notify(0xFF);
     }
+#endif
 }
 
 void watering_hydraulic_set_global_lock(hydraulic_lock_level_t level, hydraulic_lock_reason_t reason)
@@ -181,11 +192,15 @@ void watering_hydraulic_set_global_lock(hydraulic_lock_level_t level, hydraulic_
 
     if (system_status != WATERING_STATUS_LOCKED) {
         system_status = WATERING_STATUS_LOCKED;
+#ifdef CONFIG_BT
         bt_irrigation_system_status_update(system_status);
+#endif
     }
 
     nvs_save_hydraulic_global_lock(&global_hydraulic_lock);
+#ifdef CONFIG_BT
     bt_irrigation_hydraulic_status_notify(0xFF);
+#endif
 }
 
 void watering_hydraulic_clear_global_lock(void)
