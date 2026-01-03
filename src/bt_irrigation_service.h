@@ -82,6 +82,16 @@
 int bt_irrigation_service_init(void);
 
 /**
+ * @brief Resume factory wipe if one was interrupted by reboot
+ * 
+ * Should be called after BLE service init. If a wipe was in progress,
+ * this will re-queue the wipe work to continue from where it left off.
+ * 
+ * @return 0 if no resume needed, 1 if resume queued, negative on error
+ */
+int bt_irrigation_resume_wipe_if_needed(void);
+
+/**
  * @brief Update valve status via Bluetooth
  * 
  * Sends a direct notification about valve state changes. Uses the simplified

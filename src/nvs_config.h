@@ -14,6 +14,7 @@
 #include <zephyr/fs/nvs.h>
 #include "rain_config.h"
 #include "watering_enhanced.h"
+#include "reset_controller.h"             /* For wipe_progress_t */
 
 /* Forward declarations for enhanced growing environment types */
 /* water_balance_t is defined in fao56_calc.h */
@@ -388,5 +389,10 @@ int nvs_clear_onboarding_data(void);
 
 int nvs_save_hydraulic_global_lock(const hydraulic_lock_state_t *lock_state);
 int nvs_load_hydraulic_global_lock(hydraulic_lock_state_t *lock_state);
+
+/* ——— Wipe State Persistence Functions ———————————————————————————— */
+int nvs_save_wipe_progress(const wipe_progress_t *progress);
+int nvs_load_wipe_progress(wipe_progress_t *progress);
+int nvs_clear_wipe_progress(void);
 
 #endif /* NVS_CONFIG_H */

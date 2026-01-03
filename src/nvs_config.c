@@ -84,6 +84,7 @@ enum {
     ID_CONFIG_STATUS_BASE = 930, /* Configuration status +ch (0-7) */
     ID_CONFIG_RESET_LOG_BASE = 940, /* Configuration reset logs +ch (0-7) */
     ID_HYDRAULIC_GLOBAL_LOCK = 950, /* Global hydraulic lock state */
+    ID_WIPE_PROGRESS = 960,      /* Persistent wipe state machine progress */
 };
 
 int nvs_save_soil_moisture_global_config(const soil_moisture_global_config_t *cfg)
@@ -1463,4 +1464,35 @@ int nvs_clear_onboarding_data(void)
     }
     
     return failed_operations == 0 ? 0 : -1;
+}
+
+/* ——— Wipe State Persistence ——————————————————————————————— */
+
+int nvs_save_wipe_progress(const wipe_progress_t *progress)
+{
+    if (!progress) {
+        return -EINVAL;
+    }
+    return nvs_config_write(ID_WIPE_PROGRESS, progress, sizeof(*progress));
+}
+
+int nvs_load_wipe_progress(wipe_progress_t *progress)
+{
+    if (!progress) {
+        return -EINVAL;
+    }
+    int ret = nvs_config_read(ID_WIPE_PROGRESS, progress, sizeof(*progress));
+    if (ret == -ENOENT || ret < 0) {
+        /* No state saved - return IDLE */
+        memset(progress, 0, sizeof(*progress));
+        progress->state = WIPE_STATE_IDLE;
+        progress->current_step = WIPE_STEP_PREPARE;
+        ret = 0;
+    }
+    return ret;
+}
+
+int nvs_clear_wipe_progress(void)
+{
+    return nvs_config_delete(ID_WIPE_PROGRESS);
 }

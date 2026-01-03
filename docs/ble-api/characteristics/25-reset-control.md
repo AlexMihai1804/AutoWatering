@@ -24,11 +24,38 @@ Two-stage safeguard for destructive actions. Clients request a confirmation code
 | 0 | `reset_type` | `uint8_t` | External opcode (table below) |
 | 1 | `channel_id` | `uint8_t` | Required for channel-scoped resets, `0xFF` when idle |
 | 2 | `confirmation_code` | `uint32_t` | Little-endian; `0` requests generation |
-| 6 | `status` | `uint8_t` | `0x01` pending, `0xFF` idle |
+| 6 | `status` | `uint8_t` | Wipe state (see Status Semantics) |
 | 7 | `timestamp` | `uint32_t` | Generation time (s since boot epoch) when pending |
-| 11 | `reserved[5]` | `uint8_t[5]` | Must be 0 |
+| 11 | `reserved[0]` | `uint8_t` | Progress percentage (0-100) during factory wipe |
+| 12 | `reserved[1]` | `uint8_t` | Current wipe step (see Wipe Steps table) |
+| 13 | `reserved[2]` | `uint8_t` | Retry attempt count for current step |
+| 14 | `reserved[3..4]` | `uint16_t` | Last error code (LE), 0 = no error |
 
 Reads and notifications mirror this structure byte-for-byte.
+
+## Status Semantics (`status` byte)
+| Value | Name | Description |
+|-------|------|-------------|
+| `0x00` | IDLE | No operation pending or in progress |
+| `0x01` | AWAIT_CONFIRM | Confirmation code is active, waiting for execution |
+| `0x02` | IN_PROGRESS | Factory wipe executing step-by-step |
+| `0x03` | DONE_OK | Factory wipe completed successfully |
+| `0x04` | DONE_ERROR | Factory wipe failed (check `reserved[3..4]` for error) |
+
+Note: Status values `0x02-0x04` only apply to factory reset (`0xFF`). Other reset types complete synchronously.
+
+## Wipe Steps (`reserved[1]` during IN_PROGRESS)
+| Value | Step | Description |
+|-------|------|-------------|
+| 0 | PREPARE | Initialize wipe, persist state |
+| 1 | RESET_CHANNELS | Reset all 8 channel configurations |
+| 2 | RESET_SYSTEM | Reset system configuration |
+| 3 | RESET_CALIBRATION | Reset calibration data |
+| 4 | CLEAR_RAIN_HIST | Clear rain history (flash erase) |
+| 5 | CLEAR_ENV_HIST | Clear environmental history |
+| 6 | CLEAR_ONBOARDING | Clear onboarding NVS flags |
+| 7 | VERIFY | Verify all data erased |
+| 8 | DONE | Cleanup and finalize |
 
 ## Supported Reset Opcodes
 | Code | Description | Channel Required | Firmware Action |
@@ -49,7 +76,28 @@ Opcodes `0x03`, `0x04`, `0x13`, `0x15`, and any other values return `BT_ATT_ERR_
 
 There are no in-progress or failure states in notifications; failures surface as write errors.
 
-## Two-Step Workflow
+## Factory Wipe Progress Tracking
+
+Factory reset (`0xFF`) uses a persistent state machine that survives reboots:
+
+1. **Initiation** - Client writes with valid confirmation code, firmware responds immediately with `status=0x02` (IN_PROGRESS).
+2. **Step Execution** - Firmware executes steps sequentially, persisting progress to NVS after each step.
+3. **Progress Notifications** - After each step, firmware sends a notification with updated `reserved[]` fields.
+4. **Completion** - When all steps complete, `status` transitions to `0x03` (DONE_OK) or `0x04` (DONE_ERROR).
+5. **Resume on Reboot** - If device reboots during wipe, it resumes from the last completed step.
+6. **Acknowledgment** - After app observes DONE_OK/DONE_ERROR, it should write any request to clear the state (optional).
+
+### Timing Expectations
+| Step | Typical Duration |
+|------|------------------|
+| RESET_CHANNELS | ~4s (8 channels, NVS writes) |
+| CLEAR_RAIN_HIST | ~1s (flash erase) |
+| CLEAR_ONBOARDING | ~1.5s (NVS deletes) |
+| **Total** | ~6-8s |
+
+Progress notifications allow the app to show a progress bar without timeout concerns.
+
+## Two-Step Workflow (Non-Factory Resets)
 1. **Request** - Write struct with desired `reset_type`, `channel_id`, and `confirmation_code = 0`.
 2. **Notify** - Firmware generates a random non-zero code, persists it with a 5-minute expiry, and notifies subscribers (Normal priority, ~=200 ms queue spacing).
 3. **Execute** - Client writes the same struct with the returned `confirmation_code`.
@@ -110,5 +158,8 @@ async function performReset(characteristic, type, channel = 0) {
 ## Firmware Reference Points
 - `write_reset_control()` - opcode validation, error mapping, notification triggers.
 - `reset_controller_generate_confirmation_code()` - random code generation and persistence.
-- `reset_controller_execute()` - per-type reset handlers and confirmation clearing.
+- `reset_controller_start_factory_wipe()` - initiates persistent wipe state machine.
+- `reset_controller_execute_wipe_step()` - executes single step with retry logic.
+- `reset_controller_resume_wipe()` - called at boot to resume interrupted wipes.
 - `bt_irrigation_reset_control_notify()` - Normal-priority `safe_notify` emitter without fragmentation.
+- `wipe_step_work_handler()` - async work queue handler for step execution.

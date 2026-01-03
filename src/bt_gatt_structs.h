@@ -362,14 +362,27 @@ struct onboarding_status_data {
     uint64_t channel_extended_flags;    /* Channel extended flags (FAO56, rain/temp comp) */
 } __packed;
 
-/* Reset control structure */
+/* Reset control structure
+ * Status byte (wipe_state_t):
+ *   0x00 = IDLE (no operation pending)
+ *   0x01 = AWAIT_CONFIRM (confirmation code valid, waiting for write)
+ *   0x02 = IN_PROGRESS (factory wipe executing step-by-step)
+ *   0x03 = DONE_OK (wipe completed successfully)
+ *   0x04 = DONE_ERROR (wipe failed, check last_error)
+ *
+ * Reserved bytes carry wipe progress when status >= 0x02:
+ *   reserved[0] = progress_pct (0-100)
+ *   reserved[1] = current_step (wipe_step_t)
+ *   reserved[2] = attempt_count (retries for current step)
+ *   reserved[3..4] = last_error (uint16_t LE, 0 = no error)
+ */
 struct reset_control_data {
     uint8_t reset_type;                 /* Type of reset to perform (reset_type_t) */
     uint8_t channel_id;                 /* Channel ID for channel-specific resets */
     uint32_t confirmation_code;         /* Required confirmation code */
-    uint8_t status;                     /* Reset operation status (reset_status_t) */
+    uint8_t status;                     /* Wipe state (wipe_state_t) */
     uint32_t timestamp;                 /* When reset was performed */
-    uint8_t reserved[5];                /* Reserved for future use (padding to 16 bytes total) */
+    uint8_t reserved[5];                /* [0]=progress%, [1]=step, [2]=retries, [3..4]=error LE */
 } __packed;
 
 /* Rain Integration Status structure for BLE (packed, snapshot + notify) */

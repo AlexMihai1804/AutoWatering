@@ -674,6 +674,12 @@ int main(void) {
     int ble_err = bt_irrigation_service_init();
     if (ble_err != 0) {
         printk("Error initializing BLE service: %d\n", ble_err);
+    } else {
+        /* Check for interrupted factory wipe and resume if needed */
+        int resume_ret = bt_irrigation_resume_wipe_if_needed();
+        if (resume_ret == 1) {
+            printk("Resuming interrupted factory wipe...\n");
+        }
     }
 #endif
     

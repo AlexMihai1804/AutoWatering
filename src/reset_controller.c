@@ -52,8 +52,288 @@ static int reset_controller_factory_reset(void);
 static reset_confirmation_t current_confirmation;
 static bool controller_initialized = false;
 
+/* Persistent wipe state (runtime mirror of NVS) */
+static wipe_progress_t wipe_progress;
+
 /* Mutex for thread safety */
 K_MUTEX_DEFINE(reset_controller_mutex);
+
+/* ========================================================================= */
+/*                      PERSISTENT WIPE STATE MACHINE                        */
+/* ========================================================================= */
+
+/**
+ * @brief Get percentage progress for a given step
+ */
+uint8_t wipe_step_to_progress_pct(wipe_step_t step)
+{
+    /* Steps 0-8, map to 0-100% */
+    if (step >= WIPE_STEP_COUNT) {
+        return 100;
+    }
+    return (uint8_t)((step * 100) / (WIPE_STEP_COUNT - 1));
+}
+
+/**
+ * @brief Persist current wipe state to NVS
+ */
+static int wipe_persist_state(void)
+{
+    wipe_progress.started_uptime_ms = wipe_progress.started_uptime_ms; /* keep original */
+    int ret = nvs_save_wipe_progress(&wipe_progress);
+    if (ret < 0) {
+        printk("WIPE: Failed to persist state: %d\n", ret);
+    }
+    return ret;
+}
+
+/**
+ * @brief Execute a single wipe step
+ * @return 0 on success, negative on error
+ */
+static int wipe_execute_single_step(wipe_step_t step)
+{
+    int ret = 0;
+    uint32_t step_start = k_uptime_get_32();
+    
+    switch (step) {
+    case WIPE_STEP_PREPARE:
+        printk("WIPE: Step %d - PREPARE\n", step);
+        /* Nothing to do, just mark start */
+        break;
+        
+    case WIPE_STEP_RESET_CHANNELS:
+        printk("WIPE: Step %d - RESET_CHANNELS\n", step);
+        ret = reset_controller_reset_all_channels();
+        break;
+        
+    case WIPE_STEP_RESET_SYSTEM:
+        printk("WIPE: Step %d - RESET_SYSTEM\n", step);
+        ret = reset_controller_reset_system_config();
+        break;
+        
+    case WIPE_STEP_RESET_CALIBRATION:
+        printk("WIPE: Step %d - RESET_CALIBRATION\n", step);
+        ret = reset_controller_reset_calibration();
+        break;
+        
+    case WIPE_STEP_CLEAR_RAIN_HIST:
+        printk("WIPE: Step %d - CLEAR_RAIN_HIST\n", step);
+        /* Clear rain history (flash erase - slow!) */
+        {
+            watering_error_t hist_err = rain_history_clear_all();
+            if (hist_err != WATERING_SUCCESS && hist_err != WATERING_ERROR_NOT_INITIALIZED) {
+                ret = -EIO;
+            }
+            rain_sensor_reset_counters();
+            (void)rain_state_reset();
+        }
+        break;
+        
+    case WIPE_STEP_CLEAR_ENV_HIST:
+        printk("WIPE: Step %d - CLEAR_ENV_HIST\n", step);
+        /* Reset days since start */
+        days_since_start = 0;
+        ret = nvs_save_days_since_start(0);
+        break;
+        
+    case WIPE_STEP_CLEAR_ONBOARDING:
+        printk("WIPE: Step %d - CLEAR_ONBOARDING\n", step);
+        ret = nvs_clear_onboarding_data();
+        if (ret >= 0) {
+            ret = onboarding_reset_state();
+        }
+        break;
+        
+    case WIPE_STEP_VERIFY:
+        printk("WIPE: Step %d - VERIFY\n", step);
+        /* TODO: Add verification logic (check NVS keys absent) */
+        /* For now, assume success if we got here */
+        ret = 0;
+        break;
+        
+    case WIPE_STEP_DONE:
+        printk("WIPE: Step %d - DONE\n", step);
+        /* Cleanup */
+        break;
+        
+    default:
+        printk("WIPE: Unknown step %d\n", step);
+        ret = -EINVAL;
+        break;
+    }
+    
+    printk("WIPE: Step %d completed in %ums (ret=%d)\n",
+           step, (uint32_t)(k_uptime_get_32() - step_start), ret);
+    
+    return ret;
+}
+
+int reset_controller_get_wipe_progress(wipe_progress_t *progress)
+{
+    if (!progress) {
+        return -EINVAL;
+    }
+    
+    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    *progress = wipe_progress;
+    k_mutex_unlock(&reset_controller_mutex);
+    
+    return 0;
+}
+
+int reset_controller_resume_wipe(void)
+{
+    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    
+    /* Load persisted state */
+    int ret = nvs_load_wipe_progress(&wipe_progress);
+    if (ret < 0) {
+        k_mutex_unlock(&reset_controller_mutex);
+        return ret;
+    }
+    
+    /* Check if wipe was in progress */
+    if (wipe_progress.state != WIPE_STATE_IN_PROGRESS) {
+        k_mutex_unlock(&reset_controller_mutex);
+        printk("WIPE: No resume needed (state=%d)\n", wipe_progress.state);
+        return 0; /* No resume needed */
+    }
+    
+    printk("WIPE: Resuming from step %d after reboot\n", wipe_progress.current_step);
+    k_mutex_unlock(&reset_controller_mutex);
+    
+    return 1; /* Resume needed - caller should queue work */
+}
+
+int reset_controller_start_factory_wipe(uint32_t confirmation_code)
+{
+    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    
+    /* Verify confirmation code */
+    if (!reset_controller_validate_confirmation_code(confirmation_code,
+                                                     RESET_TYPE_FACTORY_RESET, 0)) {
+        k_mutex_unlock(&reset_controller_mutex);
+        return -EINVAL;
+    }
+    
+    /* Initialize wipe progress */
+    memset(&wipe_progress, 0, sizeof(wipe_progress));
+    wipe_progress.state = WIPE_STATE_IN_PROGRESS;
+    wipe_progress.current_step = WIPE_STEP_PREPARE;
+    wipe_progress.attempt_count = 0;
+    wipe_progress.last_error = 0;
+    wipe_progress.started_uptime_ms = k_uptime_get_32();
+    
+    /* Persist initial state */
+    int ret = wipe_persist_state();
+    if (ret < 0) {
+        wipe_progress.state = WIPE_STATE_IDLE;
+        k_mutex_unlock(&reset_controller_mutex);
+        return ret;
+    }
+    
+    /* Clear confirmation code (can't be reused) */
+    reset_controller_clear_confirmation_code();
+    
+    printk("WIPE: Started factory wipe\n");
+    k_mutex_unlock(&reset_controller_mutex);
+    
+    return 0;
+}
+
+int reset_controller_execute_wipe_step(void)
+{
+    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    
+    /* Check if wipe is in progress */
+    if (wipe_progress.state != WIPE_STATE_IN_PROGRESS) {
+        k_mutex_unlock(&reset_controller_mutex);
+        return -EINVAL;
+    }
+    
+    wipe_step_t step = wipe_progress.current_step;
+    k_mutex_unlock(&reset_controller_mutex);
+    
+    /* Execute the step (outside mutex to allow BLE notifications) */
+    int ret = wipe_execute_single_step(step);
+    
+    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    
+    if (ret < 0) {
+        /* Step failed */
+        wipe_progress.attempt_count++;
+        wipe_progress.last_error = (uint16_t)(-ret);
+        
+        if (wipe_progress.attempt_count >= WIPE_MAX_STEP_RETRIES) {
+            /* Too many retries, abort */
+            wipe_progress.state = WIPE_STATE_DONE_ERROR;
+            wipe_persist_state();
+            k_mutex_unlock(&reset_controller_mutex);
+            printk("WIPE: Aborted after %d retries on step %d\n",
+                   wipe_progress.attempt_count, step);
+            return -EIO;
+        }
+        
+        /* Persist failure state and retry */
+        wipe_persist_state();
+        k_mutex_unlock(&reset_controller_mutex);
+        return 0; /* Caller should re-queue */
+    }
+    
+    /* Step succeeded, move to next */
+    wipe_progress.current_step = (wipe_step_t)(step + 1);
+    wipe_progress.attempt_count = 0;
+    wipe_progress.last_error = 0;
+    
+    if (wipe_progress.current_step >= WIPE_STEP_COUNT) {
+        /* Wipe complete! */
+        wipe_progress.state = WIPE_STATE_DONE_OK;
+        wipe_persist_state();
+        k_mutex_unlock(&reset_controller_mutex);
+        
+        uint32_t total_ms = k_uptime_get_32() - wipe_progress.started_uptime_ms;
+        printk("WIPE: Completed successfully in %ums\n", total_ms);
+        return 1; /* Done */
+    }
+    
+    /* Persist progress and continue */
+    wipe_persist_state();
+    k_mutex_unlock(&reset_controller_mutex);
+    
+    return 0; /* More steps to do */
+}
+
+void reset_controller_abort_wipe(uint16_t error)
+{
+    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    
+    if (wipe_progress.state == WIPE_STATE_IN_PROGRESS) {
+        wipe_progress.state = WIPE_STATE_DONE_ERROR;
+        wipe_progress.last_error = error;
+        wipe_persist_state();
+        printk("WIPE: Aborted with error %u\n", error);
+    }
+    
+    k_mutex_unlock(&reset_controller_mutex);
+}
+
+int reset_controller_clear_wipe_state(void)
+{
+    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    
+    /* Clear NVS */
+    int ret = nvs_clear_wipe_progress();
+    
+    /* Reset runtime state */
+    memset(&wipe_progress, 0, sizeof(wipe_progress));
+    wipe_progress.state = WIPE_STATE_IDLE;
+    
+    k_mutex_unlock(&reset_controller_mutex);
+    
+    printk("WIPE: State cleared\n");
+    return ret;
+}
 
 static void reset_controller_build_default_channel(uint8_t channel_id,
                                                   watering_channel_t *out_channel,

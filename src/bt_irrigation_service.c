@@ -2397,9 +2397,13 @@ static struct k_work_q reset_work_q;
 K_THREAD_STACK_DEFINE(reset_work_q_stack, RESET_WORKQ_STACK_SIZE);
 
 static struct k_work reset_execute_work;
+static struct k_work wipe_step_work;  /* Work item for step-by-step wipe */
 static struct k_mutex reset_async_mutex;
 static bool reset_async_in_progress;
 static reset_request_t reset_async_request;
+
+/* Forward declaration */
+static void wipe_step_work_handler(struct k_work *work);
 
 static void reset_execute_work_handler(struct k_work *work) {
     ARG_UNUSED(work);
@@ -2409,6 +2413,24 @@ static void reset_execute_work_handler(struct k_work *work) {
     request = reset_async_request;
     k_mutex_unlock(&reset_async_mutex);
 
+    /* Factory reset uses the new step-by-step wipe machine */
+    if (request.type == RESET_TYPE_FACTORY_RESET) {
+        int ret = reset_controller_start_factory_wipe(request.confirmation_code);
+        if (ret < 0) {
+            LOG_ERR("Failed to start factory wipe: %d", ret);
+            k_mutex_lock(&reset_async_mutex, K_FOREVER);
+            reset_async_in_progress = false;
+            k_mutex_unlock(&reset_async_mutex);
+            bt_irrigation_reset_control_notify();
+            return;
+        }
+        
+        /* Start executing steps */
+        k_work_submit_to_queue(&reset_work_q, &wipe_step_work);
+        return;
+    }
+
+    /* Non-factory resets use the old synchronous path */
     reset_status_t status = reset_controller_execute(&request);
 
     k_mutex_lock(&reset_async_mutex, K_FOREVER);
@@ -2430,6 +2452,43 @@ static void reset_execute_work_handler(struct k_work *work) {
     /* Also trigger onboarding status update */
     if (notification_state.onboarding_status_notifications_enabled) {
         bt_irrigation_onboarding_status_notify();
+    }
+}
+
+/* Work handler for step-by-step factory wipe */
+static void wipe_step_work_handler(struct k_work *work) {
+    ARG_UNUSED(work);
+    
+    int ret = reset_controller_execute_wipe_step();
+    
+    /* Notify progress after each step */
+    bt_irrigation_reset_control_notify();
+    
+    if (ret == 0) {
+        /* More steps to execute - re-queue with small delay */
+        k_work_submit_to_queue(&reset_work_q, &wipe_step_work);
+    } else if (ret == 1) {
+        /* Wipe complete! */
+        LOG_INF("Factory wipe completed successfully");
+        
+        k_mutex_lock(&reset_async_mutex, K_FOREVER);
+        reset_async_in_progress = false;
+        k_mutex_unlock(&reset_async_mutex);
+        
+        /* Final notifications */
+        bt_irrigation_reset_control_notify();
+        if (notification_state.onboarding_status_notifications_enabled) {
+            bt_irrigation_onboarding_status_notify();
+        }
+    } else {
+        /* Error occurred */
+        LOG_ERR("Factory wipe failed at step: ret=%d", ret);
+        
+        k_mutex_lock(&reset_async_mutex, K_FOREVER);
+        reset_async_in_progress = false;
+        k_mutex_unlock(&reset_async_mutex);
+        
+        bt_irrigation_reset_control_notify();
     }
 }
 
@@ -2457,27 +2516,53 @@ static ssize_t read_reset_control(struct bt_conn *conn, const struct bt_gatt_att
 
     struct reset_control_data reset_data = {0};
     
-    /* Get current confirmation info */
-    reset_confirmation_t confirmation;
-    int ret = reset_controller_get_confirmation_info(&confirmation);
-    if (ret == 0 && confirmation.is_valid) {
-        /* Convert internal type to BLE spec value */
-        reset_data.reset_type = reset_type_to_ble_spec(confirmation.type);
-        reset_data.channel_id = confirmation.channel_id;
-        reset_data.confirmation_code = confirmation.code;
-        reset_data.timestamp = confirmation.generation_time;
-        reset_data.status = 0x01; /* Pending */
-    } else {
-        /* No active confirmation */
-        reset_data.reset_type = 0xFF; /* Invalid */
+    /* First check wipe progress (takes priority) */
+    wipe_progress_t wipe_prog;
+    reset_controller_get_wipe_progress(&wipe_prog);
+    
+    if (wipe_prog.state == WIPE_STATE_IN_PROGRESS ||
+        wipe_prog.state == WIPE_STATE_DONE_OK ||
+        wipe_prog.state == WIPE_STATE_DONE_ERROR) {
+        /* Report wipe status */
+        reset_data.reset_type = 0xFF; /* Factory reset */
         reset_data.channel_id = 0xFF;
         reset_data.confirmation_code = 0;
-        reset_data.timestamp = 0;
-        reset_data.status = 0xFF; /* No operation */
+        reset_data.timestamp = k_uptime_get_32() / 1000;
+        reset_data.status = (uint8_t)wipe_prog.state;
+        
+        /* Fill reserved[] with progress info */
+        uint8_t progress_pct = wipe_step_to_progress_pct(wipe_prog.current_step);
+        reset_data.reserved[0] = progress_pct;
+        reset_data.reserved[1] = (uint8_t)wipe_prog.current_step;
+        reset_data.reserved[2] = wipe_prog.attempt_count;
+        reset_data.reserved[3] = (uint8_t)(wipe_prog.last_error & 0xFF);
+        reset_data.reserved[4] = (uint8_t)((wipe_prog.last_error >> 8) & 0xFF);
+        
+        LOG_DBG("Reset control read: wipe state=%u, step=%u, progress=%u%%",
+                wipe_prog.state, wipe_prog.current_step, progress_pct);
+    } else {
+        /* Check for pending confirmation code */
+        reset_confirmation_t confirmation;
+        int ret = reset_controller_get_confirmation_info(&confirmation);
+        if (ret == 0 && confirmation.is_valid) {
+            /* Convert internal type to BLE spec value */
+            reset_data.reset_type = reset_type_to_ble_spec(confirmation.type);
+            reset_data.channel_id = confirmation.channel_id;
+            reset_data.confirmation_code = confirmation.code;
+            reset_data.timestamp = confirmation.generation_time;
+            reset_data.status = WIPE_STATE_AWAIT_CONFIRM; /* 0x01 = Waiting for confirm */
+        } else {
+            /* No active operation */
+            reset_data.reset_type = 0xFF;
+            reset_data.channel_id = 0xFF;
+            reset_data.confirmation_code = 0;
+            reset_data.timestamp = 0;
+            reset_data.status = WIPE_STATE_IDLE; /* 0x00 = Idle */
+        }
+        
+        LOG_DBG("Reset control read: type=0x%02x, channel=%u, status=%u", 
+                reset_data.reset_type, reset_data.channel_id, reset_data.status);
     }
-    
-    LOG_DBG("Reset control read: type=0x%02x, channel=%u, status=%u", 
-            reset_data.reset_type, reset_data.channel_id, reset_data.status);
     
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &reset_data, sizeof(reset_data));
 }
@@ -8620,6 +8705,7 @@ int bt_irrigation_service_init(void) {
     /* Initialize async reset worker */
     k_mutex_init(&reset_async_mutex);
     k_work_init(&reset_execute_work, reset_execute_work_handler);
+    k_work_init(&wipe_step_work, wipe_step_work_handler);
     k_work_queue_start(&reset_work_q,
                        reset_work_q_stack,
                        K_THREAD_STACK_SIZEOF(reset_work_q_stack),
@@ -8681,6 +8767,23 @@ int bt_irrigation_service_init(void) {
     LOG_INF("BLE irrigation service initialized - AutoWatering ready");
     
     return 0;
+}
+
+int bt_irrigation_resume_wipe_if_needed(void) {
+    int ret = reset_controller_resume_wipe();
+    
+    if (ret == 1) {
+        /* Wipe was in progress - resume it */
+        k_mutex_lock(&reset_async_mutex, K_FOREVER);
+        reset_async_in_progress = true;
+        k_mutex_unlock(&reset_async_mutex);
+        
+        k_work_submit_to_queue(&reset_work_q, &wipe_step_work);
+        LOG_INF("Resuming interrupted factory wipe");
+        return 1;
+    }
+    
+    return ret;
 }
 
 int bt_irrigation_valve_status_update(uint8_t channel_id, bool is_open) {

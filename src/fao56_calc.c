@@ -2257,10 +2257,12 @@ watering_error_t calc_irrigation_volume_plants(
         }
     }
     
-    // Validate area per plant
-    if (area_per_plant_m2 < 0.01f) {  // Minimum 0.01 m² (10cm × 10cm)
-        area_per_plant_m2 = 0.01f;
-        LOG_WRN("Area per plant too small, using minimum 0.01 m²");
+    // Validate area per plant - dense crops like wheat/grass have very small areas
+    // 0.01 m² = 10cm × 10cm, corresponds to 100 plants/m² which is valid for cereals
+    if (area_per_plant_m2 < 0.002f) {  // Minimum 0.002 m² (4.5cm × 4.5cm = ~500 plants/m²)
+        LOG_DBG("Dense crop detected: %.4f m²/plant clamped to 0.002 m² (max ~500/m²)",
+                (double)area_per_plant_m2);
+        area_per_plant_m2 = 0.002f;
     } else if (area_per_plant_m2 > 100.0f) {  // Maximum 100 m² per plant
         area_per_plant_m2 = 100.0f;
         LOG_WRN("Area per plant too large, using maximum 100 m²");
@@ -2343,11 +2345,18 @@ watering_error_t calc_irrigation_volume_plants(
     // Calculate volume per plant
     result->volume_per_plant_liters = result->volume_liters / plant_count;
     
-    // Apply minimum volume threshold per plant
-    float min_volume_per_plant = 0.1f;  // 0.1L minimum per plant
-    if (result->volume_per_plant_liters < min_volume_per_plant) {
-    LOG_DBG("Volume per plant below threshold (%.3f L < %.1f L), setting to zero",
-        (double)result->volume_per_plant_liters, (double)min_volume_per_plant);
+    // Apply minimum TOTAL volume threshold (not per-plant for dense crops)
+    // For dense crops like wheat (300+ plants/m²), per-plant threshold makes no sense.
+    // Use total area-based minimum: 0.1L per m² of effective irrigated area.
+    float min_total_volume = effective_irrigated_area_m2 * 0.1f;  // 0.1 L/m² minimum
+    if (min_total_volume < 0.5f) {
+        min_total_volume = 0.5f;  // Absolute minimum 0.5L to trigger valve
+    }
+    
+    if (result->volume_liters > 0.0f && result->volume_liters < min_total_volume) {
+        LOG_DBG("Total volume below threshold (%.3f L < %.1f L for %.2f m²), setting to zero",
+                (double)result->volume_liters, (double)min_total_volume, 
+                (double)effective_irrigated_area_m2);
         result->volume_liters = 0.0f;
         result->volume_per_plant_liters = 0.0f;
         result->gross_irrigation_mm = 0.0f;
