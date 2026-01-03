@@ -1098,11 +1098,16 @@ static float calc_vapor_pressure_slope(float temp_c)
 }
 
 /**
- * @brief Calculate psychrometric constant
+ * @brief Calculate psychrometric constant (FAO-56 equation)
+ * 
+ * γ = 0.000665 × P (kPa/°C)
+ * where P is atmospheric pressure in kPa
+ * 
+ * Reference: FAO-56 equation 8
  */
 static float calc_psychrometric_constant(float pressure_kpa)
 {
-    return 0.665f * pressure_kpa;
+    return 0.000665f * pressure_kpa;
 }
 
 /**
@@ -1376,12 +1381,19 @@ static float calc_evaporation_losses(
  * 
  * Enhanced version that accounts for rainfall intensity, soil characteristics,
  * antecedent moisture conditions, and evaporation losses.
+ * 
+ * @param rainfall_mm Total rainfall in mm
+ * @param soil Soil data for infiltration calculations
+ * @param irrigation_method Irrigation method data
+ * @param antecedent_moisture_pct Current soil moisture percentage
+ * @param temperature_c Ambient temperature for evaporation calculation (°C)
  */
 static float calc_effective_precipitation_with_moisture(
     float rainfall_mm,
     const soil_enhanced_data_t *soil,
     const irrigation_method_data_t *irrigation_method,
-    float antecedent_moisture_pct
+    float antecedent_moisture_pct,
+    float temperature_c
 )
 {
     if (!soil || rainfall_mm <= 0.0f) {
@@ -1411,9 +1423,13 @@ static float calc_effective_precipitation_with_moisture(
     float runoff_loss = rainfall_mm * runoff_coeff;
     float after_runoff = rainfall_mm - runoff_loss;
     
-    // Calculate evaporation losses (using default temperature if not available)
-    float temperature_c = 20.0f;  // Default temperature
-    float evap_loss = calc_evaporation_losses(after_runoff, duration_h, temperature_c);
+    // Calculate evaporation losses using actual temperature
+    // Use 20°C as fallback if temperature is invalid/out of range
+    float temp_for_evap = temperature_c;
+    if (temp_for_evap < -20.0f || temp_for_evap > 50.0f) {
+        temp_for_evap = 20.0f;
+    }
+    float evap_loss = calc_evaporation_losses(after_runoff, duration_h, temp_for_evap);
     
     // Final effective precipitation
     float effective_rainfall = after_runoff - evap_loss;
@@ -1441,7 +1457,8 @@ float calc_effective_precipitation(
 )
 {
     float antecedent = (float)soil_moisture_get_global_effective_pct();
-    return calc_effective_precipitation_with_moisture(rainfall_mm, soil, irrigation_method, antecedent);
+    // Use default 20°C for backward compatibility when temperature not available
+    return calc_effective_precipitation_with_moisture(rainfall_mm, soil, irrigation_method, antecedent, 20.0f);
 }
 
 /**
@@ -3152,7 +3169,7 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     // Calculate effective precipitation (uses global/per-channel antecedent moisture estimate)
     float antecedent_moisture_pct = (float)soil_moisture_get_effective_pct(channel_id);
     float effective_rain = calc_effective_precipitation_with_moisture(
-        rainfall_24h, soil, method, antecedent_moisture_pct);
+        rainfall_24h, soil, method, antecedent_moisture_pct, env_data.air_temp_mean_c);
     balance->effective_rain_mm = effective_rain;
     decision->effective_rain_mm = effective_rain;
     
@@ -3170,7 +3187,26 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     
     // Calculate daily ETc (crop evapotranspiration)
     float daily_etc = daily_et0 * kc;
+    
+    // B0 #4: Apply sun exposure adjustment (shaded areas have lower evapotranspiration)
+    // sun_exposure_pct: 100% = full sun, 0% = full shade
+    float sun_factor = channel->sun_exposure_pct / 100.0f;
+    if (sun_factor < 0.3f) sun_factor = 0.3f;  // Minimum 30% to avoid underestimation in deep shade
+    if (sun_factor > 1.0f) sun_factor = 1.0f;
+    daily_etc *= sun_factor;
+    
+    // B0 #3: Apply eco mode factor (70% of calculated requirement for water savings)
+    bool eco_mode = (channel->auto_mode == WATERING_AUTOMATIC_ECO);
+    if (eco_mode) {
+        daily_etc *= 0.7f;
+        LOG_DBG("AUTO mode: Eco factor (0.7) applied to ETc for channel %u", channel_id);
+    }
+    
     decision->daily_etc_mm = daily_etc;
+    
+    LOG_DBG("AUTO mode: ET0=%.2f, Kc=%.2f, sun=%.0f%%, eco=%d -> ETc=%.2f mm for channel %u",
+            (double)daily_et0, (double)kc, (double)(sun_factor * 100.0f), 
+            eco_mode ? 1 : 0, (double)daily_etc, channel_id);
     
     // Apply environmental stress adjustment for hot/dry conditions
     float base_mad = depletion_fraction;
