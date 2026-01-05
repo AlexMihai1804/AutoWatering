@@ -76,22 +76,22 @@ Helper macros (`PLANT_KC_MID`, `PLANT_ROOT_MIN_M`, `PLANT_DEPL_FRACTION`, etc.) 
 
 #### Antecedent Soil Moisture (Effective Rainfall)
 
-The FAO‑56 engine models **effective precipitation** by estimating runoff and infiltration. One of the key drivers is the **antecedent soil moisture estimate** (how wet the soil was before the rain event):
-- Higher antecedent moisture → higher runoff → lower effective rainfall
-- Lower antecedent moisture → lower runoff → higher effective rainfall
+The FAO-56 engine models **effective precipitation** by estimating runoff and infiltration. One of the key drivers is the **antecedent soil moisture estimate** (how wet the soil was before the rain event):
+- Higher antecedent moisture -> higher runoff -> lower effective rainfall
+- Lower antecedent moisture -> lower runoff -> higher effective rainfall
 
 AutoWatering supports configuring this estimate as a percentage (`0..100`) via a **global** value and optional **per-channel** overrides.
 
 **Precedence (per channel):**
-1. If per-channel override is enabled → use the channel’s `moisture_pct`
-2. Else if global override is enabled → use the global `moisture_pct`
-3. Else → default to `50%`
+1. If per-channel override is enabled -> use the channel's `moisture_pct`
+2. Else if global override is enabled -> use the global `moisture_pct`
+3. Else -> default to `50%`
 
-This value is applied inside `calc_effective_precipitation()` / AUTO mode’s daily deficit update, and can change whether a channel decides to irrigate (because effective rain reduces the computed deficit).
+This value is applied inside `calc_effective_precipitation()` / AUTO mode's daily deficit update, and can change whether a channel decides to irrigate (because effective rain reduces the computed deficit).
 
 **Persistence:** stored in NVS (global record + per-channel records).
 
-**BLE configuration:** exposed via the Custom Configuration Service characteristic `12345678-1234-5678-9abc-def123456784` (see `docs/ble-api/characteristics/30-soil-moisture-configuration.md`).
+**BLE configuration:** exposed via the Custom Configuration Service characteristic `12345678-1234-5678-9abc-def123456784` (see `docs/ble-api/characteristics/31-soil-moisture-configuration.md`).
 
 The persisted water balance structure is defined in `src/water_balance_types.h`:
 
@@ -113,7 +113,7 @@ NVS serialization uses `water_balance_config_t` in `src/nvs_config.h`, ensuring 
 
 - `calc_irrigation_volume_area()` and `calc_irrigation_volume_plants()` convert deficits to liters, honouring irrigation efficiency, distribution uniformity, wetting fraction corrections, and per-channel maximum volume limits.
 - `apply_quality_irrigation_mode()` and `apply_eco_irrigation_mode()` encapsulate the 100% vs 70% application logic. Eco mode multiplies calculated volumes by 0.70 and logs the reduction so the task framework can surface the decision.
-- `calc_cycle_and_soak()` inspects soil infiltration and irrigation delivery rate to break large applications into multiple cycles with soak intervals, preventing runoff on slow-draining soils.
+- `calc_cycle_and_soak()` computes cycle/soak parameters for slow-draining soils; current scheduling still enqueues a single volume task (cycle counts are not executed).
 - `apply_volume_limiting()` performs the last safeguard before a schedule is accepted, clamping to user-defined maxima and emitting warnings through `watering_log`.
 
 ### Rainfall Integration & Triggering
@@ -155,11 +155,11 @@ NVS serialization uses `water_balance_config_t` in `src/nvs_config.h`, ensuring 
 ## FAO-56 Workflow (developer cheatsheet)
 
 1. Collect inputs: latest environmental snapshot (with fallbacks), rain history, channel config (coverage, indices, eco/quality mode, max volume), and planting date.
-2. Compute ET0 (Penman-Monteith → Hargreaves-Samani fallback → heuristic band if needed) with caching keyed on stable inputs.
+2. Compute ET0 (Penman-Monteith -> Hargreaves-Samani fallback -> heuristic band if needed) with caching keyed on stable inputs.
 3. Map days-after-planting to growth stage; interpolate crop coefficients and root depth from the plant database.
 4. Compute available water capacity using soil profile + irrigation method wetting fraction; derive RAW/MAD thresholds.
 5. Convert recent rainfall to effective precipitation; update water balance and decide if irrigation is required.
-6. Convert deficits to litres (area or plant-count coverage), apply eco/quality reductions, enforce max-volume limits, and optionally split into cycle-and-soak segments.
+6. Convert deficits to litres (area or plant-count coverage), apply eco/quality reductions, enforce max-volume limits; cycle/soak parameters are computed but not executed by the scheduler yet.
 7. Persist water balance updates; publish results through BLE (`auto-calc-status`, `current-task-status`) and enqueue tasks when thresholds are crossed.
 
 ## Full Species List (223 entries)

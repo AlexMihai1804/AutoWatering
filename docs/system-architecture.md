@@ -1,4 +1,4 @@
-# AutoWatering System Architecture (October 2025)
+# AutoWatering System Architecture (January 2026)
 
 AutoWatering is a Zephyr-based irrigation controller targeted at the nRF52840. This document maps the current firmware structure as validated in `src/main.c` and the associated modules.
 
@@ -77,11 +77,11 @@ All module initializations log warnings on failure but keep the system running u
 - Three schedule modes via `schedule_type_t`:
   - **SCHEDULE_DAILY (0)**: Runs on selected days via bitmask (e.g., Mon/Wed/Fri).
   - **SCHEDULE_PERIODIC (1)**: Runs every N days.
-  - **SCHEDULE_AUTO (2)**: FAO-56 smart irrigation - checks soil water deficit daily, only irrigates when deficit ≥ RAW threshold. Requires plant_db_index, soil_db_index, and planting_date_unix to be configured.
+  - **SCHEDULE_AUTO (2)**: FAO-56 smart irrigation - checks soil water deficit daily, only irrigates when deficit >= RAW threshold. Requires plant_db_index, soil_db_index, planting_date_unix, and coverage (area or plant count).
 - FAO-56 calculations executed on demand (`apply_quality_irrigation_mode`, `apply_eco_irrigation_mode`) with maximum volume limiting.
 - AUTO mode (`fao56_daily_update_deficit`) evaluates deficit at configured time (e.g., 06:00), applies missed-day accumulation on power-up, and triggers volume-based irrigation when needed.
 - Rain integration (`rain_integration_calculate_impact`) applies volume/time reductions or skips before tasks start.
-- Temperature compensation adjusts FAO-56 outputs when enabled per channel (`temperature_compensation_integration.c`).
+- Temperature compensation is configurable but not applied to the current task execution path.
 
 ### Sensors & Telemetry
 - Flow pulses captured via GPIO interrupts (`flow_sensor.c`) with calibration and no-flow/unexpected-flow alarms.
@@ -97,16 +97,18 @@ All module initializations log warnings on failure but keep the system running u
 - Generated databases (`plant_full_db.inc`, `soil_enhanced_db.inc`, `irrigation_methods_db.inc`) are included directly with compile-time size asserts.
 
 ### BLE Interface
-- `bt_irrigation_service.c` exposes 33 characteristics (26 irrigation + 7 history) documented under `docs/ble-api/`.
-- `bt_custom_soil_handlers.c` exposes a separate Custom Configuration Service used for extended configuration (e.g., custom soil DB and antecedent soil moisture override).
+- `bt_irrigation_service.c` exposes 29 characteristics documented under `docs/ble-api/`.
+- `bt_custom_soil_handlers.c` exposes a separate Custom Configuration Service with 5 characteristics (custom soil, soil moisture, config reset, config status, interval mode).
+- **Total: 34 characteristics** across both BLE services.
+- All characteristics require an encrypted link (`BT_GATT_PERM_READ_ENCRYPT` / `BT_GATT_PERM_WRITE_ENCRYPT`); the connection callback requests `BT_SECURITY_L2`.
 - Notification macros (`SMART_NOTIFY`, `CRITICAL_NOTIFY`, `CHANNEL_CONFIG_NOTIFY`) enforce throttling tiers.
-- Large payloads (channel config, histories) use the shared fragmentation helpers with 3-byte headers.
+- Large payloads use custom fragmentation: 4-byte write headers for channel/growing-env updates and 8-byte headers for history streams.
 - History control/insights characteristics mirror the structures defined in the history modules; settings persist through NVS.
 
-#### BLE Performance Optimizations (v3.1.0+)
+#### BLE Performance Optimizations (current firmware)
 
 **Connection-Level Optimizations:**
-- **PHY 2M**: Automatically requested at connection for ~2x raw throughput (1 Mbps → 2 Mbps)
+- **PHY 2M**: Automatically requested at connection for ~2x raw throughput (1 Mbps -> 2 Mbps)
 - **Data Length Extension (DLE)**: Requests 251-byte packets (may fail on some controllers, gracefully handled)
 - **Buffer Configuration**: Increased TX/RX buffer counts for sustained throughput
 
@@ -117,13 +119,13 @@ All module initializations log warnings on failure but keep the system running u
 
 **Fragment Streaming Optimizations:**
 - **Reduced Delays**: Inter-fragment delay reduced from 5ms to 2ms
-- **Retry Logic**: Exponential backoff (20ms → 640ms, 5 retries) in all fragment work handlers
+- **Retry Logic**: Exponential backoff (20ms -> 640ms, 5 retries) in all fragment work handlers
 - **Rate-Limit Bypass**: Sequential fragment requests bypass the 100ms rate-limit check
 
 **Bulk Sync Snapshot (UUID 0xde60):**
 - Single 60-byte READ replaces 10+ individual queries at connection
 - Contains: system status, environmental data, rain totals, compensation, channel states
-- Reduces initial sync latency from ~500ms to ~50ms
+- Reduces initial sync latency by replacing multiple reads (actual latency depends on the central and RF conditions)
 
 #### BLE Notification Priority System
 - **Priority Classes**:
@@ -203,4 +205,4 @@ graph LR
 - Rain skip currently returns `WATERING_ERROR_BUSY`; explicit "skipped" history logging may be desirable.
 - External weather ingestion, secure boot, and OTA update paths remain deferred (see `docs/CHANGELOG.md`).
 
-This architecture description reflects only modules and flows present in the repository as of October 2025, reducing drift between documentation and firmware behavior.
+This architecture description reflects only modules and flows present in the repository as of January 2026, reducing drift between documentation and firmware behavior.
