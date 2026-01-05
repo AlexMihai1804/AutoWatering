@@ -63,6 +63,39 @@ For full environment setup (WSL/Linux/macOS), board overlays, and simulator flag
 - The FAO-56 pipeline (Penman-Monteith + fallbacks) drives automatic irrigation volumes and is shared between autonomous runs and BLE preview calls.
 - Regeneration tooling (`tools/build_database.py`) keeps datasets auditable; see `docs/plant-database-fao56-system.md` for structure, algorithms, and the full species roster.
 
+## Companion App
+
+📱 **[AutoWateringApp](https://github.com/AlexMihai1804/AutoWateringApp)** - Flutter-based mobile application for iOS and Android.
+
+## Project Status
+
+**Current Version**: 3.1.0 (January 2026)
+
+### ✅ Completed
+
+- Full BLE API with 34 characteristics (29 Irrigation + 5 Custom Config)
+- FAO-56 water balance engine with 223 plant species
+- Rain compensation and environmental monitoring
+- 8-channel irrigation with scheduling and history
+- Encrypted BLE access with bonding support
+
+### 🔄 In Progress
+
+- **BLE Speed Optimization** - Improving throughput and reducing latency
+- **Bug Fixes** - Stability improvements based on field testing
+
+### 📋 Roadmap
+
+| Phase | Description | Status |
+| --- | --- | --- |
+| **Phase 1** | BLE optimization & bug fixes | 🔄 In Progress |
+| **Phase 2** | Separate plant/soil database repository (easy updates & community contributions) | 📅 Planned |
+| **Phase 3** | Hardware schematics & PCB designs | 📅 Planned |
+| | - Variant A: Modular (prefab modules, breadboard-friendly) | |
+| | - Variant B: Integrated (discrete ICs, compact design) | |
+| **Phase 4** | OTA firmware updates support | 📅 Planned |
+| **Phase 5** | WiFi module integration + Local REST API | 📅 Planned |
+
 ## Contributing
 
 Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
