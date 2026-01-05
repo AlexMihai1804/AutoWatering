@@ -54,6 +54,7 @@ High-level only; see `FEATURES.md` for market overview or `FEATURES_FULL.md` for
 ## External Resources
 
 - **[GitHub Repository](https://github.com/AlexMihai1804/AutoWatering)** - Source code and issues
+- **[AutoWatering Smart Dashboard](https://github.com/AlexMihai1804/autowatering-smart-dashboard)** - Client dashboard (TypeScript)
 - **Community Discussions** - Project Q&A and ideas (GitHub Discussions)
 
 ---

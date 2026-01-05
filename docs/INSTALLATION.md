@@ -67,7 +67,7 @@ west init -m https://github.com/AlexMihai1804/AutoWatering.git --mf west-manifes
 west update
 ```
 
-This clones the AutoWatering application alongside the Zephyr upstream tree declared in `west-manifest/west.yml` (Zephyr v4.3.0).
+This clones the AutoWatering firmware repository alongside the Zephyr upstream tree declared in `west-manifest/west.yml` (Zephyr v4.3.0).
 
 ## 4. Install Python Dependencies
 

@@ -65,11 +65,16 @@ For full environment setup (WSL/Linux/macOS), board overlays, and simulator flag
 
 ## Companion App
 
-📱 **[AutoWateringApp](https://github.com/AlexMihai1804/AutoWateringApp)** - Flutter-based mobile application for iOS and Android.
+**[AutoWatering Smart Dashboard](https://github.com/AlexMihai1804/autowatering-smart-dashboard)** - TypeScript-based client dashboard for configuration, monitoring, and BLE control.
 
 ## Project Status
 
 **Current Version**: 3.1.0 (January 2026)
+
+**Maturity**: MVP / prototype stage
+
+- Current hardware build is a breadboard-based prototype using prefabricated modules.
+- Field testing and stability validation are still needed before any "production" hardware run.
 
 ### ✅ Completed
 
@@ -83,16 +88,17 @@ For full environment setup (WSL/Linux/macOS), board overlays, and simulator flag
 
 - **BLE Speed Optimization** - Improving throughput and reducing latency
 - **Bug Fixes** - Stability improvements based on field testing
+- **Breadboard Validation** - Soak tests, sensor calibration checks, and regression testing
 
 ### 📋 Roadmap
 
 | Phase | Description | Status |
 | --- | --- | --- |
-| **Phase 1** | BLE optimization & bug fixes | 🔄 In Progress |
+| **Phase 1** | BLE optimization, bug fixes, and MVP testing (breadboard prototype) | 🔄 In Progress |
 | **Phase 2** | Separate plant/soil database repository (easy updates & community contributions) | 📅 Planned |
-| **Phase 3** | Hardware schematics & PCB designs | 📅 Planned |
+| **Phase 3** | Separate hardware repository: breadboard wiring + schematics + PCB designs | 📅 Planned |
 | | - Variant A: Modular (prefab modules, breadboard-friendly) | |
-| | - Variant B: Integrated (discrete ICs, compact design) | |
+| | - Variant B: Integrated (discrete ICs, compact design; cost-dependent) | |
 | **Phase 4** | OTA firmware updates support | 📅 Planned |
 | **Phase 5** | WiFi module integration + Local REST API | 📅 Planned |
 
