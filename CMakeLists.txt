@@ -2,12 +2,8 @@
 cmake_minimum_required(VERSION 3.20.0)
 
 # Board-specific overlay selection
-if(BOARD STREQUAL "promicro_nrf52840")
-    set(DTC_OVERLAY_FILE ${CMAKE_CURRENT_SOURCE_DIR}/boards/promicro_52840.overlay)
-elseif(BOARD STREQUAL "arduino_nano_33_ble")
+if(BOARD STREQUAL "arduino_nano_33_ble")
     set(DTC_OVERLAY_FILE ${CMAKE_CURRENT_SOURCE_DIR}/boards/arduino_nano_33_ble.overlay)
-elseif(BOARD STREQUAL "native_sim")
-    set(DTC_OVERLAY_FILE ${CMAKE_CURRENT_SOURCE_DIR}/boards/native_sim.overlay)
 endif()
 
 # Auto-generate database files from CSV before build

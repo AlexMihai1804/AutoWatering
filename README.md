@@ -3,7 +3,7 @@
 [![Zephyr RTOS](https://img.shields.io/badge/Zephyr-RTOS-blue)](https://www.zephyrproject.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-AutoWatering is a Zephyr 4.1-based irrigation controller for the nRF52840. It drives up to 8 independent zones, handles master-valve sequencing, monitors flow/rain/environmental sensors, and exposes a full Bluetooth Low Energy (BLE) API for mobile/desktop clients.
+AutoWatering is a Zephyr v4.3.0-based irrigation controller for the nRF52840. It drives up to 8 independent zones, handles master-valve sequencing, monitors flow/rain/environmental sensors, and exposes a full Bluetooth Low Energy (BLE) API for mobile/desktop clients.
 
 ## Highlights
 - 8 irrigation channels with duration/volume/automatic FAO-56 modes (Quality 100% / Eco 70%).
@@ -12,17 +12,18 @@ AutoWatering is a Zephyr 4.1-based irrigation controller for the nRF52840. It dr
 - FAO-56 water balance engine fed by a 223-species plant database (see docs/plant-database-fao56-system.md).
 - BLE control + notifications with fragmentation helpers for large payloads.
 - Single active watering task enforced via queueing; interval mode supported.
-- Persistent config and histories stored in NVS; watchdogs for sensors and storage health.
+- Persistent config + watering history stored in NVS; rain/environment history stored on external SPI flash (LittleFS) when `CONFIG_HISTORY_EXTERNAL_FLASH=y`.
+- Encrypted GATT access (Just Works, security level 2) with optional bonding for faster reconnects.
 
 ## Supported Targets
-- `nrf52840_promicro` (primary hardware target; board overlays under `boards/`).
-- `native_sim` (desktop simulation for development/testing).
+- `arduino_nano_33_ble` (primary hardware target; board overlays under `boards/`).
 
 ## Quick Start
 ```bash
-git clone https://github.com/AlexMihai1804/AutoWatering.git
+west init -m https://github.com/AlexMihai1804/AutoWatering.git --mf west-manifest/west.yml
+west update
 cd AutoWatering
-west build -b nrf52840_promicro --pristine
+west build -b arduino_nano_33_ble --pristine
 west flash
 ```
 For full environment setup (WSL/Linux/macOS), board overlays, and simulator flags, see `docs/INSTALLATION.md`.
@@ -37,8 +38,10 @@ For full environment setup (WSL/Linux/macOS), board overlays, and simulator flag
 
 ## BLE at a Glance
 - Primary irrigation service UUID: `12345678-1234-5678-1234-56789abcdef0`
-- History service UUID: `0000181A-0000-1000-8000-00805F9B34FB`
-- Single peripheral connection (`CONFIG_BT_MAX_CONN=1`); optional pairing (1 bond slot).
+- Custom configuration service UUID: `12345678-1234-5678-9abc-def123456780`
+- 34 total characteristics (29 irrigation service + 5 custom configuration service).
+- Single peripheral connection (`CONFIG_BT_MAX_CONN=1`).
+- Encrypted access required for all characteristics (BLE security level 2); `CONFIG_BT_MAX_PAIRED=5` bond slots.
 - Write payloads stay 20 bytes for compatibility; large structs use the shared fragmentation headers.
 - Full characteristic list, properties, and ATT behaviors are maintained in `docs/ble-api/README.md` (kept in sync with `src/bt_irrigation_service.c`).
 
