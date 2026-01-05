@@ -7,20 +7,21 @@ This guide reflects the current Bluetooth Low Energy interface implemented in `s
 - **Advertised name:** `AutoWatering` (`CONFIG_BT_DEVICE_NAME`)
 - **Primary service UUID:** `12345678-1234-5678-1234-56789abcdef0`
 - **Simultaneous links:** 1 peripheral connection (`CONFIG_BT_MAX_CONN=1`)
-- **Pairing:** Optional, central-initiated. The firmware does not enforce a minimum security level; all characteristics remain accessible after a successful connection even without bonding.
-- **Bond slots:** 1 (`CONFIG_BT_MAX_PAIRED=1`) for faster reconnects when the central opts to pair.
+- **Pairing:** Required for characteristic access. All GATT attributes require encryption, and the firmware requests `BT_SECURITY_L2` on connect (Just Works, no MITM).
+- **Bond slots:** 5 (`CONFIG_BT_MAX_PAIRED=5`) for faster reconnects when the central opts to pair.
 - **ATT MTU:** Zephyr negotiates up to the central's request. Application logic still caps write fragments at 20 payload bytes for compatibility; larger structs are transferred via fragmentation.
 
 ## Characteristic Inventory (Verified)
 
 Characteristics are exposed through two services:
+
 - **Irrigation Service** (primary): `12345678-1234-5678-1234-56789abcdef0`
 - **Custom Configuration Service**: `12345678-1234-5678-9abc-def123456780`
 
 Properties come directly from the `BT_GATT_CHARACTERISTIC` declarations; sizes match the packed structs in `bt_gatt_structs.h` and `bt_gatt_structs_enhanced.h`. For the full list (including Custom Configuration Service characteristics) see `docs/ble-api/characteristics/README.md`.
 
 | # | Characteristic | UUID | Size | Properties | Notes |
-|---|----------------|------|------|------------|-------|
+| --- | --- | --- | --- | --- | --- |
 | 1 | Valve Control | `12345678-1234-5678-1234-56789abcdef1` | 4 bytes | R / W / N | Manual watering commands and valve status snapshots. First byte selects channel. |
 | 2 | Flow Sensor | `12345678-1234-5678-1234-56789abcdef2` | 4 bytes | R / N | Unsigned 32-bit pulse count per second with notifications when flow changes. |
 | 3 | System Status | `12345678-1234-5678-1234-56789abcdef3` | 1 byte | R / N | Encoded health flags (idle, no flow, unexpected flow, RTC error, etc.). |
@@ -48,33 +49,49 @@ Properties come directly from the `BT_GATT_CHARACTERISTIC` declarations; sizes m
 | 25 | Onboarding Status | `12345678-1234-5678-1234-56789abcde20` | 29 bytes | R / N | Read-only progress flags for onboarding workflows. |
 | 26 | Reset Control | `12345678-1234-5678-1234-56789abcde21` | 16 bytes | R / W / N | Two-step reset interface (code generate + confirmation). Notifies result and refreshed confirmation code. |
 | 27 | Channel Compensation Config | `12345678-1234-5678-1234-56789abcde19` | 44 bytes | R / W / N | Per-channel rain/temp compensation settings. 1-byte write selects channel; 44-byte write updates config. |
-| 28 | Bulk Sync Snapshot | `12345678-1234-5678-1234-56789abcde60` | 60 bytes | R | **NEW** Single-read aggregate of system state, environmental data, rain totals, compensation status, and channel states. Use at connection to replace multiple queries. |
+| 28 | Bulk Sync Snapshot | `12345678-1234-5678-1234-56789abcde60` | 60 bytes | R | Single-read aggregate of system state, environmental data, rain totals, compensation status, and channel states. Use at connection to replace multiple queries. |
 | 29 | Hydraulic Status | `12345678-1234-5678-1234-56789abcde22` | 48 bytes | R / W / N | Hydraulic profile, tolerances, lock/anomaly counters, plus global lock snapshot. |
 
+### Custom Configuration Service Characteristics (5 additional)
+
+| # | Characteristic | UUID | Size | Properties | Notes |
+| --- | --- | --- | --- | --- | --- |
+| 30 | Custom Soil Configuration | `12345678-1234-5678-9abc-def123456781` | 76 bytes | R / W / N | Create/update/delete per-channel custom soil |
+| 31 | Soil Moisture Configuration | `12345678-1234-5678-9abc-def123456784` | 8 bytes | R / W / N | Configure antecedent soil moisture (global + per-channel) |
+| 32 | Config Reset | `12345678-1234-5678-9abc-def123456782` | Var. | R / N | Configuration reset operations (read-only + notify) |
+| 33 | Config Status | `12345678-1234-5678-9abc-def123456783` | Var. | R / W / N | Configuration status and completeness |
+| 34 | Interval Mode Configuration | `12345678-1234-5678-9abc-def123456785` | 16 bytes | R / W / N | Configure Cycle & Soak ON/OFF durations per-channel |
+
 Legend: R = Read, W = Write, N = Notify.
+
+**Total: 34 characteristics** (29 Irrigation Service + 5 Custom Configuration Service)
 
 ## Performance Optimizations (v2.1+)
 
 The following optimizations have been implemented to maximize BLE throughput:
 
 ### PHY 2M and Data Length Extension
+
 - PHY is upgraded to 2M (2 Mbps) at connection when supported
 - Data Length Extension (DLE) is requested to 251 bytes
 - Combined effect: ~2x faster raw data transfer
 
 ### Binary Search for Flash History
+
 - History queries now use O(log n) binary search instead of O(n) linear scan
 - Applies to: environmental hourly/daily, rain hourly/daily
 - Typical speedup: 10-30x for queries on 720+ entry history
 
 ### Fragment Streaming Improvements
+
 - Inter-fragment delay reduced from 5ms to 2ms
 - Retry logic with exponential backoff (20ms → 640ms, 5 retries)
 - New-query rate-limit reduced from 1000ms to 100ms (continuation/fragment requests bypass the limiter)
 - Query continuation bypasses rate-limit entirely
 
 ### Buffer Configuration
-```
+
+```conf
 CONFIG_BT_BUF_ACL_TX_COUNT=12
 CONFIG_BT_BUF_EVT_RX_COUNT=16
 CONFIG_BT_L2CAP_TX_BUF_COUNT=12
@@ -85,7 +102,9 @@ CONFIG_BT_GATT_NOTIFY_MULTIPLE=y
 ```
 
 ### Bulk Sync Snapshot (UUID 0xde60)
+
 A single 60-byte READ replaces 10+ individual characteristic queries at connection:
+
 - System status, active channel, valve states
 - Environmental data (temperature, humidity, pressure, dew point, VPD)
 - Rain totals (today, week), skip status
@@ -117,7 +136,7 @@ The firmware keeps 20-byte payload compatibility for writes even when a larger M
 ## ATT Error Behaviour
 
 | Error | Likely Cause | Client Action |
-|-------|--------------|---------------|
+| --- | --- | --- |
 | `BT_ATT_ERR_INVALID_ATTRIBUTE_LEN` | Fragment length mismatch, incorrect total size | Recalculate header and ensure first fragment declares the full struct length. |
 | `BT_ATT_ERR_INVALID_OFFSET` | Long write with non-zero offset (not supported) | Always send fragments starting at offset 0. |
 | `BT_ATT_ERR_VALUE_NOT_ALLOWED` | Channel out of range, unsupported reset type, or malformed enum | Validate inputs before writing. |

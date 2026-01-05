@@ -1,6 +1,6 @@
 # BLE Connection Management & Current Security Posture
 
-Status: VERIFIED (aligned Feb 2025)
+Status: VERIFIED (aligned Jan 2026)
 
 This file now focuses on factual connection & resource management behavior actually implemented in firmware. Earlier versions overstated security guarantees; see updated `security-pairing.md` for the explicit minimal security statement. References to role-based authorization, enforced authentication, or multi-client arbitration beyond a single connection have been removed where speculative.
 
@@ -18,7 +18,7 @@ CONFIG_BT_MAX_PAIRED=1             // Support one paired device
 ### Authentication & Pairing (Behavior)
 
 | Aspect | Current Behavior | Notes |
-|--------|------------------|-------|
+| --- | --- | --- |
 | Pairing trigger | Central-initiated only | Device never forces it |
 | Required level | None | Handlers lack `bt_conn_get_security` checks |
 | Bond storage | Supported (1 slot) | Provides faster reconnection only |
@@ -129,7 +129,7 @@ static void connected(struct bt_conn *conn, uint8_t err) {
 #### Rationale
 
 | Parameter | Value | Rationale |
-|-----------|-------|-----------|
+| --- | --- | --- |
 | **Interval** | 30-50ms | Balance between responsiveness and power consumption |
 | **Latency** | 0 | Immediate response for irrigation control |
 | **Timeout** | 4 seconds | Reliable connection with reasonable recovery time |
@@ -889,7 +889,7 @@ class BLEConnectionManager(private val context: Context) {
 ## 7. Best Practices (Current State)
 
 | Area | Practical Guidance (Today) | Future Hardening Hook |
-|------|-----------------------------|-----------------------|
+| --- | --- | --- |
 | Security | Treat link as unauthenticated unless you initiate pairing manually | Enforce min security + passkey callbacks |
 | Single Connection | Expect exclusive access; handle disconnect + fast reconnect | Consider optional multi-conn w/ authorization |
 | Notification Load | Rely on internal adaptive throttling already documented per characteristic | Tunable QoS per client |

@@ -1,8 +1,9 @@
 # Flow Sensor Characteristic (UUID: def2)
 
 > Operation Summary
+
 | Operation | Payload | Size | Fragmentation | Notes |
-|-----------|---------|------|---------------|-------|
+| --- | --- | --- | --- | --- |
 | Read | `uint32_t flow_rate_or_pulses` | 4 B | None | Smoothed pulses/sec or raw pulses (calibration) |
 | Notify | `uint32_t flow_rate_or_pulses` | 4 B | None | Interval or pulse-delta triggered |
 
@@ -30,16 +31,16 @@ uint32_t flow_rate_or_pulses;
 
 ## Byte Layout
 
-| Offset | Size | Field              | Description |
-|--------|------|--------------------|-------------|
-| 0      | 4    | flow_rate_or_pulses| Smoothed flow rate (pps) OR raw pulse count (calibration) |
+| Offset | Size | Field | Description |
+| --- | --- | --- | --- |
+| 0 | 4 | flow_rate_or_pulses | Smoothed flow rate (pps) OR raw pulse count (calibration) |
 
 ## Data Interpretation
 
 Interpretation depends on calibration state:
 
 | Mode | Meaning | Notes |
-|------|---------|-------|
+| --- | --- | --- |
 | Normal | Smoothed pulses per second (pps) | 2-sample average updated at 10 s intervals; may hold previous value between calculations |
 | Calibration active | Raw cumulative pulse count | Direct snapshot of internal counter (32-bit wraps naturally) |
 | Idle / no pulses | 0 | Reported when no pulses counted in recent window |
@@ -49,7 +50,8 @@ Smoothed flow rate calculation window: 10 s interval with minimum 5 pulses; low 
 ## Flow Sensor Configuration
 
 ### Calibration & Hardware Parameters (Implemented)
-- **Default pulses per liter (Devicetree)**: Value comes from `sensor_config.flow-calibration`. On `promicro_52840.overlay` this is 750 pulses/L; if the property is missing the firmware falls back to 450. `DEFAULT_PULSES_PER_LITER` (750) remains the reset target used by the watering subsystem.
+
+- **Default pulses per liter (Devicetree)**: Value comes from `sensor_config.flow-calibration`. On `arduino_nano_33_ble.overlay` this is 750 pulses/L; if the property is missing the firmware falls back to 450. `DEFAULT_PULSES_PER_LITER` (750) remains the reset target used by the watering subsystem.
 - **Runtime calibration range**: 100-10000 pulses/L (writes outside rejected).
 - **Debounce**: Taken from `sensor_config.debounce-ms` (2 ms on the main hardware overlay, 5 ms fallback when unset).
 - **Minimum pulses for stable rate**: 5 (else still computed but considered low flow). No fixed pps detection threshold; algorithm relies on pulse deltas.
@@ -57,6 +59,7 @@ Smoothed flow rate calculation window: 10 s interval with minimum 5 pulses; low 
 - **Notification triggers**: Total pulse count +100 or 30 s since the last send. Work submissions are queued every 25 pulses, so extremely low flows (<25 pulses over long periods) can stretch the effective interval beyond 30 s.
 
 ### Flow Rate Conversion (Client-Side Helpers)
+
 ```c
 static inline float pulses_per_second_to_ml_per_sec(uint32_t pps, uint32_t pulses_per_liter) {
     return (pulses_per_liter == 0) ? 0.0f : (float)pps * 1000.0f / (float)pulses_per_liter;
@@ -73,8 +76,9 @@ static inline float pulses_per_second_to_l_per_min(uint32_t pps, uint32_t pulses
 Read returns the current smoothed pps (or raw pulses during calibration). Because the smoothing window updates every 10 s, sequential reads within the window may repeat the same value even while low-rate pulses accumulate.
 
 Examples (little-endian encoding shown):
+
 | Scenario | Value | Bytes |
-|----------|-------|-------|
+| --- | --- | --- |
 | No flow | 0 | `00 00 00 00` |
 | Moderate flow (~12 pps) | 12 | `0C 00 00 00` |
 | Higher flow (125 pps) | 125 | `7D 00 00 00` |
@@ -83,6 +87,7 @@ Examples (little-endian encoding shown):
 ### Notification Operations
 
 Flow notifications are emitted under two conditions:
+
 1. Significant pulse accumulation since last notify (>=100 additional pulses total)
 2. Fallback timeout interval (>=30 s since last notify)
 
@@ -125,9 +130,12 @@ void update_volume_tracking(struct volume_tracker *tracker, uint32_t current_pul
 ## Error Detection and Handling
 
 ### Alarm & Anomaly Detection (External Module)
+
 Actual anomaly detection (no-flow, unexpected flow) occurs in `watering_monitor.c` using:
+
 - Stall / never-started logic (5 s start, 3 s stall watchdog)
 - Unexpected flow threshold: 10 accumulated pulses when no valves active (`UNEXPECTED_FLOW_THRESHOLD`)
+
 No inline high/low pps alarm thresholds are currently enforced in the flow sensor module (older examples removed).
 
 ## Implementation Examples
