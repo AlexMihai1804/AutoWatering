@@ -28,7 +28,7 @@
  * This service provides comprehensive BLE communication capabilities with enhanced
  * reliability features including notification throttling and buffer management.
  * 
- * Version: 1.2.0 (July 2025)
+ * Version: 3.1.0 (January 2026)
  * 
  * Key Features:
  * - 15-characteristic GATT service with complete functionality
