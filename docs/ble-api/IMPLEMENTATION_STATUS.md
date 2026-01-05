@@ -15,7 +15,7 @@ Legend: R=Read, W=Write, N=Notify, F=Custom fragmentation (4B header), H=Unified
 | 5 | Schedule Configuration | schedule_config_data | R/W/N | 9 B | LW | First write byte selects channel for subsequent read |
 | 6 | System Configuration (Enhanced) | enhanced_system_config_data | R/W/N | 56 B | LW + S | Offset-based accumulation (no custom header) |
 | 7 | Task Queue Management | task_queue_data | R/W/N | 9 B | - | `task_id_to_delete` not yet used |
-| 8 | Statistics | statistics_data | R/W/N | 15 B | - | Volatile (persistence TBD) |
+| 8 | Statistics | statistics_data | R/W/N | 15 B | - | Volatile (reset on reboot) |
 | 9 | RTC Configuration | rtc_data | R/W/N | 16 B | - | Full write only (no partial semantics) |
 | 10 | Alarm Status | alarm_data | R/W/N | 7 B | - | Write clears alarm codes |
 | 11 | Calibration Management | calibration_data | R/W/N | 13 B | - | Actions 0-3 implemented |
