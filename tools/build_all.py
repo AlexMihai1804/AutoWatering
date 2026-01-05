@@ -142,8 +142,8 @@ def main():
     print("PASUL 2: Build firmware Zephyr")
     print("="*50)
     
-    if not run_command("west build -b promicro_nrf52840",
-                      "Construim firmware-ul pentru nRF52840",
+    if not run_command("west build -b arduino_nano_33_ble",
+                      "Construim firmware-ul pentru Arduino Nano 33 BLE (nRF52840)",
                       cwd=project_root):
         print("EROARE: Build-ul firmware-ului a esuat!")
         sys.exit(1)
