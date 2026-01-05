@@ -1,4 +1,4 @@
-# AutoWatering Troubleshooting Guide (January 2025)
+# AutoWatering Troubleshooting Guide (January 2026)
 
 This guide covers firmware diagnostics for the AutoWatering irrigation controller running on nRF52840. It focuses on current implementation issues and their resolution.
 
@@ -237,17 +237,11 @@ west update
 # Install Python requirements
 pip3 install --user -r zephyr/scripts/requirements.txt
 
-# Build for nRF52840 Pro Micro
-west build -b nrf52840_promicro --pristine
-
 # Build for Arduino Nano 33 BLE
 west build -b arduino_nano_33_ble --pristine
 
-# Native simulation
-west build -b native_sim --pristine -- -DEXTRA_DTC_OVERLAY_FILE=boards/native_sim.overlay
-
-# Flash
-west flash --runner jlink
+# Flash (double-tap reset to enter bootloader)
+west flash -r bossac
 ```
 
 **If build fails:**
@@ -306,4 +300,4 @@ west flash --runner jlink
 
 ---
 
-*Last updated: January 2025 - v3.1.0 BLE Performance Optimizations*
+*Last updated: January 2026 - v3.1.0 BLE Performance Optimizations*

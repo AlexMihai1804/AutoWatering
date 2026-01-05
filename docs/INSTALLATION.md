@@ -1,8 +1,8 @@
 # AutoWatering Firmware Installation Guide
 
-This guide explains how to prepare a Zephyr development environment, fetch the AutoWatering sources, and build the firmware for both hardware targets and the native simulation build.
+This guide explains how to prepare a Zephyr development environment, fetch the AutoWatering sources, and build the firmware for the Arduino Nano 33 BLE hardware target.
 
-> **Tip**: These steps track the Zephyr 4.1.0 toolchain used in this repository. If you already maintain a working Zephyr workspace, jump straight to the "Fetch the sources" and "Build" sections.
+> **Tip**: These steps track the Zephyr 4.3.0 toolchain used in this repository. If you already maintain a working Zephyr workspace, jump straight to the "Fetch the sources" and "Build" sections.
 
 ## 1. Prerequisites
 
@@ -10,7 +10,7 @@ This guide explains how to prepare a Zephyr development environment, fetch the A
 - 16 GB RAM recommended when building under virtualization/WSL
 - 15 GB free disk space for the Zephyr SDK, workspace, and build outputs
 - Git 2.40+ and Python 3.10+
-- For flashing hardware: nRF52840 Pro Micro (or compatible) plus Segger J-Link or CMSIS-DAP debugger
+- For flashing hardware: Arduino Nano 33 BLE plus Segger J-Link, CMSIS-DAP debugger, or BOSSA (via USB bootloader)
 
 > **Reference**: The Zephyr [Getting Started Guide](https://docs.zephyrproject.org/latest/develop/getting_started/index.html) provides platform-specific prerequisites. Follow it if any package commands differ on your OS.
 
@@ -24,7 +24,7 @@ This guide explains how to prepare a Zephyr development environment, fetch the A
 wsl --install -d Ubuntu-22.04
 ```
 
-2. Inside the Ubuntu shell install the build toolchain and Python helpers:
+1. Inside the Ubuntu shell install the build toolchain and Python helpers:
 
 ```bash
 sudo apt update
@@ -34,7 +34,7 @@ sudo apt install --yes wget curl xz-utils file libsdl2-dev libmagic1
 python3 -m pip install --user --upgrade west
 ```
 
-3. Download and install the Zephyr SDK (0.17.0 is validated with Zephyr 4.1.0):
+1. Download and install the Zephyr SDK (0.17.0 or later, compatible with Zephyr 4.3.0):
 
 ```bash
 cd ~
@@ -47,7 +47,7 @@ cd zephyr-sdk-0.17.0
 ### Linux
 
 - Install the same package set as above using your distribution's package manager.
-- Install the Zephyr SDK (0.17.0 or another release compatible with Zephyr 4.1.0).
+- Install the Zephyr SDK (0.17.0 or later, compatible with Zephyr 4.3.0).
 - Install west with `python3 -m pip install --user west`.
 
 ### macOS
@@ -63,11 +63,11 @@ Choose a workspace directory (examples assume `~/autowatering-workspace`):
 ```bash
 mkdir -p ~/autowatering-workspace
 cd ~/autowatering-workspace
-west init -m https://github.com/AlexMihai1804/AutoWatering.git
+west init -m https://github.com/AlexMihai1804/AutoWatering.git --mf west-manifest/west.yml
 west update
 ```
 
-This clones the AutoWatering application alongside the Zephyr upstream tree declared in `west-manifest/west.yml` (Zephyr v4.1.0).
+This clones the AutoWatering application alongside the Zephyr upstream tree declared in `west-manifest/west.yml` (Zephyr v4.3.0).
 
 ## 4. Install Python Dependencies
 
@@ -81,32 +81,25 @@ Create and activate a virtual environment first if you prefer an isolated Python
 
 ## 5. Build the Firmware
 
-### nRF52840 Pro Micro (primary target)
+### Arduino Nano 33 BLE (primary target)
 
 ```bash
-cd autowatering
-west build -b nrf52840_promicro --pristine
+cd AutoWatering
+west build -b arduino_nano_33_ble --pristine
 ```
 
-The build output lives in `build/nrf52840_promicro/`. Board overlays (`boards/promicro_52840.overlay`, `boards/usb.overlay`) are pulled in automatically by the CMake configuration.
-
-### Native Simulation (desktop testing)
-
-```bash
-cd autowatering
-west build -b native_sim --pristine -- -DEXTRA_DTC_OVERLAY_FILE=boards/native_sim.overlay
-```
-
-Native simulation enables emulated RTC, GPIO, and BLE for host-side testing. Always add `--pristine` when switching boards to avoid configuration artifacts.
+The build output lives in `build/arduino_nano_33_ble/`. The board overlay `boards/arduino_nano_33_ble.overlay` is pulled in automatically by the CMake configuration; add `boards/usb.overlay` only if you explicitly pass it via `DTC_OVERLAY_FILE`.
 
 ## 6. Flash the Hardware
 
-1. Connect the nRF52840 board through a J-Link or CMSIS-DAP debugger.
+1. Double-tap the reset button on the Arduino Nano 33 BLE to enter bootloader mode (the LED pulses).
 2. From the `autowatering/` directory run:
 
 ```bash
-west flash
+west flash -r bossac
 ```
+
+Alternatively, connect via a J-Link or CMSIS-DAP debugger and run `west flash` without the `-r bossac` argument.
 
 Select a specific runner (e.g., `--runner jlink`) when required by your hardware setup.
 

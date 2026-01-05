@@ -53,6 +53,8 @@ High-level only; see `FEATURES.md` for market overview or `FEATURES_FULL.md` for
 
 ---
 
-**Version**: 3.0.0 (July 2025)  
+**Firmware banner**: v2.4 (printed at boot in `src/main.c`)  
+**BLE DIS FW revision**: 1.0 (`CONFIG_BT_DIS_FW_REV_STR`)  
+**Docs updated**: 2026-01-04  
 **License**: MIT  
 **Maintainer**: Alex Mihai
