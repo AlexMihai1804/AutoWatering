@@ -4,6 +4,7 @@
 #include <stdio.h>  // Add this for snprintf
 #include "watering.h"
 #include "watering_internal.h"
+#include "fao56_calc.h"
 #include "nvs_config.h"  // Changed to use direct NVS
 #include "flow_sensor.h" // For in-memory calibration updates on load
 
@@ -404,6 +405,9 @@ watering_error_t watering_load_config(void) {
     
     // Load each channel's configuration (COMPLETE CHANNEL with enhanced parameters)
     for (int i = 0; i < WATERING_CHANNELS_COUNT; i++) {
+        // Bind water balance storage early so NVS load can restore deficit state.
+        (void)fao56_bind_channel_balance(i, &watering_channels[i]);
+
         // Try to load the complete enhanced channel configuration  
         ret = nvs_load_complete_channel_config(i, &watering_channels[i]);
         if (ret >= 0) {

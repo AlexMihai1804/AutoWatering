@@ -464,6 +464,18 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
                                                        const environmental_data_t *env,
                                                        irrigation_calculation_t *result);
 
+/**
+ * @brief Bind a per-channel water balance state for FAO-56 calculations
+ *
+ * Ensures the channel has a valid water_balance pointer backed by the
+ * FAO-56 internal storage. Does not overwrite existing balances.
+ *
+ * @param channel_id Channel ID (0-7)
+ * @param channel Pointer to channel data (optional; if NULL, it will be resolved)
+ * @return Pointer to water balance state, or NULL on error
+ */
+water_balance_t *fao56_bind_channel_balance(uint8_t channel_id, watering_channel_t *channel);
+
 /* ================================================================== */
 /* AUTO (Smart Schedule) Mode - Daily Deficit Tracking              */
 /* ================================================================== */

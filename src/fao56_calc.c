@@ -2760,9 +2760,15 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
         return err;
     }
 
-    // Check if automatic mode is enabled
-    if (channel->auto_mode != WATERING_AUTOMATIC_QUALITY && 
-        channel->auto_mode != WATERING_AUTOMATIC_ECO) {
+    // Check if automatic mode is enabled (prefer auto_mode, fall back to event mode)
+    watering_mode_t calc_mode = channel->auto_mode;
+    if (calc_mode != WATERING_AUTOMATIC_QUALITY && calc_mode != WATERING_AUTOMATIC_ECO) {
+        watering_mode_t event_mode = channel->watering_event.watering_mode;
+        if (event_mode == WATERING_AUTOMATIC_QUALITY || event_mode == WATERING_AUTOMATIC_ECO) {
+            calc_mode = event_mode;
+        }
+    }
+    if (calc_mode != WATERING_AUTOMATIC_QUALITY && calc_mode != WATERING_AUTOMATIC_ECO) {
         LOG_DBG("Channel %u not in automatic mode, skipping FAO-56 calculation", channel_id);
         return WATERING_ERROR_CONFIG;
     }
@@ -2780,172 +2786,63 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
         }
     }
 
-    // Step 1: Calculate reference evapotranspiration (ET0) with caching
-    float et0_mm_day;
-    float latitude_rad = channel->latitude_deg * PI / 180.0f;
-    uint16_t day_of_year = fao56_get_current_day_of_year();
-
-    if (fao56_cache_get_et0(&validated_env, latitude_rad, day_of_year, channel_id, &et0_mm_day)) {
-    LOG_DBG("Using cached ET0 for channel %u: %.2f mm/day", channel_id, (double)et0_mm_day);
-    } else {
-        // Calculate ET0 using Penman-Monteith if full data available, otherwise Hargreaves-Samani
-        // With solar and wind sensors removed, always fall back to simplified Penman-Monteith
-        // using fixed radiation/wind assumptions, requiring temp+humidity+pressure.
-        if (validated_env.temp_valid && validated_env.humidity_valid && validated_env.pressure_valid) {
-            et0_mm_day = calc_et0_penman_monteith(&validated_env, latitude_rad, day_of_year);
-            LOG_DBG("Calculated ET0 (assumed radiation/wind) Penman-Monteith: %.2f mm/day", (double)et0_mm_day);
-        } else {
-            et0_mm_day = calc_et0_hargreaves_samani(&validated_env, latitude_rad, day_of_year);
-            LOG_DBG("Calculated ET0 using Hargreaves-Samani fallback: %.2f mm/day", (double)et0_mm_day);
-        }
-        
-        // Cache the result
-        fao56_cache_store_et0(&validated_env, latitude_rad, day_of_year, channel_id, et0_mm_day);
+    // Update deficit using the same AUTO engine (ETc in realtime + daily rain reconciliation)
+    err = fao56_realtime_update_deficit(channel_id, &validated_env);
+    if (err != WATERING_SUCCESS) {
+        LOG_WRN("Realtime deficit update failed for channel %u: %d", channel_id, err);
+        return err;
     }
 
-    // Step 2: Calculate crop coefficient with caching
-    phenological_stage_t pheno_stage;
-    float crop_coefficient;
-    
-    if (channel->plant_db_index != UINT16_MAX && 
-        fao56_cache_get_crop_coeff(channel->plant_db_index, channel->days_after_planting, 
-                                  channel_id, &pheno_stage, &crop_coefficient)) {
-    LOG_DBG("Using cached crop coefficient for channel %u: %.3f", channel_id, (double)crop_coefficient);
-    } else {
-        // For now, use simplified calculation until plant database is fully integrated
-        crop_coefficient = fao56_get_simplified_crop_coefficient(channel->plant_type, 
-                                                                channel->days_after_planting);
-        pheno_stage = PHENO_STAGE_DEVELOPMENT; // Default stage
-        
-        if (channel->plant_db_index != UINT16_MAX) {
-            fao56_cache_store_crop_coeff(channel->plant_db_index, channel->days_after_planting,
-                                        channel_id, pheno_stage, crop_coefficient);
-        }
-    LOG_DBG("Calculated crop coefficient: %.3f", (double)crop_coefficient);
-    }
-
-    // Step 3: Calculate crop evapotranspiration (ETc)
-    float etc_mm_day = et0_mm_day * crop_coefficient;
-    
-    // Sun exposure adjustment removed (no solar sensor)
-    if (channel->sun_exposure_pct < 100) {
-        float sun_factor = channel->sun_exposure_pct / 100.0f;
-        etc_mm_day *= sun_factor;
-    LOG_DBG("Applied sun exposure adjustment: %.1f%% -> ETc = %.2f mm/day", 
-        (double)channel->sun_exposure_pct, (double)etc_mm_day);
-    }
-
-    // Step 4: Unified water balance (replaces legacy simplified deficit logic)
-    water_balance_t water_balance; 
-    memset(&water_balance, 0, sizeof(water_balance));
-
-    bool unified_balance_ok = false;
-    if (channel->plant_db_index != UINT16_MAX &&
-        channel->soil_db_index != UINT8_MAX &&
-        channel->irrigation_method_index != UINT8_MAX) {
-        const plant_full_data_t *plant = plant_db_get_by_index(channel->plant_db_index);
-        const soil_enhanced_data_t *soil = soil_db_get_by_index(channel->soil_db_index);
-        const irrigation_method_data_t *method = irrigation_db_get_by_index(channel->irrigation_method_index);
-        if (plant && soil && method) {
-            // Derive a simple current root depth interpolation (DAP vs total season)
-            float root_min = plant->root_depth_min_m_x1000 / 1000.0f;
-            float root_max = plant->root_depth_max_m_x1000 / 1000.0f;
-            uint32_t season_days = (uint32_t)plant->stage_days_ini + plant->stage_days_dev +
-                                   plant->stage_days_mid + plant->stage_days_end;
-            float frac = 1.0f;
-            if (season_days > 0) {
-                frac = (float)channel->days_after_planting / (float)season_days;
-                if (frac < 0.0f) frac = 0.0f;
-                if (frac > 1.0f) frac = 1.0f;
-            }
-            float root_depth_current_m = root_min + (root_max - root_min) * frac;
-            watering_error_t wb_err = calc_water_balance(plant, soil, method, &validated_env,
-                                                         root_depth_current_m, channel->days_after_planting, &water_balance);
-            if (wb_err == WATERING_SUCCESS) {
-                unified_balance_ok = true;
-                LOG_DBG("Unified water balance: AWC=%.1f RAW=%.1f deficit=%.2f irrig=%s root=%.2fm frac=%.2f", 
-                        (double)water_balance.wetting_awc_mm, (double)water_balance.raw_mm,
-                        (double)water_balance.current_deficit_mm,
-                        water_balance.irrigation_needed ? "YES" : "NO",
-                        (double)root_depth_current_m, (double)frac);
+    if (channel->watering_event.schedule_type != SCHEDULE_AUTO) {
+        uint16_t current_julian_day = fao56_get_current_day_of_year();
+        if (current_julian_day != 0 &&
+            (channel->last_auto_check_julian_day != current_julian_day || !channel->auto_check_ran_today)) {
+            fao56_auto_decision_t daily_decision;
+            watering_error_t daily_err = fao56_daily_update_deficit(channel_id, &daily_decision);
+            if (daily_err == WATERING_SUCCESS) {
+                channel->last_auto_check_julian_day = current_julian_day;
+                channel->auto_check_ran_today = true;
             } else {
-                LOG_WRN("Water balance calc failed (%d), falling back to simplified deficit", wb_err);
+                LOG_WRN("Daily rain update failed for channel %u: %d", channel_id, daily_err);
             }
         }
     }
 
-    if (!unified_balance_ok) {
-        // Fallback: replicate prior simplified deficit behavior
-        float daily_deficit = etc_mm_day; // assume no rainfall unless valid
-        if (validated_env.rain_valid && validated_env.rain_mm_24h > 0) {
-            float effective_rain = validated_env.rain_mm_24h * 0.8f;
-            daily_deficit = fmaxf(0.0f, daily_deficit - effective_rain);
-            LOG_DBG("Applied effective rainfall (fallback): %.1f mm -> deficit=%.2f mm", (double)effective_rain, (double)daily_deficit);
-        }
-        water_balance.current_deficit_mm = daily_deficit;
-        water_balance.raw_mm = 0.0f; // unknown in fallback
-        water_balance.wetting_awc_mm = 0.0f;
-        water_balance.irrigation_needed = (daily_deficit > 1.0f);
+    water_balance_t *balance = channel->water_balance;
+    if (!balance) {
+        LOG_ERR("Channel %u has no water balance state", channel_id);
+        return WATERING_ERROR_INVALID_PARAM;
     }
 
-    // Step 5: Determine irrigation requirement volume from water balance
-    if (water_balance.irrigation_needed) {
-        // Refill full deficit (could later choose to refill only to RAW)
-        result->net_irrigation_mm = water_balance.current_deficit_mm;
+    const plant_full_data_t *plant = plant_db_get_by_index(channel->plant_db_index);
+    const irrigation_method_data_t *method = irrigation_db_get_by_index(channel->irrigation_method_index);
+    if (!plant || !method) {
+        LOG_ERR("Channel %u missing plant or method data for FAO-56 calc", channel_id);
+        return WATERING_ERROR_INVALID_DATA;
+    }
+
+    float area_m2 = channel->use_area_based ? channel->coverage.area_m2 : 0.0f;
+    uint16_t plant_count = channel->use_area_based ? 0 : channel->coverage.plant_count;
+
+    if (calc_mode == WATERING_AUTOMATIC_ECO) {
+        err = apply_eco_irrigation_mode(balance, method, plant,
+                                        area_m2, plant_count,
+                                        channel->max_volume_limit_l, result);
     } else {
-        result->net_irrigation_mm = 0.0f;
+        err = apply_quality_irrigation_mode(balance, method, plant,
+                                            area_m2, plant_count,
+                                            channel->max_volume_limit_l, result);
+    }
+    if (err != WATERING_SUCCESS) {
+        LOG_ERR("FAO-56 volume calculation failed for channel %u: %d", channel_id, err);
+        return err;
     }
 
-    // Apply irrigation efficiency (keep legacy efficiency logic for now)
-    float irrigation_efficiency = 0.8f; // default drip
-    if (channel->irrigation_method == IRRIGATION_SPRINKLER) {
-        irrigation_efficiency = 0.7f;
-    }
-    if (irrigation_efficiency < 0.1f) irrigation_efficiency = 0.1f; // safety
-    result->gross_irrigation_mm = (irrigation_efficiency > 0.0f) ?
-                                  (result->net_irrigation_mm / irrigation_efficiency) :
-                                  result->net_irrigation_mm;
-
-    // Convert to volume based on coverage type
-    if (channel->use_area_based) {
-        result->volume_liters = result->gross_irrigation_mm * channel->coverage.area_m2;
-        result->volume_per_plant_liters = 0.0f; // Not applicable for area-based
-    } else {
-        // Assume 0.5 m² per plant for volume calculation
-        float area_per_plant = 0.5f;
-        result->volume_per_plant_liters = result->gross_irrigation_mm * area_per_plant;
-        result->volume_liters = result->volume_per_plant_liters * channel->coverage.plant_count;
-    }
-
-    // Step 6: Apply quality vs eco mode
-    bool eco_mode = (channel->auto_mode == WATERING_AUTOMATIC_ECO);
-    if (eco_mode) {
-        result->volume_liters *= 0.7f; // 70% for eco mode
-        result->volume_per_plant_liters *= 0.7f;
-        result->gross_irrigation_mm *= 0.7f;
-    LOG_DBG("Applied eco mode: 70%% of calculated volume");
-    }
-
-    // Step 7: Apply maximum volume limiting
-    if (channel->max_volume_limit_l > 0 && result->volume_liters > channel->max_volume_limit_l) {
-        result->volume_liters = channel->max_volume_limit_l;
-        result->volume_limited = true;
-    LOG_WRN("Volume limited to %.1f L for channel %u", (double)channel->max_volume_limit_l, channel_id);
-    }
-
-    // Step 8: Set irrigation timing parameters
-    result->cycle_count = 1; // Single cycle for now
-    result->cycle_duration_min = (uint16_t)(result->volume_liters / 5.0f); // Assume 5L/min flow
-    result->soak_interval_min = 0; // No soak for single cycle
-
-    // Ensure minimum duration
-    if (result->cycle_duration_min < 1) {
-        result->cycle_duration_min = 1;
-    }
-
-    LOG_INF("FAO-56 calculation for channel %u: ET0=%.2f, Kc=%.3f, ETc=%.2f, vol=%.1fL %s", 
-            channel_id, (double)et0_mm_day, (double)crop_coefficient, (double)etc_mm_day, (double)result->volume_liters,
-            eco_mode ? "(eco)" : "(quality)");
+    LOG_INF("FAO-56 auto calc for channel %u: deficit=%.2f mm, volume=%.1f L %s",
+            channel_id,
+            (double)balance->current_deficit_mm,
+            (double)result->volume_liters,
+            calc_mode == WATERING_AUTOMATIC_ECO ? "(eco)" : "(quality)");
 
     // Update channel's last calculation time
     channel->last_calculation_time = k_uptime_get_32() / 1000;
@@ -2961,6 +2858,28 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
  * This avoids per-call static allocation differences between helpers.
  */
 static water_balance_t s_auto_channel_balance[WATERING_CHANNELS_COUNT];
+
+water_balance_t *fao56_bind_channel_balance(uint8_t channel_id, watering_channel_t *channel)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return NULL;
+    }
+
+    watering_channel_t *resolved = channel;
+    if (!resolved) {
+        if (watering_get_channel(channel_id, &resolved) != WATERING_SUCCESS || !resolved) {
+            return NULL;
+        }
+    }
+
+    if (resolved->water_balance) {
+        return resolved->water_balance;
+    }
+
+    resolved->water_balance = &s_auto_channel_balance[channel_id];
+    memset(resolved->water_balance, 0, sizeof(water_balance_t));
+    return resolved->water_balance;
+}
 
 watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
                                               const environmental_data_t *env)
@@ -2980,11 +2899,10 @@ watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
     }
 
     // Ensure water balance structure exists
-    if (!channel->water_balance) {
-        channel->water_balance = &s_auto_channel_balance[channel_id];
-        memset(channel->water_balance, 0, sizeof(water_balance_t));
+    water_balance_t *balance = fao56_bind_channel_balance(channel_id, channel);
+    if (!balance) {
+        return WATERING_ERROR_INVALID_PARAM;
     }
-    water_balance_t *balance = channel->water_balance;
 
     // Get plant, soil, and irrigation method from database
     if (channel->plant_db_index >= PLANT_FULL_SPECIES_COUNT ||
@@ -3037,6 +2955,12 @@ watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
     phenological_stage_t stage = calc_phenological_stage(plant, days_after_planting);
     float kc = calc_crop_coefficient(plant, stage, days_after_planting);
     float etc_mm_day = daily_et0 * kc;
+
+    // Apply sun exposure adjustment (consistent with daily update)
+    float sun_factor = channel->sun_exposure_pct / 100.0f;
+    if (sun_factor < 0.3f) sun_factor = 0.3f;
+    if (sun_factor > 1.0f) sun_factor = 1.0f;
+    etc_mm_day *= sun_factor;
 
     // Accumulate fractional ETc based on elapsed uptime
     uint32_t now_ms = k_uptime_get_32();
@@ -3148,11 +3072,10 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     float root_depth_m = calc_current_root_depth(plant, days_after_planting);
     
     // Ensure water balance structure exists
-    if (!channel->water_balance) {
-        channel->water_balance = &s_auto_channel_balance[channel_id];
-        memset(channel->water_balance, 0, sizeof(water_balance_t));
+    water_balance_t *balance = fao56_bind_channel_balance(channel_id, channel);
+    if (!balance) {
+        return WATERING_ERROR_INVALID_PARAM;
     }
-    water_balance_t *balance = channel->water_balance;
     
     // Calculate AWC and RAW parameters
     float awc_mm_per_m = soil->awc_mm_per_m;
