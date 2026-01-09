@@ -2863,6 +2863,7 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
  * This avoids per-call static allocation differences between helpers.
  */
 static water_balance_t s_auto_channel_balance[WATERING_CHANNELS_COUNT];
+static float s_rain_applied_mm[WATERING_CHANNELS_COUNT];
 
 water_balance_t *fao56_bind_channel_balance(uint8_t channel_id, watering_channel_t *channel)
 {
@@ -2883,6 +2884,7 @@ water_balance_t *fao56_bind_channel_balance(uint8_t channel_id, watering_channel
 
     resolved->water_balance = &s_auto_channel_balance[channel_id];
     memset(resolved->water_balance, 0, sizeof(water_balance_t));
+    s_rain_applied_mm[channel_id] = 0.0f;
     return resolved->water_balance;
 }
 
@@ -3098,6 +3100,17 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     float antecedent_moisture_pct = (float)soil_moisture_get_effective_pct(channel_id);
     float effective_rain = calc_effective_precipitation_with_moisture(
         rainfall_24h, soil, method, antecedent_moisture_pct, env_data.air_temp_mean_c);
+
+    // Avoid double-counting rain already applied via incremental updates.
+    float applied_rain = s_rain_applied_mm[channel_id];
+    if (applied_rain > 0.0f) {
+        if (applied_rain >= effective_rain) {
+            effective_rain = 0.0f;
+        } else {
+            effective_rain -= applied_rain;
+        }
+    }
+
     balance->effective_rain_mm = effective_rain;
     decision->effective_rain_mm = effective_rain;
     
@@ -3147,6 +3160,8 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
         LOG_ERR("AUTO mode: Deficit tracking failed for channel %u", channel_id);
         return err;
     }
+
+    s_rain_applied_mm[channel_id] = 0.0f;
     
     // Update decision output values
     decision->current_deficit_mm = balance->current_deficit_mm;
@@ -3202,6 +3217,88 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
         LOG_WRN("AUTO mode: Failed to persist water balance for channel %u: %d", channel_id, nvs_ret);
     }
     
+    return WATERING_SUCCESS;
+}
+
+/**
+ * @brief Apply incremental rainfall to AUTO water balance (best-effort)
+ */
+watering_error_t fao56_apply_rainfall_increment(float rainfall_mm, float air_temp_c)
+{
+    if (rainfall_mm <= 0.0f) {
+        return WATERING_SUCCESS;
+    }
+
+    if (air_temp_c < -20.0f || air_temp_c > 50.0f) {
+        air_temp_c = 20.0f;
+    }
+
+    for (uint8_t channel_id = 0; channel_id < WATERING_CHANNELS_COUNT; channel_id++) {
+        watering_channel_t *channel = &watering_channels[channel_id];
+        if (!watering_channel_auto_mode_valid(channel)) {
+            continue;
+        }
+
+        bool uses_auto_balance =
+            channel->watering_event.schedule_type == SCHEDULE_AUTO ||
+            channel->auto_mode == WATERING_AUTOMATIC_QUALITY ||
+            channel->auto_mode == WATERING_AUTOMATIC_ECO ||
+            channel->watering_event.watering_mode == WATERING_AUTOMATIC_QUALITY ||
+            channel->watering_event.watering_mode == WATERING_AUTOMATIC_ECO;
+        if (!uses_auto_balance) {
+            continue;
+        }
+
+        if (channel->plant_db_index >= PLANT_FULL_SPECIES_COUNT ||
+            channel->soil_db_index >= SOIL_ENHANCED_TYPES_COUNT ||
+            channel->irrigation_method_index >= IRRIGATION_METHODS_COUNT) {
+            continue;
+        }
+
+        water_balance_t *balance = fao56_bind_channel_balance(channel_id, channel);
+        if (!balance) {
+            continue;
+        }
+
+        const plant_full_data_t *plant = &plant_full_database[channel->plant_db_index];
+        const soil_enhanced_data_t *soil = &soil_enhanced_database[channel->soil_db_index];
+        const irrigation_method_data_t *method = &irrigation_methods_database[channel->irrigation_method_index];
+
+        if (balance->wetting_awc_mm <= 0.0f || balance->raw_mm <= 0.0f) {
+            uint32_t current_time = timezone_get_unix_utc();
+            uint16_t days_after_planting = 0;
+            if (channel->planting_date_unix > 0 && current_time > channel->planting_date_unix) {
+                days_after_planting = (uint16_t)((current_time - channel->planting_date_unix) / 86400);
+            }
+
+            float root_depth_m = calc_current_root_depth(plant, days_after_planting);
+            balance->rwz_awc_mm = soil->awc_mm_per_m * root_depth_m;
+
+            float wetting_fraction = method->wetting_fraction_x1000 / 1000.0f;
+            if (wetting_fraction < 0.1f) wetting_fraction = 0.1f;
+            balance->wetting_awc_mm = balance->rwz_awc_mm * wetting_fraction;
+
+            float depletion_fraction = plant->depletion_fraction_p_x1000 / 1000.0f;
+            if (depletion_fraction < 0.1f) depletion_fraction = 0.5f;
+            balance->raw_mm = balance->wetting_awc_mm * depletion_fraction;
+        }
+
+        float antecedent_moisture_pct = (float)soil_moisture_get_effective_pct(channel_id);
+        float effective_rain = calc_effective_precipitation_with_moisture(
+            rainfall_mm, soil, method, antecedent_moisture_pct, air_temp_c);
+        if (effective_rain <= 0.0f) {
+            continue;
+        }
+
+        watering_error_t err = track_deficit_accumulation(balance, 0.0f, effective_rain, 0.0f);
+        if (err != WATERING_SUCCESS) {
+            continue;
+        }
+
+        s_rain_applied_mm[channel_id] += effective_rain;
+        balance->irrigation_needed = (balance->current_deficit_mm >= balance->raw_mm);
+    }
+
     return WATERING_SUCCESS;
 }
 

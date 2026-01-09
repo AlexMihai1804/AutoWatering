@@ -529,6 +529,18 @@ watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
                                               const environmental_data_t *env);
 
 /**
+ * @brief Apply incremental rainfall to AUTO water balance
+ *
+ * Used for near-real-time rain events to reduce deficit without waiting
+ * for the daily AUTO update.
+ *
+ * @param rainfall_mm Incremental rainfall (mm)
+ * @param air_temp_c Ambient air temperature for evaporation estimate (deg C)
+ * @return WATERING_SUCCESS on success, error code on failure
+ */
+watering_error_t fao56_apply_rainfall_increment(float rainfall_mm, float air_temp_c);
+
+/**
  * @brief Handle multi-day offline gap by estimating missed deficit accumulation
  * 
  * Called on boot or when AUTO check detects missed days. Applies conservative

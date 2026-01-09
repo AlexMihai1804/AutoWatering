@@ -12,6 +12,8 @@
 #include "rain_sensor.h"             /* Rain sensor monitoring */
 #include "rain_integration.h"        /* Rain integration status */
 #include "rain_history.h"            /* Rain history monitoring */
+#include "fao56_calc.h"              /* FAO-56 rain deficit updates */
+#include "env_sensors.h"             /* Environmental data for rain effectiveness */
 #include "timezone.h"
 /* stdio already included above for snprintf */
 
@@ -766,6 +768,7 @@ watering_error_t check_flow_anomalies(void)
     
     /* Rain sensor status monitoring */
     static uint32_t last_rain_check = 0;
+    static uint32_t last_rain_pulses_applied = 0;
     if ((now - last_rain_check) > 30000) { /* Check every 30 seconds */
         last_rain_check = now;
         
@@ -801,6 +804,30 @@ watering_error_t check_flow_anomalies(void)
         if (rain_sensor_is_enabled()) {
             /* Update hourly tracking and persist completed hours to history */
             rain_sensor_update_hourly();
+
+            /* Apply incremental rain events to FAO-56 deficit tracking */
+            uint32_t current_pulses = rain_sensor_get_pulse_count();
+            if (rain_sensor_is_integration_enabled()) {
+                if (current_pulses < last_rain_pulses_applied) {
+                    last_rain_pulses_applied = current_pulses;
+                }
+
+                uint32_t delta_pulses = current_pulses - last_rain_pulses_applied;
+                if (delta_pulses > 0) {
+                    float delta_mm = (float)delta_pulses * rain_sensor_get_calibration();
+                    if (delta_mm > 0.0f) {
+                        environmental_data_t env_data = {0};
+                        float air_temp_c = 20.0f;
+                        if (env_sensors_read(&env_data) == WATERING_SUCCESS && env_data.temp_valid) {
+                            air_temp_c = env_data.air_temp_mean_c;
+                        }
+                        (void)fao56_apply_rainfall_increment(delta_mm, air_temp_c);
+                    }
+                    last_rain_pulses_applied = current_pulses;
+                }
+            } else {
+                last_rain_pulses_applied = current_pulses;
+            }
 
             /* Check rain integration system health */
             /* Perform periodic maintenance on rain history system (independent of integration) */
