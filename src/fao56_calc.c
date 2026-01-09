@@ -37,10 +37,11 @@ LOG_MODULE_REGISTER(fao56_calc, LOG_LEVEL_INF);
 
 // Assumed meteorological constants (no wind or solar sensors present)
 #define ASSUMED_WIND_SPEED_M_S     2.0f     // Typical moderate daytime wind speed for reference ET
-#define ASSUMED_SUNSHINE_RATIO     0.50f    // Fraction of possible sunshine (n/N) used for Rs estimation
+#define ASSUMED_SUNSHINE_RATIO     0.50f    // Fallback sunshine ratio (n/N) when delta-T is unavailable
 #define ASSUMED_ALBEDO             0.23f    // Standard grass reference surface albedo (FAO-56)
 #define STANDARD_ATMOS_PRESSURE_KPA 101.3f  // Sea level standard pressure used if sensor invalid
 #define ET0_ABSOLUTE_MAX_MM_DAY    15.0f    // Hard safety clamp for ET0 extremes
+#define HARGREAVES_RS_COEFF        0.16f    // kRs coefficient for Rs estimation (inland default)
 
 // NOTE: All above assumption constants are centralized to allow easy future tuning
 //       and transparent audit trail (explicitly replacing former in-line literals).
@@ -1081,6 +1082,28 @@ static float calc_extraterrestrial_radiation(float latitude_rad, uint16_t day_of
 }
 
 /**
+ * @brief Estimate altitude (m) from atmospheric pressure (kPa)
+ */
+static float calc_altitude_from_pressure_kpa(float pressure_kpa)
+{
+    if (pressure_kpa <= 0.0f) {
+        return 0.0f;
+    }
+
+    float ratio = pressure_kpa / STANDARD_ATMOS_PRESSURE_KPA;
+    if (ratio <= 0.0f) {
+        return 0.0f;
+    }
+
+    float altitude_m = 44331.0f * (1.0f - powf(ratio, 0.1903f));
+    if (altitude_m < 0.0f) {
+        altitude_m = 0.0f;
+    }
+
+    return altitude_m;
+}
+
+/**
  * @brief Calculate saturation vapor pressure at given temperature
  */
 static float calc_saturation_vapor_pressure(float temp_c)
@@ -1154,6 +1177,9 @@ float calc_et0_penman_monteith(
     
     // Psychrometric constant
     float gamma = calc_psychrometric_constant(pressure_kpa);
+
+    // Estimate altitude from pressure for clear-sky radiation
+    float altitude_m = calc_altitude_from_pressure_kpa(pressure_kpa);
     
     // Wind removed: use assumed constant
     float wind_speed = ASSUMED_WIND_SPEED_M_S;
@@ -1162,11 +1188,34 @@ float calc_et0_penman_monteith(
     float ra = calc_extraterrestrial_radiation(latitude_rad, day_of_year);
     float rn;
     
-    // Solar removed: approximate net radiation using fixed sunshine ratio
+    // Estimate incoming solar radiation from diurnal temperature range
+    float temp_range = env->air_temp_max_c - env->air_temp_min_c;
+    if (temp_range < 0.0f) {
+        temp_range = 0.0f;
+    }
+
     float sunshine_ratio = ASSUMED_SUNSHINE_RATIO;
-    float rs = (0.25f + 0.50f * sunshine_ratio) * ra;
+    float rs;
+    if (temp_range > 0.0f) {
+        rs = HARGREAVES_RS_COEFF * sqrtf(temp_range) * ra;
+        if (ra > 0.0f) {
+            sunshine_ratio = (rs / ra - 0.25f) / 0.50f;
+            if (sunshine_ratio < 0.0f) sunshine_ratio = 0.0f;
+            if (sunshine_ratio > 1.0f) sunshine_ratio = 1.0f;
+        }
+    } else {
+        rs = (0.25f + 0.50f * sunshine_ratio) * ra;
+    }
+
+    float rso = (0.75f + 2e-5f * altitude_m) * ra;
+    if (rso <= 0.0f) {
+        rso = 0.0001f;
+    }
+    if (rs > rso) {
+        rs = rso;
+    }
+
     float rns = (1.0f - ASSUMED_ALBEDO) * rs;
-    float rso = (0.75f + 2e-5f * 0.0f) * ra;
     float rnl = STEFAN_BOLTZMANN *
                (powf(env->air_temp_max_c + 273.16f, 4.0f) +
                 powf(env->air_temp_min_c + 273.16f, 4.0f)) / 2.0f *
