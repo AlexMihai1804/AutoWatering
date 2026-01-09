@@ -1337,6 +1337,10 @@ watering_error_t watering_process_automatic_irrigation(
     }
     
     watering_channel_t *channel = &watering_channels[channel_id];
+    const soil_enhanced_data_t *soil = fao56_get_channel_soil(channel_id, channel);
+    if (!soil) {
+        return WATERING_ERROR_INVALID_DATA;
+    }
     watering_mode_t mode = channel->watering_event.watering_mode;
     
     // Determine mode name for logging
