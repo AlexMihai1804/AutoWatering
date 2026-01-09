@@ -8,6 +8,8 @@
 #include "plant_db.h" // accessor prototypes for plant, soil, irrigation method
 #include "rain_history.h"
 #include "nvs_config.h"
+#include "environmental_history.h"
+#include "custom_soil_db.h"
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -42,12 +44,236 @@ LOG_MODULE_REGISTER(fao56_calc, LOG_LEVEL_INF);
 #define STANDARD_ATMOS_PRESSURE_KPA 101.3f  // Sea level standard pressure used if sensor invalid
 #define ET0_ABSOLUTE_MAX_MM_DAY    15.0f    // Hard safety clamp for ET0 extremes
 #define HARGREAVES_RS_COEFF        0.16f    // kRs coefficient for Rs estimation (inland default)
+#define FAO56_DEFAULT_ET0_MM_DAY   3.0f     // Conservative default ET0 fallback (mm/day)
+#define FAO56_CLIMATOLOGY_WEEKS    53       // 52 weeks + 1 partial week bucket
+#define FAO56_CUSTOM_SOIL_CACHE_TIMEOUT_MS (5 * 60 * 1000)
 
 // NOTE: All above assumption constants are centralized to allow easy future tuning
 //       and transparent audit trail (explicitly replacing former in-line literals).
 
 // Global cache instance
 static fao56_calculation_cache_t calculation_cache = {0};
+
+static const float fao56_default_et0_monthly_ro[12] = {
+    0.6f, 0.9f, 1.6f, 2.6f, 3.6f, 4.5f,
+    5.0f, 4.6f, 3.2f, 2.0f, 1.0f, 0.6f
+};
+
+static custom_soil_entry_t s_custom_soil_cache[WATERING_CHANNELS_COUNT];
+static soil_enhanced_data_t s_custom_soil_data_cache[WATERING_CHANNELS_COUNT];
+static bool s_custom_soil_cache_valid[WATERING_CHANNELS_COUNT] = {false};
+static uint32_t s_custom_soil_cache_timestamp[WATERING_CHANNELS_COUNT] = {0};
+
+static uint16_t fao56_calc_day_of_year_from_date(uint16_t year, uint8_t month, uint8_t day)
+{
+    bool is_leap = ((year % 4 == 0 && year % 100 != 0) ||
+                    (year % 400 == 0));
+    static const uint8_t month_lengths[12] = {31, 28, 31, 30, 31, 30,
+                                              31, 31, 30, 31, 30, 31};
+
+    uint16_t day_of_year = day;
+    for (uint8_t m = 1; m < month; m++) {
+        day_of_year += month_lengths[m - 1];
+        if (m == 2 && is_leap) {
+            day_of_year += 1;
+        }
+    }
+
+    return day_of_year;
+}
+
+static bool fao56_get_local_datetime_from_timestamp(uint32_t timestamp, rtc_datetime_t *datetime)
+{
+    if (!datetime) {
+        return false;
+    }
+
+    if (timezone_unix_to_rtc_local(timestamp, datetime) == 0) {
+        return true;
+    }
+
+    return timezone_unix_to_rtc_utc(timestamp, datetime) == 0;
+}
+
+static bool fao56_get_day_of_year_from_timestamp(uint32_t timestamp, uint16_t *day_of_year)
+{
+    rtc_datetime_t dt;
+    if (!day_of_year || !fao56_get_local_datetime_from_timestamp(timestamp, &dt)) {
+        return false;
+    }
+
+    *day_of_year = fao56_calc_day_of_year_from_date(dt.year, dt.month, dt.day);
+    return true;
+}
+
+static uint8_t fao56_get_month_from_timestamp(uint32_t timestamp)
+{
+    rtc_datetime_t dt;
+    if (!fao56_get_local_datetime_from_timestamp(timestamp, &dt)) {
+        return 0;
+    }
+    return dt.month;
+}
+
+static float fao56_get_default_et0_for_month(uint8_t month)
+{
+    if (month < 1 || month > 12) {
+        return FAO56_DEFAULT_ET0_MM_DAY;
+    }
+    return fao56_default_et0_monthly_ro[month - 1];
+}
+
+static uint16_t fao56_get_days_after_planting(const watering_channel_t *channel, uint32_t current_time)
+{
+    if (!channel || channel->planting_date_unix == 0 || current_time <= channel->planting_date_unix) {
+        return 0;
+    }
+    return (uint16_t)((current_time - channel->planting_date_unix) / 86400);
+}
+
+static float fao56_get_kc_for_day(const plant_full_data_t *plant, uint16_t days_after_planting)
+{
+    phenological_stage_t stage = calc_phenological_stage(plant, days_after_planting);
+    return calc_crop_coefficient(plant, stage, days_after_planting);
+}
+
+static float fao56_get_root_depth_m(const plant_full_data_t *plant, uint16_t days_after_planting)
+{
+    return calc_current_root_depth(plant, days_after_planting);
+}
+
+const soil_enhanced_data_t *fao56_get_channel_soil(uint8_t channel_id, const watering_channel_t *channel)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return NULL;
+    }
+
+    const watering_channel_t *resolved = channel;
+    if (!resolved) {
+        watering_channel_t *fetched = NULL;
+        if (watering_get_channel(channel_id, &fetched) != WATERING_SUCCESS || !fetched) {
+            return NULL;
+        }
+        resolved = fetched;
+    }
+
+    if (resolved->soil_config.use_custom_soil) {
+        uint32_t now_ms = k_uptime_get_32();
+        if (s_custom_soil_cache_valid[channel_id] &&
+            (now_ms - s_custom_soil_cache_timestamp[channel_id]) < FAO56_CUSTOM_SOIL_CACHE_TIMEOUT_MS) {
+            return &s_custom_soil_data_cache[channel_id];
+        }
+
+        custom_soil_entry_t entry;
+        watering_error_t err = custom_soil_db_read(channel_id, &entry);
+        if (err == WATERING_SUCCESS) {
+            s_custom_soil_cache[channel_id] = entry;
+            watering_error_t conv = custom_soil_db_to_enhanced_format(
+                &s_custom_soil_cache[channel_id],
+                &s_custom_soil_data_cache[channel_id]);
+            if (conv == WATERING_SUCCESS) {
+                s_custom_soil_cache_valid[channel_id] = true;
+                s_custom_soil_cache_timestamp[channel_id] = now_ms;
+                return &s_custom_soil_data_cache[channel_id];
+            }
+            LOG_WRN("Custom soil conversion failed for channel %u (err=%d)", channel_id, conv);
+        } else {
+            LOG_DBG("Custom soil unavailable for channel %u (err=%d)", channel_id, err);
+        }
+    }
+
+    return soil_db_get_by_index(resolved->soil_db_index);
+}
+
+static bool fao56_build_weekly_et0_climatology(float latitude_rad,
+                                               float week_et0_avg[FAO56_CLIMATOLOGY_WEEKS],
+                                               float *overall_avg)
+{
+    if (!week_et0_avg) {
+        return false;
+    }
+
+    if (env_history_get_storage() == NULL || env_history_get_entry_count(ENV_HISTORY_TYPE_DAILY) <= 0) {
+        return false;
+    }
+
+    uint32_t now_sec = timezone_get_unix_utc();
+    uint32_t current_day_index = now_sec / ENV_HISTORY_DAILY_INTERVAL_SEC;
+    uint32_t lookback_days = 366U;
+    uint32_t start_day_index = (current_day_index > lookback_days) ?
+                               (current_day_index - lookback_days) : 0U;
+
+    static daily_history_entry_t daily_entries[ENV_HISTORY_DAILY_ENTRIES];
+    uint16_t actual_count = 0;
+    int rc = env_history_get_daily_range(start_day_index,
+                                         current_day_index,
+                                         daily_entries,
+                                         ENV_HISTORY_DAILY_ENTRIES,
+                                         &actual_count);
+    if (rc != 0 || actual_count == 0) {
+        return false;
+    }
+
+    float week_sum[FAO56_CLIMATOLOGY_WEEKS] = {0};
+    uint16_t week_count[FAO56_CLIMATOLOGY_WEEKS] = {0};
+    float total_sum = 0.0f;
+    uint16_t total_count = 0;
+
+    for (uint16_t i = 0; i < actual_count; i++) {
+        const daily_history_entry_t *entry = &daily_entries[i];
+        if (entry->sample_count == 0) {
+            continue;
+        }
+
+        uint32_t entry_ts = entry->date * ENV_HISTORY_DAILY_INTERVAL_SEC;
+        uint16_t day_of_year = 0;
+        if (!fao56_get_day_of_year_from_timestamp(entry_ts, &day_of_year) || day_of_year == 0) {
+            continue;
+        }
+
+        environmental_data_t env = {0};
+        env.temp_valid = true;
+        env.air_temp_min_c = entry->temperature.min;
+        env.air_temp_max_c = entry->temperature.max;
+        env.air_temp_mean_c = entry->temperature.avg;
+        if (env.air_temp_mean_c < env.air_temp_min_c || env.air_temp_mean_c > env.air_temp_max_c) {
+            env.air_temp_mean_c = (env.air_temp_min_c + env.air_temp_max_c) / 2.0f;
+        }
+
+        float et0 = calc_et0_hargreaves_samani(&env, latitude_rad, day_of_year);
+        if (et0 < HEURISTIC_ET0_MIN) et0 = HEURISTIC_ET0_MIN;
+        if (et0 > HEURISTIC_ET0_MAX) et0 = HEURISTIC_ET0_MAX;
+
+        uint8_t week_index = (uint8_t)((day_of_year - 1U) / 7U);
+        if (week_index >= FAO56_CLIMATOLOGY_WEEKS) {
+            week_index = FAO56_CLIMATOLOGY_WEEKS - 1U;
+        }
+
+        week_sum[week_index] += et0;
+        week_count[week_index]++;
+        total_sum += et0;
+        total_count++;
+    }
+
+    if (total_count == 0) {
+        return false;
+    }
+
+    float avg = total_sum / total_count;
+    if (overall_avg) {
+        *overall_avg = avg;
+    }
+
+    for (uint8_t week = 0; week < FAO56_CLIMATOLOGY_WEEKS; week++) {
+        if (week_count[week] > 0) {
+            week_et0_avg[week] = week_sum[week] / week_count[week];
+        } else {
+            week_et0_avg[week] = avg;
+        }
+    }
+
+    return true;
+}
 
 static uint16_t fao56_get_current_day_of_year(void)
 {
@@ -60,25 +286,11 @@ static uint16_t fao56_get_current_day_of_year(void)
 
     uint32_t utc_timestamp = timezone_rtc_to_unix_utc(&datetime);
     rtc_datetime_t local_datetime;
-    if (timezone_unix_to_rtc_local(utc_timestamp, &local_datetime) == 0) {
+    if (fao56_get_local_datetime_from_timestamp(utc_timestamp, &local_datetime)) {
         datetime = local_datetime;
     }
 
-    bool is_leap = ((datetime.year % 4 == 0 && datetime.year % 100 != 0) ||
-                    (datetime.year % 400 == 0));
-
-    static const uint8_t month_lengths[12] = {31, 28, 31, 30, 31, 30,
-                                              31, 31, 30, 31, 30, 31};
-
-    uint16_t day_of_year = datetime.day;
-    for (uint8_t month = 1; month < datetime.month; month++) {
-        day_of_year += month_lengths[month - 1];
-        if (month == 2 && is_leap) {
-            day_of_year += 1;
-        }
-    }
-
-    return day_of_year;
+    return fao56_calc_day_of_year_from_date(datetime.year, datetime.month, datetime.day);
 }
 
 /* ================================================================== */
@@ -2097,39 +2309,7 @@ watering_error_t calc_water_balance(
         if (daily_et0 < HEURISTIC_ET0_MIN) daily_et0 = HEURISTIC_ET0_MIN;
         if (daily_et0 > HEURISTIC_ET0_MAX) daily_et0 = HEURISTIC_ET0_MAX;
     }
-    // Interpolate Kc across growth stages using real days_after_planting input.
-    uint16_t days_ini = plant->stage_days_ini;
-    uint16_t days_dev = plant->stage_days_dev;
-    uint16_t days_mid = plant->stage_days_mid;
-    uint16_t days_end = plant->stage_days_end;
-    uint32_t total_days = (uint32_t)days_ini + days_dev + days_mid + days_end;
-    uint32_t dap_est = days_after_planting;
-    if (total_days > 0 && dap_est > total_days) {
-        // Cap at total season length
-        dap_est = total_days;
-    }
-    float kc_ini = plant->kc_ini_x1000 / 1000.0f;
-    float kc_dev = plant->kc_dev_x1000 / 1000.0f;
-    float kc_mid = plant->kc_mid_x1000 / 1000.0f;
-    float kc_end = plant->kc_end_x1000 / 1000.0f;
-    if (total_days == 0) {
-        daily_kc = kc_mid > 0.0f ? kc_mid : 1.0f;
-    } else if (dap_est <= days_ini) {
-        daily_kc = kc_ini;
-    } else if (dap_est <= days_ini + days_dev) {
-        float frac = (float)(dap_est - days_ini) / (float)days_dev;
-        daily_kc = kc_ini + (kc_dev - kc_ini) * frac;
-    } else if (dap_est <= days_ini + days_dev + days_mid) {
-        daily_kc = kc_mid;
-    } else {
-        float start_end = (float)(days_ini + days_dev + days_mid);
-        float frac = (days_end > 0) ? ((float)dap_est - start_end) / (float)days_end : 1.0f;
-        if (frac < 0.0f) frac = 0.0f;
-        if (frac > 1.0f) frac = 1.0f;
-        daily_kc = kc_mid + (kc_end - kc_mid) * frac;
-    }
-    if (daily_kc < 0.3f) daily_kc = 0.3f; // clamp plausible bounds
-    if (daily_kc > 1.4f) daily_kc = 1.4f;
+    daily_kc = fao56_get_kc_for_day(plant, days_after_planting);
     float daily_etc = daily_et0 * daily_kc; // mm/day
     watering_error_t err = track_deficit_accumulation(balance, daily_etc, balance->effective_rain_mm, 0.0f);
     if (err != WATERING_SUCCESS) {
@@ -2561,6 +2741,7 @@ watering_error_t calc_cycle_and_soak(
 watering_error_t apply_quality_irrigation_mode(
     const water_balance_t *balance,
     const irrigation_method_data_t *method,
+    const soil_enhanced_data_t *soil,
     const plant_full_data_t *plant,
     float area_m2,
     uint16_t plant_count,
@@ -2600,7 +2781,7 @@ watering_error_t apply_quality_irrigation_mode(
     }
 
     // Apply cycle and soak logic if needed
-    err = calc_cycle_and_soak(method, NULL, 0.0f, result);
+    err = calc_cycle_and_soak(method, soil, 0.0f, result);
     if (err != WATERING_SUCCESS) {
         LOG_WRN("Cycle and soak calculation failed, using single cycle");
         result->cycle_count = 1;
@@ -2631,6 +2812,7 @@ watering_error_t apply_quality_irrigation_mode(
 watering_error_t apply_eco_irrigation_mode(
     const water_balance_t *balance,
     const irrigation_method_data_t *method,
+    const soil_enhanced_data_t *soil,
     const plant_full_data_t *plant,
     float area_m2,
     uint16_t plant_count,
@@ -2670,7 +2852,7 @@ watering_error_t apply_eco_irrigation_mode(
     }
 
     // Apply cycle and soak logic if needed
-    err = calc_cycle_and_soak(method, NULL, 0.0f, result);
+    err = calc_cycle_and_soak(method, soil, 0.0f, result);
     if (err != WATERING_SUCCESS) {
         LOG_WRN("Cycle and soak calculation failed, using single cycle");
         result->cycle_count = 1;
@@ -2821,8 +3003,9 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
 
     const plant_full_data_t *plant = plant_db_get_by_index(channel->plant_db_index);
     const irrigation_method_data_t *method = irrigation_db_get_by_index(channel->irrigation_method_index);
-    if (!plant || !method) {
-        LOG_ERR("Channel %u missing plant or method data for FAO-56 calc", channel_id);
+    const soil_enhanced_data_t *soil = fao56_get_channel_soil(channel_id, channel);
+    if (!plant || !method || !soil) {
+        LOG_ERR("Channel %u missing plant/soil/method data for FAO-56 calc", channel_id);
         return WATERING_ERROR_INVALID_DATA;
     }
 
@@ -2830,11 +3013,11 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
     uint16_t plant_count = channel->use_area_based ? 0 : channel->coverage.plant_count;
 
     if (calc_mode == WATERING_AUTOMATIC_ECO) {
-        err = apply_eco_irrigation_mode(balance, method, plant,
+        err = apply_eco_irrigation_mode(balance, method, soil, plant,
                                         area_m2, plant_count,
                                         channel->max_volume_limit_l, result);
     } else {
-        err = apply_quality_irrigation_mode(balance, method, plant,
+        err = apply_quality_irrigation_mode(balance, method, soil, plant,
                                             area_m2, plant_count,
                                             channel->max_volume_limit_l, result);
     }
@@ -2913,23 +3096,22 @@ watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
 
     // Get plant, soil, and irrigation method from database
     if (channel->plant_db_index >= PLANT_FULL_SPECIES_COUNT ||
-        channel->soil_db_index >= SOIL_ENHANCED_TYPES_COUNT ||
         channel->irrigation_method_index >= IRRIGATION_METHODS_COUNT) {
         return WATERING_ERROR_INVALID_DATA;
     }
     const plant_full_data_t *plant = &plant_full_database[channel->plant_db_index];
-    const soil_enhanced_data_t *soil = &soil_enhanced_database[channel->soil_db_index];
     const irrigation_method_data_t *method = &irrigation_methods_database[channel->irrigation_method_index];
+    const soil_enhanced_data_t *soil = fao56_get_channel_soil(channel_id, channel);
+    if (!soil) {
+        return WATERING_ERROR_INVALID_DATA;
+    }
 
     // Compute days after planting and root depth
     uint32_t current_time = timezone_get_unix_utc();
-    uint16_t days_after_planting = 0;
-    if (channel->planting_date_unix > 0 && current_time > channel->planting_date_unix) {
-        days_after_planting = (uint16_t)((current_time - channel->planting_date_unix) / 86400);
-    }
+    uint16_t days_after_planting = fao56_get_days_after_planting(channel, current_time);
     channel->days_after_planting = days_after_planting;
 
-    float root_depth_m = calc_current_root_depth(plant, days_after_planting);
+    float root_depth_m = fao56_get_root_depth_m(plant, days_after_planting);
 
     // Update AWC/RAW parameters (needed for clamping and trigger)
     float awc_mm_per_m = soil->awc_mm_per_m;
@@ -2959,8 +3141,7 @@ watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
     if (daily_et0 < HEURISTIC_ET0_MIN) daily_et0 = HEURISTIC_ET0_MIN;
     if (daily_et0 > HEURISTIC_ET0_MAX) daily_et0 = HEURISTIC_ET0_MAX;
 
-    phenological_stage_t stage = calc_phenological_stage(plant, days_after_planting);
-    float kc = calc_crop_coefficient(plant, stage, days_after_planting);
+    float kc = fao56_get_kc_for_day(plant, days_after_planting);
     float etc_mm_day = daily_et0 * kc;
 
     // Apply sun exposure adjustment (consistent with daily update)
@@ -3034,19 +3215,17 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     }
     const plant_full_data_t *plant = &plant_full_database[channel->plant_db_index];
     
-    if (channel->soil_db_index >= SOIL_ENHANCED_TYPES_COUNT) {
-        LOG_ERR("AUTO mode: Invalid soil_db_index %u for channel %u", 
-                channel->soil_db_index, channel_id);
-        return WATERING_ERROR_INVALID_DATA;
-    }
-    const soil_enhanced_data_t *soil = &soil_enhanced_database[channel->soil_db_index];
-    
     if (channel->irrigation_method_index >= IRRIGATION_METHODS_COUNT) {
         LOG_ERR("AUTO mode: Invalid irrigation_method_index %u for channel %u", 
                 channel->irrigation_method_index, channel_id);
         return WATERING_ERROR_INVALID_DATA;
     }
     const irrigation_method_data_t *method = &irrigation_methods_database[channel->irrigation_method_index];
+    const soil_enhanced_data_t *soil = fao56_get_channel_soil(channel_id, channel);
+    if (!soil) {
+        LOG_ERR("AUTO mode: Invalid soil configuration for channel %u", channel_id);
+        return WATERING_ERROR_INVALID_DATA;
+    }
     
     // Read current environmental data
     environmental_data_t env_data;
@@ -3069,14 +3248,11 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     
     // Calculate days after planting
     uint32_t current_time = timezone_get_unix_utc();
-    uint16_t days_after_planting = 0;
-    if (channel->planting_date_unix > 0 && current_time > channel->planting_date_unix) {
-        days_after_planting = (uint16_t)((current_time - channel->planting_date_unix) / 86400);
-    }
+    uint16_t days_after_planting = fao56_get_days_after_planting(channel, current_time);
     channel->days_after_planting = days_after_planting;
     
     // Calculate current root depth
-    float root_depth_m = calc_current_root_depth(plant, days_after_planting);
+    float root_depth_m = fao56_get_root_depth_m(plant, days_after_planting);
     
     // Ensure water balance structure exists
     water_balance_t *balance = fao56_bind_channel_balance(channel_id, channel);
@@ -3123,8 +3299,7 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     if (daily_et0 > HEURISTIC_ET0_MAX) daily_et0 = HEURISTIC_ET0_MAX;
     
     // Calculate crop coefficient (Kc) based on growth stage
-    phenological_stage_t stage = calc_phenological_stage(plant, days_after_planting);
-    float kc = calc_crop_coefficient(plant, stage, days_after_planting);
+    float kc = fao56_get_kc_for_day(plant, days_after_planting);
     
     // Calculate daily ETc (crop evapotranspiration)
     float daily_etc = daily_et0 * kc;
@@ -3250,7 +3425,6 @@ watering_error_t fao56_apply_rainfall_increment(float rainfall_mm, float air_tem
         }
 
         if (channel->plant_db_index >= PLANT_FULL_SPECIES_COUNT ||
-            channel->soil_db_index >= SOIL_ENHANCED_TYPES_COUNT ||
             channel->irrigation_method_index >= IRRIGATION_METHODS_COUNT) {
             continue;
         }
@@ -3261,17 +3435,17 @@ watering_error_t fao56_apply_rainfall_increment(float rainfall_mm, float air_tem
         }
 
         const plant_full_data_t *plant = &plant_full_database[channel->plant_db_index];
-        const soil_enhanced_data_t *soil = &soil_enhanced_database[channel->soil_db_index];
         const irrigation_method_data_t *method = &irrigation_methods_database[channel->irrigation_method_index];
+        const soil_enhanced_data_t *soil = fao56_get_channel_soil(channel_id, channel);
+        if (!soil) {
+            continue;
+        }
 
         if (balance->wetting_awc_mm <= 0.0f || balance->raw_mm <= 0.0f) {
             uint32_t current_time = timezone_get_unix_utc();
-            uint16_t days_after_planting = 0;
-            if (channel->planting_date_unix > 0 && current_time > channel->planting_date_unix) {
-                days_after_planting = (uint16_t)((current_time - channel->planting_date_unix) / 86400);
-            }
-
-            float root_depth_m = calc_current_root_depth(plant, days_after_planting);
+            uint16_t days_after_planting = fao56_get_days_after_planting(channel, current_time);
+  
+            float root_depth_m = fao56_get_root_depth_m(plant, days_after_planting);
             balance->rwz_awc_mm = soil->awc_mm_per_m * root_depth_m;
 
             float wetting_fraction = method->wetting_fraction_x1000 / 1000.0f;
@@ -3339,25 +3513,52 @@ watering_error_t fao56_apply_missed_days_deficit(uint8_t channel_id,
     }
     const plant_full_data_t *plant = &plant_full_database[channel->plant_db_index];
     
-    // Calculate days after planting
     uint32_t current_time = timezone_get_unix_utc();
-    uint16_t days_after_planting = 0;
-    if (channel->planting_date_unix > 0 && current_time > channel->planting_date_unix) {
-        days_after_planting = (uint16_t)((current_time - channel->planting_date_unix) / 86400);
+    uint16_t days_after_planting = fao56_get_days_after_planting(channel, current_time);
+
+    float latitude_rad = channel->latitude_deg * (PI / 180.0f);
+    float week_et0_avg[FAO56_CLIMATOLOGY_WEEKS] = {0};
+    float climatology_avg = FAO56_DEFAULT_ET0_MM_DAY;
+    bool have_climatology = fao56_build_weekly_et0_climatology(latitude_rad,
+                                                               week_et0_avg,
+                                                               &climatology_avg);
+
+    uint32_t current_day_index = current_time / ENV_HISTORY_DAILY_INTERVAL_SEC;
+    float sun_factor = channel->sun_exposure_pct / 100.0f;
+    if (sun_factor < 0.3f) sun_factor = 0.3f;
+    if (sun_factor > 1.0f) sun_factor = 1.0f;
+
+    float total_missed_deficit = 0.0f;
+
+    for (uint16_t offset = 1; offset <= days_missed; offset++) {
+        uint32_t day_index = (current_day_index >= offset) ? (current_day_index - offset) : 0U;
+        uint32_t day_ts = day_index * ENV_HISTORY_DAILY_INTERVAL_SEC;
+        uint16_t day_of_year = 0;
+        float et0_day = FAO56_DEFAULT_ET0_MM_DAY;
+
+        if (have_climatology &&
+            fao56_get_day_of_year_from_timestamp(day_ts, &day_of_year) &&
+            day_of_year > 0) {
+            uint8_t week_index = (uint8_t)((day_of_year - 1U) / 7U);
+            if (week_index >= FAO56_CLIMATOLOGY_WEEKS) {
+                week_index = FAO56_CLIMATOLOGY_WEEKS - 1U;
+            }
+            et0_day = week_et0_avg[week_index];
+        } else {
+            uint8_t month = fao56_get_month_from_timestamp(day_ts);
+            et0_day = fao56_get_default_et0_for_month(month);
+        }
+
+        if (et0_day < HEURISTIC_ET0_MIN) et0_day = HEURISTIC_ET0_MIN;
+        if (et0_day > HEURISTIC_ET0_MAX) et0_day = HEURISTIC_ET0_MAX;
+        if (et0_day <= 0.0f) {
+            et0_day = (climatology_avg > 0.0f) ? climatology_avg : FAO56_DEFAULT_ET0_MM_DAY;
+        }
+
+        uint16_t dap_day = (days_after_planting >= offset) ? (days_after_planting - offset) : 0U;
+        float kc = fao56_get_kc_for_day(plant, dap_day);
+        total_missed_deficit += et0_day * kc * sun_factor;
     }
-    
-    // Use conservative average ET0 estimate (3 mm/day typical temperate climate)
-    const float avg_et0_mm_day = 3.0f;
-    
-    // Get average Kc for current growth stage
-    phenological_stage_t stage = calc_phenological_stage(plant, days_after_planting);
-    float kc = calc_crop_coefficient(plant, stage, days_after_planting);
-    
-    // Estimated daily ETc
-    float daily_etc = avg_et0_mm_day * kc;
-    
-    // Apply accumulated deficit for missed days (no rainfall assumption - conservative)
-    float total_missed_deficit = daily_etc * days_missed;
     
     water_balance_t *balance = channel->water_balance;
     balance->current_deficit_mm += total_missed_deficit;

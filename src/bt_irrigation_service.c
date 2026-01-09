@@ -7872,24 +7872,30 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
         water_balance_t *balance = (water_balance_t*)channel->water_balance;
         d->current_deficit_mm = balance->current_deficit_mm;
         const irrigation_method_data_t *method = NULL;
+        const soil_enhanced_data_t *soil = NULL;
         if (channel->irrigation_method_index < IRRIGATION_METHODS_COUNT) {
             method = &irrigation_methods_database[channel->irrigation_method_index];
         }
+        soil = fao56_get_channel_soil(channel_id, channel);
         irrigation_calculation_t calc = {0};
         bool eco = (channel->auto_mode == WATERING_AUTOMATIC_ECO);
-        if (method && plant) {
+        if (method && plant && soil) {
             if (channel->use_area_based) {
                 float area = channel->coverage.area_m2;
                 if (eco)
-                    apply_eco_irrigation_mode(balance, method, plant, area, 0, channel->max_volume_limit_l, &calc);
+                    apply_eco_irrigation_mode(balance, method, soil, plant, area, 0,
+                                              channel->max_volume_limit_l, &calc);
                 else
-                    apply_quality_irrigation_mode(balance, method, plant, area, 0, channel->max_volume_limit_l, &calc);
+                    apply_quality_irrigation_mode(balance, method, soil, plant, area, 0,
+                                                  channel->max_volume_limit_l, &calc);
             } else {
                 uint16_t count = channel->coverage.plant_count;
                 if (eco)
-                    apply_eco_irrigation_mode(balance, method, plant, 0.0f, count, channel->max_volume_limit_l, &calc);
+                    apply_eco_irrigation_mode(balance, method, soil, plant, 0.0f, count,
+                                              channel->max_volume_limit_l, &calc);
                 else
-                    apply_quality_irrigation_mode(balance, method, plant, 0.0f, count, channel->max_volume_limit_l, &calc);
+                    apply_quality_irrigation_mode(balance, method, soil, plant, 0.0f, count,
+                                                  channel->max_volume_limit_l, &calc);
             }
             d->net_irrigation_mm = calc.net_irrigation_mm;
             d->gross_irrigation_mm = calc.gross_irrigation_mm;

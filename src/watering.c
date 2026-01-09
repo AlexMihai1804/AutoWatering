@@ -1169,6 +1169,10 @@ watering_error_t watering_get_channel_environment(uint8_t channel_id,
     }
     
     watering_channel_t *channel = &watering_channels[channel_id];
+    const soil_enhanced_data_t *soil = fao56_get_channel_soil(channel_id, channel);
+    if (!soil) {
+        return WATERING_ERROR_INVALID_DATA;
+    }
     
     if (plant_type) *plant_type = channel->plant_info.main_type;
     if (soil_type) *soil_type = channel->soil_type;
@@ -1353,14 +1357,14 @@ watering_error_t watering_process_automatic_irrigation(
     switch (mode) {
         case WATERING_AUTOMATIC_QUALITY:
             mode_name = "Quality";
-            err = apply_quality_irrigation_mode(balance, method, plant, 
+            err = apply_quality_irrigation_mode(balance, method, soil, plant, 
                                               area_m2, plant_count,
                                               channel->max_volume_limit_l, result);
             break;
             
         case WATERING_AUTOMATIC_ECO:
             mode_name = "Eco";
-            err = apply_eco_irrigation_mode(balance, method, plant,
+            err = apply_eco_irrigation_mode(balance, method, soil, plant,
                                           area_m2, plant_count,
                                           channel->max_volume_limit_l, result);
             break;

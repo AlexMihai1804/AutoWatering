@@ -228,6 +228,15 @@ float calc_current_root_depth(
 );
 
 /**
+ * @brief Resolve soil parameters for a channel (custom soil if available, else standard DB)
+ *
+ * @param channel_id Channel ID
+ * @param channel Channel configuration (optional, can be NULL to look up)
+ * @return Pointer to resolved soil data, or NULL if unavailable
+ */
+const soil_enhanced_data_t *fao56_get_channel_soil(uint8_t channel_id, const watering_channel_t *channel);
+
+/**
  * @brief Calculate effective precipitation based on soil infiltration
  * 
  * @param rainfall_mm Total rainfall (mm)
@@ -272,6 +281,7 @@ watering_error_t calc_cycle_and_soak(
 watering_error_t apply_quality_irrigation_mode(
     const water_balance_t *balance,
     const irrigation_method_data_t *method,
+    const soil_enhanced_data_t *soil,
     const plant_full_data_t *plant,
     float area_m2,
     uint16_t plant_count,
@@ -294,6 +304,7 @@ watering_error_t apply_quality_irrigation_mode(
 watering_error_t apply_eco_irrigation_mode(
     const water_balance_t *balance,
     const irrigation_method_data_t *method,
+    const soil_enhanced_data_t *soil,
     const plant_full_data_t *plant,
     float area_m2,
     uint16_t plant_count,
