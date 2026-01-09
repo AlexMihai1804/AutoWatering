@@ -2106,8 +2106,8 @@ watering_error_t calc_water_balance(
 /**
  * @brief Calculate irrigation volume for area-based coverage with enhanced accuracy
  * 
- * Enhanced version that includes proper metric conversions, wetting fraction
- * adjustments, and localized irrigation considerations.
+ * Enhanced version that includes proper metric conversions and distribution
+ * uniformity adjustments.
  */
 watering_error_t calc_irrigation_volume_area(
     const water_balance_t *balance,
@@ -2143,27 +2143,10 @@ watering_error_t calc_irrigation_volume_area(
         efficiency = 0.8f;
     }
     
-    // Get wetting fraction for localized irrigation adjustments
-    float wetting_fraction = method->wetting_fraction_x1000 / 1000.0f;
-    if (wetting_fraction <= 0.0f || wetting_fraction > 1.0f) {
-        wetting_fraction = 1.0f;  // Default to full coverage
-    }
-    
-    // For localized irrigation (wetting fraction < 0.9), adjust the application depth
-    // to account for partial root zone wetting
-    float adjusted_net_irrigation_mm = result->net_irrigation_mm;
-    if (wetting_fraction < 0.9f) {
-        // Need to apply more water per wetted area to compensate for partial coverage
-        float wetting_adjustment = 1.0f / sqrtf(wetting_fraction);  // Square root for gradual adjustment
-        adjusted_net_irrigation_mm *= wetting_adjustment;
-        
-    LOG_DBG("Localized irrigation adjustment: %.2f mm -> %.2f mm (wetting=%.2f, factor=%.2f)",
-        (double)result->net_irrigation_mm, (double)adjusted_net_irrigation_mm, 
-        (double)wetting_fraction, (double)wetting_adjustment);
-    }
+    // Wetting fraction already applied in water balance (AWC/RAW); avoid double scaling here.
     
     // Convert net to gross irrigation accounting for efficiency
-    result->gross_irrigation_mm = adjusted_net_irrigation_mm / efficiency;
+    result->gross_irrigation_mm = result->net_irrigation_mm / efficiency;
     
     // Apply distribution uniformity adjustment
     float distribution_uniformity = method->distribution_uniformity_pct / 100.0f;
@@ -2176,16 +2159,9 @@ watering_error_t calc_irrigation_volume_area(
         (double)uniformity_adjustment, (double)(distribution_uniformity * 100.0f));
     }
     
-    // Calculate effective irrigated area
-    // For localized systems, only the wetted fraction of the area is actually irrigated
-    float effective_area_m2 = area_m2;
-    if (wetting_fraction < 0.9f) {
-        effective_area_m2 = area_m2 * wetting_fraction;
-    }
-    
     // Convert depth (mm) to volume (L) with proper metric conversion
     // 1 mm over 1 m² = 1 liter (exact conversion)
-    result->volume_liters = result->gross_irrigation_mm * effective_area_m2;
+    result->volume_liters = result->gross_irrigation_mm * area_m2;
     
     // Volume per plant not applicable for area-based calculation
     result->volume_per_plant_liters = 0.0f;
@@ -2209,7 +2185,7 @@ watering_error_t calc_irrigation_volume_area(
         result->volume_limited = true;
         
         // Recalculate actual application depth
-        result->gross_irrigation_mm = result->volume_liters / effective_area_m2;
+        result->gross_irrigation_mm = result->volume_liters / area_m2;
         result->net_irrigation_mm = result->gross_irrigation_mm * efficiency;
     }
     
@@ -2218,9 +2194,9 @@ watering_error_t calc_irrigation_volume_area(
     result->cycle_duration_min = 0;  // To be calculated based on flow rate
     result->soak_interval_min = 0;
     
-    LOG_DBG("Enhanced area-based volume: %.1f L for %.1f m² (%.2f mm gross, eff=%.0f%%, wet=%.2f)",
+    LOG_DBG("Enhanced area-based volume: %.1f L for %.1f m² (%.2f mm gross, eff=%.0f%%)",
             (double)result->volume_liters, (double)area_m2, (double)result->gross_irrigation_mm, 
-            (double)(efficiency * 100.0f), (double)wetting_fraction);
+            (double)(efficiency * 100.0f));
     
     return WATERING_SUCCESS;
 }
@@ -2311,11 +2287,6 @@ watering_error_t calc_irrigation_volume_plants(
         efficiency = 0.8f;
     }
     
-    float wetting_fraction = method->wetting_fraction_x1000 / 1000.0f;
-    if (wetting_fraction <= 0.0f || wetting_fraction > 1.0f) {
-        wetting_fraction = 1.0f;  // Default to full coverage
-    }
-    
     // Start with net irrigation requirement
     result->net_irrigation_mm = balance->current_deficit_mm;
     
@@ -2325,22 +2296,10 @@ watering_error_t calc_irrigation_volume_plants(
     LOG_DBG("Eco mode: reducing irrigation by 30%%");
     }
     
-    // For localized irrigation, adjust for partial wetting
-    float adjusted_net_irrigation_mm = result->net_irrigation_mm;
-    if (wetting_fraction < 0.9f) {
-        // Account for the fact that only part of the root zone is wetted
-        // Use plant-specific adjustment based on root distribution
-        float root_utilization_factor = 0.8f + (canopy_factor * 0.2f);  // 0.8-1.0 range
-        float wetting_adjustment = 1.0f / (wetting_fraction * root_utilization_factor);
-        adjusted_net_irrigation_mm *= wetting_adjustment;
-        
-    LOG_DBG("Localized irrigation: %.2f mm -> %.2f mm (wetting=%.2f, root=%.2f)",
-        (double)result->net_irrigation_mm, (double)adjusted_net_irrigation_mm, 
-        (double)wetting_fraction, (double)root_utilization_factor);
-    }
+    // Wetting fraction already applied in water balance (AWC/RAW); avoid double scaling here.
     
     // Convert net to gross irrigation accounting for efficiency
-    result->gross_irrigation_mm = adjusted_net_irrigation_mm / efficiency;
+    result->gross_irrigation_mm = result->net_irrigation_mm / efficiency;
     
     // Apply distribution uniformity if available
     float distribution_uniformity = method->distribution_uniformity_pct / 100.0f;
@@ -2350,11 +2309,8 @@ watering_error_t calc_irrigation_volume_plants(
     LOG_DBG("Distribution uniformity adjustment: factor=%.2f", (double)uniformity_adjustment);
     }
     
-    // Calculate effective irrigated area (considering wetting fraction)
+    // Wetting fraction already reflected in water balance; keep area consistent here.
     float effective_irrigated_area_m2 = total_irrigated_area_m2;
-    if (wetting_fraction < 0.9f) {
-        effective_irrigated_area_m2 = total_irrigated_area_m2 * wetting_fraction;
-    }
     
     // Convert to total volume with proper metric conversion
     result->volume_liters = result->gross_irrigation_mm * effective_irrigated_area_m2;
@@ -3297,6 +3253,18 @@ watering_error_t fao56_reduce_deficit_after_irrigation(uint8_t channel_id,
     }
     
     water_balance_t *balance = channel->water_balance;
+
+    float efficiency = 0.8f;
+    if (channel->irrigation_method_index < IRRIGATION_METHODS_COUNT) {
+        const irrigation_method_data_t *method = &irrigation_methods_database[channel->irrigation_method_index];
+        efficiency = method->efficiency_pct / 100.0f;
+        if (efficiency < 0.5f) {
+            efficiency = 0.8f;
+        }
+    } else {
+        LOG_WRN("AUTO mode: Invalid irrigation_method_index %u for channel %u, using 80%%",
+                channel->irrigation_method_index, channel_id);
+    }
     
     // Convert liters to mm based on coverage area
     float area_m2;
@@ -3314,8 +3282,8 @@ watering_error_t fao56_reduce_deficit_after_irrigation(uint8_t channel_id,
     
     float irrigation_mm = volume_applied_liters / area_m2;
     
-    // Apply irrigation efficiency (assume 80% reaches root zone)
-    float effective_irrigation_mm = irrigation_mm * 0.8f;
+    // Apply irrigation efficiency (match gross->net in AUTO schedule)
+    float effective_irrigation_mm = irrigation_mm * efficiency;
     
     // Reduce deficit
     float old_deficit = balance->current_deficit_mm;
@@ -3618,3 +3586,4 @@ watering_error_t fao56_get_effective_start_time(const watering_event_t *event,
     
     return WATERING_SUCCESS;
 }
+
