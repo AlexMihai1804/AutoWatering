@@ -136,6 +136,9 @@ target_sources(app PRIVATE
     src/database_flash.c
     src/history_flash.c
     
+    # Plant/Pack storage on external flash
+    src/pack_storage.c
+    
     # Generated enhanced database files - will be created automatically
     ${SRC_DIR}/plant_full_db.c
     ${SRC_DIR}/soil_enhanced_db.c
