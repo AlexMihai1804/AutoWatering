@@ -382,6 +382,7 @@ static void reset_controller_build_default_channel(uint8_t channel_id,
 
     /* Database indexes: sentinel values mean "not configured" */
     out_channel->plant_db_index = UINT16_MAX;
+    out_channel->custom_plant_id = 0;  /* No custom plant from pack storage */
     out_channel->soil_db_index = UINT8_MAX;
     out_channel->irrigation_method_index = UINT8_MAX;
 

@@ -249,6 +249,7 @@ typedef struct {
     .plant_db_index = UINT16_MAX,         /* Not set */ \
     .soil_db_index = UINT8_MAX,           /* Not set */ \
     .irrigation_method_index = UINT8_MAX, /* Not set */ \
+    .custom_plant_id = 0,                 /* No custom plant from pack storage */ \
     .use_area_based = true,               /* Default to area-based */ \
     .coverage = { .area_m2 = 1.0f },      /* 1 square meter */ \
     .auto_mode = 0,                       /* WATERING_BY_DURATION (disabled) */ \
