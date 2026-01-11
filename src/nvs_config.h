@@ -153,6 +153,7 @@ typedef struct {
     uint16_t plant_db_index;           /**< Index into plant_full_database (0-based, UINT16_MAX = not set) */
     uint8_t soil_db_index;             /**< Index into soil_enhanced_database (0-based, UINT8_MAX = not set) */
     uint8_t irrigation_method_index;   /**< Index into irrigation_methods_database (0-based, UINT8_MAX = not set) */
+    uint16_t custom_plant_id;          /**< Custom plant ID from pack storage (0 = use plant_db_index) */
     
     /* Coverage specification */
     bool use_area_based;               /**< True = area-based calculation, false = plant count-based */

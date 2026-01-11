@@ -255,6 +255,51 @@ pack_result_t pack_storage_validate_plant(const pack_plant_v1_t *plant);
  */
 uint32_t pack_storage_crc32(const void *data, size_t len);
 
+/* ============================================================================
+ * FAO-56 Integration Helpers
+ * ============================================================================ */
+
+/**
+ * @brief Get Kc (crop coefficient) for a custom or built-in plant
+ * 
+ * This helper looks up Kc from either a custom plant (if custom_plant_id > 0)
+ * or falls back to the built-in ROM database (via plant_db_index).
+ * 
+ * @param custom_plant_id Custom plant ID from pack storage (0 = use built-in)
+ * @param plant_db_index Built-in plant index (used when custom_plant_id == 0)
+ * @param days_after_planting Days since planting for Kc interpolation
+ * @param out_kc Output: interpolated Kc value
+ * @return pack_result_t PACK_RESULT_SUCCESS or error
+ */
+pack_result_t pack_storage_get_kc(uint16_t custom_plant_id,
+                                   uint16_t plant_db_index,
+                                   uint16_t days_after_planting,
+                                   float *out_kc);
+
+/**
+ * @brief Get root depth for a custom or built-in plant
+ * 
+ * @param custom_plant_id Custom plant ID from pack storage (0 = use built-in)
+ * @param plant_db_index Built-in plant index (used when custom_plant_id == 0)
+ * @param days_after_planting Days since planting
+ * @param out_root_depth_mm Output: root depth in mm
+ * @return pack_result_t PACK_RESULT_SUCCESS or error
+ */
+pack_result_t pack_storage_get_root_depth(uint16_t custom_plant_id,
+                                           uint16_t plant_db_index,
+                                           uint16_t days_after_planting,
+                                           float *out_root_depth_mm);
+
+/**
+ * @brief Get all FAO-56 parameters for a custom plant
+ * 
+ * @param custom_plant_id Custom plant ID (must be > 0)
+ * @param plant Output buffer for plant data
+ * @return pack_result_t PACK_RESULT_SUCCESS or error
+ */
+pack_result_t pack_storage_get_fao56_plant(uint16_t custom_plant_id,
+                                            pack_plant_v1_t *plant);
+
 #ifdef __cplusplus
 }
 #endif

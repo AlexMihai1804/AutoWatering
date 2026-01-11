@@ -98,6 +98,7 @@ target_sources(app PRIVATE
     src/bt_environmental_history_handlers.c
     src/bt_custom_soil_handlers.c
     src/bt_interval_mode_handlers.c
+    src/bt_pack_handlers.c
     
     # Environmental sensors
     src/env_sensors.c

@@ -775,3 +775,179 @@ pack_result_t pack_storage_validate_plant(const pack_plant_v1_t *plant)
     
     return PACK_RESULT_SUCCESS;
 }
+
+/* ============================================================================
+ * FAO-56 Integration Helpers
+ * ============================================================================ */
+
+/**
+ * @brief Linear interpolation helper for Kc stages
+ */
+static float interpolate_kc(float kc_start, float kc_end, 
+                            uint16_t day_in_stage, uint16_t stage_length)
+{
+    if (stage_length == 0) {
+        return kc_end;
+    }
+    float t = (float)day_in_stage / (float)stage_length;
+    if (t > 1.0f) t = 1.0f;
+    return kc_start + (kc_end - kc_start) * t;
+}
+
+pack_result_t pack_storage_get_kc(uint16_t custom_plant_id,
+                                   uint16_t plant_db_index,
+                                   uint16_t days_after_planting,
+                                   float *out_kc)
+{
+    if (!out_kc) {
+        return PACK_RESULT_INVALID_DATA;
+    }
+    
+    /* Default Kc if nothing found */
+    *out_kc = 1.0f;
+    
+    if (custom_plant_id > 0) {
+        /* Load from pack storage */
+        pack_plant_v1_t plant;
+        pack_result_t res = pack_storage_get_plant(custom_plant_id, &plant);
+        if (res != PACK_RESULT_SUCCESS) {
+            LOG_ERR("Failed to load custom plant %u for Kc: %d", custom_plant_id, res);
+            return res;
+        }
+        
+        /* Convert x1000 values to float */
+        float kc_ini = (float)plant.kc_ini_x1000 / 1000.0f;
+        float kc_dev = (float)plant.kc_dev_x1000 / 1000.0f;
+        float kc_mid = (float)plant.kc_mid_x1000 / 1000.0f;
+        float kc_end = (float)plant.kc_end_x1000 / 1000.0f;
+        
+        /* Calculate Kc based on growth stage */
+        uint16_t l_ini = plant.stage_days_ini;
+        uint16_t l_dev = plant.stage_days_dev;
+        uint16_t l_mid = plant.stage_days_mid;
+        uint16_t l_late = plant.stage_days_end;
+        
+        if (days_after_planting < l_ini) {
+            /* Initial stage */
+            *out_kc = kc_ini;
+        } else if (days_after_planting < l_ini + l_dev) {
+            /* Development stage - interpolate from kc_dev to kc_mid */
+            uint16_t day_in_stage = days_after_planting - l_ini;
+            *out_kc = interpolate_kc(kc_dev, kc_mid, day_in_stage, l_dev);
+        } else if (days_after_planting < l_ini + l_dev + l_mid) {
+            /* Mid-season stage */
+            *out_kc = kc_mid;
+        } else if (days_after_planting < l_ini + l_dev + l_mid + l_late) {
+            /* Late season stage - interpolate from kc_mid to kc_end */
+            uint16_t day_in_stage = days_after_planting - (l_ini + l_dev + l_mid);
+            *out_kc = interpolate_kc(kc_mid, kc_end, day_in_stage, l_late);
+        } else {
+            /* Post-season */
+            *out_kc = kc_end;
+        }
+        
+        LOG_DBG("Custom plant %u DAP=%u -> Kc=%.2f", custom_plant_id, days_after_planting, (double)*out_kc);
+        return PACK_RESULT_SUCCESS;
+    }
+    
+    /* Use built-in database */
+    if (plant_db_index < PLANT_FULL_SPECIES_COUNT) {
+        const plant_full_data_t *rom_plant = &plant_full_database[plant_db_index];
+        
+        /* Similar Kc interpolation for ROM plants */
+        uint16_t l_ini = rom_plant->stage_days_ini;
+        uint16_t l_dev = rom_plant->stage_days_dev;
+        uint16_t l_mid = rom_plant->stage_days_mid;
+        uint16_t l_late = rom_plant->stage_days_end;
+        
+        if (days_after_planting < l_ini) {
+            *out_kc = PLANT_KC_INI(rom_plant);
+        } else if (days_after_planting < l_ini + l_dev) {
+            uint16_t day_in_stage = days_after_planting - l_ini;
+            /* Assume kc_dev same as kc_ini for ROM plants */
+            *out_kc = interpolate_kc(PLANT_KC_INI(rom_plant), PLANT_KC_MID(rom_plant), day_in_stage, l_dev);
+        } else if (days_after_planting < l_ini + l_dev + l_mid) {
+            *out_kc = PLANT_KC_MID(rom_plant);
+        } else if (days_after_planting < l_ini + l_dev + l_mid + l_late) {
+            uint16_t day_in_stage = days_after_planting - (l_ini + l_dev + l_mid);
+            *out_kc = interpolate_kc(PLANT_KC_MID(rom_plant), PLANT_KC_END(rom_plant), day_in_stage, l_late);
+        } else {
+            *out_kc = PLANT_KC_END(rom_plant);
+        }
+        
+        LOG_DBG("ROM plant %u DAP=%u -> Kc=%.2f", plant_db_index, days_after_planting, (double)*out_kc);
+        return PACK_RESULT_SUCCESS;
+    }
+    
+    LOG_WRN("No valid plant found: custom=%u, rom_idx=%u", custom_plant_id, plant_db_index);
+    return PACK_RESULT_INVALID_DATA;
+}
+
+pack_result_t pack_storage_get_root_depth(uint16_t custom_plant_id,
+                                           uint16_t plant_db_index,
+                                           uint16_t days_after_planting,
+                                           float *out_root_depth_mm)
+{
+    if (!out_root_depth_mm) {
+        return PACK_RESULT_INVALID_DATA;
+    }
+    
+    /* Default root depth */
+    *out_root_depth_mm = 300.0f;
+    
+    if (custom_plant_id > 0) {
+        /* Load from pack storage */
+        pack_plant_v1_t plant;
+        pack_result_t res = pack_storage_get_plant(custom_plant_id, &plant);
+        if (res != PACK_RESULT_SUCCESS) {
+            LOG_ERR("Failed to load custom plant %u for root depth: %d", custom_plant_id, res);
+            return res;
+        }
+        
+        /* Calculate root depth based on growth stage */
+        uint16_t total_season = plant.stage_days_ini + plant.stage_days_dev + 
+                                plant.stage_days_mid + plant.stage_days_end;
+        
+        if (total_season == 0 || days_after_planting >= total_season) {
+            *out_root_depth_mm = (float)plant.root_depth_max_mm;
+        } else {
+            /* Linear interpolation from min to max */
+            float t = (float)days_after_planting / (float)total_season;
+            *out_root_depth_mm = (float)plant.root_depth_min_mm + 
+                                 t * ((float)plant.root_depth_max_mm - (float)plant.root_depth_min_mm);
+        }
+        
+        return PACK_RESULT_SUCCESS;
+    }
+    
+    /* Use built-in database */
+    if (plant_db_index < PLANT_FULL_SPECIES_COUNT) {
+        const plant_full_data_t *rom_plant = &plant_full_database[plant_db_index];
+        
+        uint16_t total_season = rom_plant->stage_days_ini + rom_plant->stage_days_dev + 
+                                rom_plant->stage_days_mid + rom_plant->stage_days_end;
+        
+        if (total_season == 0 || days_after_planting >= total_season) {
+            *out_root_depth_mm = PLANT_ROOT_MAX_M(rom_plant) * 1000.0f;
+        } else {
+            float t = (float)days_after_planting / (float)total_season;
+            float min_depth = PLANT_ROOT_MIN_M(rom_plant) * 1000.0f;
+            float max_depth = PLANT_ROOT_MAX_M(rom_plant) * 1000.0f;
+            *out_root_depth_mm = min_depth + t * (max_depth - min_depth);
+        }
+        
+        return PACK_RESULT_SUCCESS;
+    }
+    
+    return PACK_RESULT_INVALID_DATA;
+}
+
+pack_result_t pack_storage_get_fao56_plant(uint16_t custom_plant_id,
+                                            pack_plant_v1_t *plant)
+{
+    if (!plant || custom_plant_id == 0) {
+        return PACK_RESULT_INVALID_DATA;
+    }
+    
+    return pack_storage_get_plant(custom_plant_id, plant);
+}

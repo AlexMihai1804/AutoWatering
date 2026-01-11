@@ -42,6 +42,7 @@
 #include "database_flash.h"
 #include "history_flash.h"
 #include "pack_storage.h"
+#include "bt_pack_handlers.h"
 
 #ifdef CONFIG_BT
 #include "bt_irrigation_service.h"
@@ -690,6 +691,15 @@ int main(void) {
         if (resume_ret == 1) {
             printk("Resuming interrupted factory wipe...\n");
         }
+    }
+    
+    // Initialize BLE pack handlers
+    printk("Initializing BLE pack handlers...\n");
+    ret = bt_pack_handlers_init();
+    if (ret != 0) {
+        printk("Warning: BLE pack handlers initialization failed: %d\n", ret);
+    } else {
+        printk("BLE pack handlers initialized successfully\n");
     }
 #endif
     
