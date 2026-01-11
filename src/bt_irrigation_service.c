@@ -7880,21 +7880,49 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
         irrigation_calculation_t calc = {0};
         bool eco = (channel->auto_mode == WATERING_AUTOMATIC_ECO);
         if (method && plant && soil) {
+            float application_rate_mm_h = 0.0f;
+            if (channel->hydraulic.nominal_flow_ml_min > 0) {
+                float flow_l_min = channel->hydraulic.nominal_flow_ml_min / 1000.0f;
+                float area_for_rate = 0.0f;
+                if (channel->use_area_based) {
+                    area_for_rate = channel->coverage.area_m2;
+                } else {
+                    float row_spacing_m = plant->spacing_row_m_x1000 / 1000.0f;
+                    float plant_spacing_m = plant->spacing_plant_m_x1000 / 1000.0f;
+                    float area_per_plant = 0.0f;
+                    if (row_spacing_m > 0.0f && plant_spacing_m > 0.0f) {
+                        area_per_plant = row_spacing_m * plant_spacing_m;
+                    } else if (plant->default_density_plants_m2_x100 > 0) {
+                        float density = plant->default_density_plants_m2_x100 / 100.0f;
+                        area_per_plant = (density > 0.0f) ? (1.0f / density) : 0.0f;
+                    } else {
+                        area_per_plant = 0.5f;
+                    }
+                    area_for_rate = area_per_plant * channel->coverage.plant_count;
+                }
+                if (area_for_rate > 0.0f) {
+                    application_rate_mm_h = (flow_l_min * 60.0f) / area_for_rate;
+                }
+            }
             if (channel->use_area_based) {
                 float area = channel->coverage.area_m2;
                 if (eco)
                     apply_eco_irrigation_mode(balance, method, soil, plant, area, 0,
+                                              application_rate_mm_h,
                                               channel->max_volume_limit_l, &calc);
                 else
                     apply_quality_irrigation_mode(balance, method, soil, plant, area, 0,
+                                                  application_rate_mm_h,
                                                   channel->max_volume_limit_l, &calc);
             } else {
                 uint16_t count = channel->coverage.plant_count;
                 if (eco)
                     apply_eco_irrigation_mode(balance, method, soil, plant, 0.0f, count,
+                                              application_rate_mm_h,
                                               channel->max_volume_limit_l, &calc);
                 else
                     apply_quality_irrigation_mode(balance, method, soil, plant, 0.0f, count,
+                                                  application_rate_mm_h,
                                                   channel->max_volume_limit_l, &calc);
             }
             d->net_irrigation_mm = calc.net_irrigation_mm;

@@ -61,6 +61,12 @@ static bool system_initialized = false;
 static bme280_reading_t last_bme_reading;
 static bool last_bme_valid;
 static uint32_t last_bme_timestamp;
+static float temp_window_min_c;
+static float temp_window_max_c;
+static float temp_window_sum_c;
+static uint32_t temp_window_count;
+static uint32_t temp_window_start_s;
+static bool temp_window_valid;
 #endif
 
 /* Unified default configuration (conditional fields differ by build mode) */
@@ -89,6 +95,56 @@ static uint16_t simulation_day_offset = 0;  // Days since simulation start
 #endif
 
 // No soil sensor forward declarations (soil subsystem removed)
+
+#ifndef ENV_SENSORS_USE_SIMULATION
+#define TEMP_WINDOW_SECONDS (24U * 60U * 60U)
+
+static void temp_window_reset(float temp_c, uint32_t now_s)
+{
+    temp_window_min_c = temp_c;
+    temp_window_max_c = temp_c;
+    temp_window_sum_c = temp_c;
+    temp_window_count = 1U;
+    temp_window_start_s = now_s;
+    temp_window_valid = true;
+}
+
+static void temp_window_update(float temp_c, uint32_t now_s)
+{
+    if (!temp_window_valid || (now_s - temp_window_start_s) >= TEMP_WINDOW_SECONDS) {
+        temp_window_reset(temp_c, now_s);
+        return;
+    }
+
+    if (temp_c < temp_window_min_c) {
+        temp_window_min_c = temp_c;
+    }
+    if (temp_c > temp_window_max_c) {
+        temp_window_max_c = temp_c;
+    }
+    temp_window_sum_c += temp_c;
+    temp_window_count++;
+}
+
+static bool temp_window_get(float *temp_min_c, float *temp_max_c, float *temp_mean_c)
+{
+    if (!temp_window_valid || temp_window_count == 0U) {
+        return false;
+    }
+
+    if (temp_min_c) {
+        *temp_min_c = temp_window_min_c;
+    }
+    if (temp_max_c) {
+        *temp_max_c = temp_window_max_c;
+    }
+    if (temp_mean_c) {
+        *temp_mean_c = temp_window_sum_c / (float)temp_window_count;
+    }
+
+    return true;
+}
+#endif
 
 /* -------------------------------------------------------------------------- */
 /* Simulation-only helpers & configuration                                   */
@@ -242,6 +298,12 @@ watering_error_t env_sensors_init(void) {
     memset(&last_bme_reading, 0, sizeof(last_bme_reading));
     last_bme_valid = false;
     last_bme_timestamp = 0;
+    temp_window_valid = false;
+    temp_window_count = 0U;
+    temp_window_sum_c = 0.0f;
+    temp_window_start_s = 0U;
+    temp_window_min_c = 0.0f;
+    temp_window_max_c = 0.0f;
 #endif
 
     // Soil moisture sensors removed – no initialization required
@@ -321,6 +383,7 @@ watering_error_t env_sensors_read(environmental_data_t *data) {
 
             if (sensor_config.enable_temp_sensor) {
                 sensor_status.last_temp_reading = current_time;
+                temp_window_update(bme.temperature + sensor_config.temp_offset_c, current_time);
             }
             if (sensor_config.enable_humidity_sensor) {
                 sensor_status.last_humidity_reading = current_time;
@@ -365,9 +428,18 @@ watering_error_t env_sensors_read(environmental_data_t *data) {
     if (sensor_config.enable_temp_sensor &&
         sensor_status.temp_sensor_online &&
         last_bme_valid) {
-        data->air_temp_mean_c = last_bme_reading.temperature + sensor_config.temp_offset_c;
-        data->air_temp_min_c = data->air_temp_mean_c; // Until daily aggregation implemented
-        data->air_temp_max_c = data->air_temp_mean_c;
+        float current_temp_c = last_bme_reading.temperature + sensor_config.temp_offset_c;
+        data->air_temp_mean_c = current_temp_c;
+        data->air_temp_min_c = current_temp_c;
+        data->air_temp_max_c = current_temp_c;
+        float window_min_c = 0.0f;
+        float window_max_c = 0.0f;
+        float window_mean_c = 0.0f;
+        if (temp_window_get(&window_min_c, &window_max_c, &window_mean_c)) {
+            data->air_temp_min_c = window_min_c;
+            data->air_temp_max_c = window_max_c;
+            data->air_temp_mean_c = window_mean_c;
+        }
         data->temp_valid = true;
     } else {
         data->temp_valid = false;

@@ -178,8 +178,8 @@ watering_error_t calc_water_balance(
  * 
  * @param balance Current water balance
  * @param method Irrigation method database entry
- * @param area_m2 Area to irrigate (m²)
- * @param eco_mode True for 70% application, false for 100%
+ * @param area_m2 Area to irrigate (m2)
+ * @param eco_mode Eco context flag (volume uses current deficit)
  * @param max_volume_limit_l Maximum volume limit (L)
  * @param result Calculation results structure
  * @return WATERING_SUCCESS on success, error code on failure
@@ -200,7 +200,7 @@ watering_error_t calc_irrigation_volume_area(
  * @param method Irrigation method database entry
  * @param plant Plant database entry
  * @param plant_count Number of plants
- * @param eco_mode True for 70% application, false for 100%
+ * @param eco_mode Eco context flag (volume uses current deficit)
  * @param max_volume_limit_l Maximum volume limit (L)
  * @param result Calculation results structure
  * @return WATERING_SUCCESS on success, error code on failure
@@ -272,8 +272,9 @@ watering_error_t calc_cycle_and_soak(
  * @param balance Current water balance state
  * @param method Irrigation method database entry
  * @param plant Plant database entry (for plant-based calculations)
- * @param area_m2 Area to irrigate (for area-based calculations, 0 for plant-based)
+ * @param area_m2 Area to irrigate (m2)
  * @param plant_count Number of plants (for plant-based calculations, 0 for area-based)
+ * @param application_rate_mm_h Application rate override (mm/h, 0 to use method defaults)
  * @param max_volume_limit_l Maximum volume limit (liters)
  * @param result Calculation results structure
  * @return WATERING_SUCCESS on success, error code on failure
@@ -285,18 +286,20 @@ watering_error_t apply_quality_irrigation_mode(
     const plant_full_data_t *plant,
     float area_m2,
     uint16_t plant_count,
+    float application_rate_mm_h,
     float max_volume_limit_l,
     irrigation_calculation_t *result
 );
 
 /**
- * @brief Apply eco irrigation mode (70% of calculated requirement)
+ * @brief Apply eco irrigation mode (reduced refill target)
  * 
  * @param balance Current water balance state
  * @param method Irrigation method database entry
  * @param plant Plant database entry (for plant-based calculations)
- * @param area_m2 Area to irrigate (for area-based calculations, 0 for plant-based)
+ * @param area_m2 Area to irrigate (m2)
  * @param plant_count Number of plants (for plant-based calculations, 0 for area-based)
+ * @param application_rate_mm_h Application rate override (mm/h, 0 to use method defaults)
  * @param max_volume_limit_l Maximum volume limit (liters)
  * @param result Calculation results structure
  * @return WATERING_SUCCESS on success, error code on failure
@@ -308,6 +311,7 @@ watering_error_t apply_eco_irrigation_mode(
     const plant_full_data_t *plant,
     float area_m2,
     uint16_t plant_count,
+    float application_rate_mm_h,
     float max_volume_limit_l,
     irrigation_calculation_t *result
 );
@@ -547,9 +551,10 @@ watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
  *
  * @param rainfall_mm Incremental rainfall (mm)
  * @param air_temp_c Ambient air temperature for evaporation estimate (deg C)
+ * @param duration_s Duration of the rainfall increment window (seconds)
  * @return WATERING_SUCCESS on success, error code on failure
  */
-watering_error_t fao56_apply_rainfall_increment(float rainfall_mm, float air_temp_c);
+watering_error_t fao56_apply_rainfall_increment(float rainfall_mm, float air_temp_c, uint32_t duration_s);
 
 /**
  * @brief Handle multi-day offline gap by estimating missed deficit accumulation

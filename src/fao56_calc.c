@@ -36,6 +36,39 @@ LOG_MODULE_REGISTER(fao56_calc, LOG_LEVEL_INF);
 #define HEURISTIC_ET0_VPD_FLOOR    0.05f    // Minimum VPD to avoid zeroing ET0
 #define HEURISTIC_ET0_MIN          0.5f     // Clamp lower bound (mm/day)
 #define HEURISTIC_ET0_MAX          6.0f     // Clamp upper bound (mm/day)
+#define ET0_SLEW_MAX_INC_MM_DAY    5.0f     // Max daily ET0 increase (mm/day)
+#define ET0_SLEW_MAX_DEC_MM_DAY    2.0f     // Max daily ET0 decrease (mm/day)
+#define ET0_SLEW_MAX_INC_HOT_MM_DAY 7.0f    // Hot/windy override for fast ET0 rises
+#define ET0_SLEW_RESET_SECONDS     (3U * 86400U) // Reset slew window after long gaps
+#define ET0_SLEW_MIN_STEP_MM_DAY   0.1f     // Avoid overly small slew steps
+#define ECO_ETC_FACTOR             0.7f     // Eco mode management scaling factor
+#define RAIN_INTENSITY_MAX_MM_H    100.0f   // Safety clamp for intensity-based runoff
+#define ET0_SLEW_HEATWAVE_TMAX_C   33.0f    // Heatwave trigger for faster ET0 ramp
+#define ET0_SLEW_HEATWAVE_VPD_KPA  2.0f     // VPD trigger for faster ET0 ramp
+#define ET0_ENSEMBLE_MAX_WEIGHT    0.85f    // Max PM weight in ET0 ensemble
+#define FAO56_SURFACE_LAYER_M      0.10f    // 10 cm surface layer for TEW
+#define FAO56_SURFACE_TEW_MIN_MM   4.0f
+#define FAO56_SURFACE_TEW_MAX_MM   15.0f
+#define FAO56_SURFACE_REW_FRAC     0.5f
+#define FAO56_SURFACE_REW_MIN_MM   2.0f
+#define FAO56_SURFACE_REW_MAX_MM   8.0f
+#define FAO56_KE_MAX_BASE          0.90f
+#define FAO56_KE_CANOPY_REDUCTION  0.5f     // Max 50% reduction at full canopy
+#define FAO56_SURFACE_WET_DECAY_SECONDS (18U * 3600U)
+#define FAO56_SURFACE_WET_DECAY_ET0_MM  3.0f
+#define FAO56_SURFACE_WET_RAIN_FRACTION 1.0f
+#define FAO56_MAD_ETC_REF_MM_DAY   5.0f
+#define FAO56_MAD_ETC_ADJ_COEFF    0.04f
+#define FAO56_MAD_MIN_FRACTION     0.1f
+#define FAO56_MAD_MAX_FRACTION     0.8f
+#define FAO56_WF_MIN               0.10f
+#define FAO56_WF_MAX               1.00f
+#define FAO56_WF_DEPTH_LOG_COEFF   0.15f
+#define FAO56_WF_SLEW_MAX_FRAC_PER_WEEK 0.10f
+#define FAO56_WF_SLEW_MAX_FRAC_PER_DAY (FAO56_WF_SLEW_MAX_FRAC_PER_WEEK / 7.0f)
+#define FAO56_ET0_PM_DT_MIN_C      1.0f
+#define FAO56_ET0_PM_RATIO_MIN     0.30f
+#define FAO56_ET0_PM_RATIO_MAX     2.50f
 
 // Assumed meteorological constants (no wind or solar sensors present)
 #define ASSUMED_WIND_SPEED_M_S     2.0f     // Typical moderate daytime wind speed for reference ET
@@ -64,6 +97,82 @@ static soil_enhanced_data_t s_custom_soil_data_cache[WATERING_CHANNELS_COUNT];
 static bool s_custom_soil_cache_valid[WATERING_CHANNELS_COUNT] = {false};
 static uint32_t s_custom_soil_cache_timestamp[WATERING_CHANNELS_COUNT] = {0};
 
+static float s_et0_slew_last_mm_day[WATERING_CHANNELS_COUNT] = {0.0f};
+static uint32_t s_et0_slew_last_time_s[WATERING_CHANNELS_COUNT] = {0U};
+static bool s_et0_slew_valid[WATERING_CHANNELS_COUNT] = {false};
+static float s_antecedent_moisture_ema[WATERING_CHANNELS_COUNT] = {0.0f};
+static bool s_antecedent_moisture_valid[WATERING_CHANNELS_COUNT] = {false};
+static uint32_t s_antecedent_moisture_last_update_s[WATERING_CHANNELS_COUNT] = {0U};
+static float s_wetting_fraction_last[WATERING_CHANNELS_COUNT] = {0.0f};
+static uint32_t s_wetting_fraction_last_time_s[WATERING_CHANNELS_COUNT] = {0U};
+static float s_rain_applied_raw_mm[WATERING_CHANNELS_COUNT] = {0.0f};
+
+static float fao56_calc_plant_irrigated_area_m2(
+    const plant_full_data_t *plant,
+    uint16_t plant_count,
+    float *area_per_plant_m2_out,
+    float *canopy_factor_out,
+    bool log_details
+);
+static float calc_saturation_vapor_pressure(float temp_c);
+static float fao56_apply_canopy_to_kc(const plant_full_data_t *plant,
+                                      float kc,
+                                      uint16_t days_after_planting);
+static float fao56_get_dynamic_canopy_factor(const plant_full_data_t *plant,
+                                             uint16_t days_after_planting);
+static bool fao56_get_vpd_kpa(const environmental_data_t *env, float *vpd_out);
+static void fao56_get_et0_slew_limits(const environmental_data_t *env,
+                                      float *max_inc_mm_day,
+                                      float *max_dec_mm_day);
+static float fao56_apply_et0_slew(uint8_t channel_id,
+                                  float et0_mm_day,
+                                  uint32_t now_s,
+                                  float max_inc_mm_day,
+                                  float max_dec_mm_day);
+static float fao56_calc_et0_ensemble(const environmental_data_t *env,
+                                     float latitude_rad,
+                                     uint16_t day_of_year,
+                                     float *et0_hs_out,
+                                     float *et0_pm_out);
+static float fao56_apply_wetting_fraction_slew(uint8_t channel_id, float wetting_fraction);
+static void fao56_update_surface_bucket(water_balance_t *balance,
+                                        const soil_enhanced_data_t *soil,
+                                        float surface_wet_fraction);
+static float fao56_get_surface_wet_fraction(water_balance_t *balance,
+                                            float target_wet_fraction,
+                                            float et0_mm_day);
+static void fao56_apply_surface_wet_event(water_balance_t *balance,
+                                          float event_fraction);
+static void fao56_rescale_deficit_for_awc_change(water_balance_t *balance,
+                                                 float new_wetting_awc_mm);
+static float fao56_route_effective_precipitation(water_balance_t *balance,
+                                                 float effective_mm);
+static void fao56_get_efficiency_split(const irrigation_method_data_t *method,
+                                       float wetting_fraction,
+                                       float *eff_surface,
+                                       float *eff_root);
+static float fao56_calc_surface_tew_mm(const soil_enhanced_data_t *soil);
+static float fao56_calc_surface_rew_mm(const soil_enhanced_data_t *soil, float tew_mm);
+static float fao56_get_surface_wet_target(const irrigation_method_data_t *method,
+                                          float wetting_fraction);
+static float fao56_calc_ke(const water_balance_t *balance,
+                           float tew_mm,
+                           float rew_mm,
+                           const irrigation_method_data_t *method,
+                           const plant_full_data_t *plant,
+                           uint16_t days_after_planting);
+static float fao56_get_effective_wetting_fraction(const irrigation_method_data_t *method,
+                                                  const soil_enhanced_data_t *soil,
+                                                  const plant_full_data_t *plant);
+static float fao56_get_antecedent_moisture_pct(uint8_t channel_id,
+                                               const water_balance_t *balance);
+static float fao56_calc_effective_rain_hourly(uint32_t now_ts,
+                                              float rainfall_remainder_mm,
+                                              const soil_enhanced_data_t *soil,
+                                              const irrigation_method_data_t *irrigation_method,
+                                              float antecedent_moisture_pct,
+                                              float temperature_c);
+
 static uint16_t fao56_calc_day_of_year_from_date(uint16_t year, uint8_t month, uint8_t day)
 {
     bool is_leap = ((year % 4 == 0 && year % 100 != 0) ||
@@ -80,6 +189,108 @@ static uint16_t fao56_calc_day_of_year_from_date(uint16_t year, uint8_t month, u
     }
 
     return day_of_year;
+}
+
+static bool fao56_get_vpd_kpa(const environmental_data_t *env, float *vpd_out)
+{
+    if (!env || !vpd_out) {
+        return false;
+    }
+
+    if (env->derived_values_calculated) {
+        float vpd = env->saturation_vapor_pressure_kpa - env->vapor_pressure_kpa;
+        if (vpd < 0.0f) vpd = 0.0f;
+        *vpd_out = vpd;
+        return true;
+    }
+
+    if (!env->temp_valid || !env->humidity_valid) {
+        return false;
+    }
+
+    float es = calc_saturation_vapor_pressure(env->air_temp_mean_c);
+    float ea = es * env->rel_humidity_pct / 100.0f;
+    float vpd = es - ea;
+    if (vpd < 0.0f) vpd = 0.0f;
+    *vpd_out = vpd;
+    return true;
+}
+
+static void fao56_get_et0_slew_limits(const environmental_data_t *env,
+                                      float *max_inc_mm_day,
+                                      float *max_dec_mm_day)
+{
+    if (!max_inc_mm_day || !max_dec_mm_day) {
+        return;
+    }
+
+    float inc = ET0_SLEW_MAX_INC_MM_DAY;
+    float dec = ET0_SLEW_MAX_DEC_MM_DAY;
+
+    if (env && env->temp_valid) {
+        float vpd = 0.0f;
+        bool vpd_valid = fao56_get_vpd_kpa(env, &vpd);
+        if (env->air_temp_max_c >= ET0_SLEW_HEATWAVE_TMAX_C ||
+            (vpd_valid && vpd >= ET0_SLEW_HEATWAVE_VPD_KPA)) {
+            inc = ET0_SLEW_MAX_INC_HOT_MM_DAY;
+        }
+    }
+
+    *max_inc_mm_day = inc;
+    *max_dec_mm_day = dec;
+}
+
+static float fao56_apply_et0_slew(uint8_t channel_id,
+                                  float et0_mm_day,
+                                  uint32_t now_s,
+                                  float max_inc_mm_day,
+                                  float max_dec_mm_day)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return et0_mm_day;
+    }
+
+    if (!s_et0_slew_valid[channel_id]) {
+        s_et0_slew_valid[channel_id] = true;
+        s_et0_slew_last_time_s[channel_id] = now_s;
+        s_et0_slew_last_mm_day[channel_id] = et0_mm_day;
+        return et0_mm_day;
+    }
+
+    uint32_t elapsed_s = now_s - s_et0_slew_last_time_s[channel_id];
+    if (elapsed_s == 0U || elapsed_s > ET0_SLEW_RESET_SECONDS) {
+        s_et0_slew_last_time_s[channel_id] = now_s;
+        s_et0_slew_last_mm_day[channel_id] = et0_mm_day;
+        return et0_mm_day;
+    }
+
+    float max_inc = max_inc_mm_day * ((float)elapsed_s / 86400.0f);
+    float max_dec = max_dec_mm_day * ((float)elapsed_s / 86400.0f);
+    float min_step = ET0_SLEW_MIN_STEP_MM_DAY * ((float)elapsed_s / 86400.0f);
+    if (max_inc < min_step) {
+        max_inc = min_step;
+    }
+    if (max_dec < min_step) {
+        max_dec = min_step;
+    }
+
+    float last = s_et0_slew_last_mm_day[channel_id];
+    if (et0_mm_day > last) {
+        float max_et0 = last + max_inc;
+        if (et0_mm_day > max_et0) {
+            et0_mm_day = max_et0;
+        }
+    } else if (et0_mm_day < last) {
+        float min_et0 = last - max_dec;
+        if (et0_mm_day < min_et0) {
+            et0_mm_day = min_et0;
+        }
+    }
+
+    s_et0_slew_last_mm_day[channel_id] = et0_mm_day;
+    s_et0_slew_last_time_s[channel_id] = now_s;
+
+    return et0_mm_day;
 }
 
 static bool fao56_get_local_datetime_from_timestamp(uint32_t timestamp, rtc_datetime_t *datetime)
@@ -131,15 +342,151 @@ static uint16_t fao56_get_days_after_planting(const watering_channel_t *channel,
     return (uint16_t)((current_time - channel->planting_date_unix) / 86400);
 }
 
-static float fao56_get_kc_for_day(const plant_full_data_t *plant, uint16_t days_after_planting)
+static float fao56_get_kc_base_for_day(const plant_full_data_t *plant, uint16_t days_after_planting)
 {
     phenological_stage_t stage = calc_phenological_stage(plant, days_after_planting);
     return calc_crop_coefficient(plant, stage, days_after_planting);
 }
 
+static float fao56_get_kc_for_day(const plant_full_data_t *plant, uint16_t days_after_planting)
+{
+    float kc_base = fao56_get_kc_base_for_day(plant, days_after_planting);
+    return fao56_apply_canopy_to_kc(plant, kc_base, days_after_planting);
+}
+
 static float fao56_get_root_depth_m(const plant_full_data_t *plant, uint16_t days_after_planting)
 {
     return calc_current_root_depth(plant, days_after_planting);
+}
+
+static float fao56_calc_et0_ensemble(const environmental_data_t *env,
+                                     float latitude_rad,
+                                     uint16_t day_of_year,
+                                     float *et0_hs_out,
+                                     float *et0_pm_out)
+{
+    if (!env) {
+        return 0.0f;
+    }
+    if (!env->temp_valid) {
+        return 0.0f;
+    }
+
+    float et0_hs = calc_et0_hargreaves_samani(env, latitude_rad, day_of_year);
+    float et0_pm = 0.0f;
+    bool pm_valid = env->temp_valid && env->humidity_valid;
+    if (pm_valid) {
+        et0_pm = calc_et0_penman_monteith(env, latitude_rad, day_of_year);
+        if (et0_pm <= 0.01f || et0_pm > ET0_ABSOLUTE_MAX_MM_DAY * 1.2f) {
+            pm_valid = false;
+        }
+    }
+
+    if (et0_hs_out) {
+        *et0_hs_out = et0_hs;
+    }
+    if (et0_pm_out) {
+        *et0_pm_out = et0_pm;
+    }
+
+    if (!pm_valid) {
+        return et0_hs;
+    }
+
+    float weight = 0.5f;
+    if (env->pressure_valid) {
+        weight += 0.1f;
+    }
+    if (env->humidity_valid) {
+        weight += 0.2f;
+    }
+    if (env->data_quality >= 80) {
+        weight += 0.1f;
+    }
+    if (env->temp_valid && et0_hs > 0.1f) {
+        float temp_range = env->air_temp_max_c - env->air_temp_min_c;
+        float ratio = et0_pm / et0_hs;
+        if (ratio < FAO56_ET0_PM_RATIO_MIN || ratio > FAO56_ET0_PM_RATIO_MAX) {
+            weight *= 0.6f;
+        }
+        if (temp_range < FAO56_ET0_PM_DT_MIN_C && et0_pm > et0_hs + 1.0f) {
+            weight *= 0.6f;
+        }
+    }
+    if (env->derived_values_calculated && env->vapor_pressure_kpa > 0.0f &&
+        env->dewpoint_temp_c > env->air_temp_max_c + 0.5f) {
+        weight *= 0.5f;
+    }
+    if (weight > ET0_ENSEMBLE_MAX_WEIGHT) {
+        weight = ET0_ENSEMBLE_MAX_WEIGHT;
+    }
+    if (weight < 0.2f) {
+        weight = 0.2f;
+    }
+
+    return weight * et0_pm + (1.0f - weight) * et0_hs;
+}
+
+static float fao56_apply_canopy_to_kc(const plant_full_data_t *plant,
+                                      float kc,
+                                      uint16_t days_after_planting)
+{
+    if (!plant) {
+        return kc;
+    }
+
+    float canopy_factor = fao56_get_dynamic_canopy_factor(plant, days_after_planting);
+    if (canopy_factor <= 0.0f) {
+        return kc;
+    }
+
+    float kc_ini = plant->kc_ini_x1000 / 1000.0f;
+    float kc_eff = kc_ini + (kc - kc_ini) * canopy_factor;
+    if (kc < kc_ini && kc_eff > kc) {
+        kc_eff = kc;
+    }
+    if (kc_eff < 0.1f) kc_eff = 0.1f;
+    if (kc_eff > 2.0f) kc_eff = 2.0f;
+
+    return kc_eff;
+}
+
+static float fao56_get_dynamic_canopy_factor(const plant_full_data_t *plant,
+                                             uint16_t days_after_planting)
+{
+    if (!plant) {
+        return 0.0f;
+    }
+
+    float canopy_max = plant->canopy_cover_max_frac_x1000 / 1000.0f;
+    if (canopy_max <= 0.0f) {
+        return 0.0f;
+    }
+    if (canopy_max > 1.0f) {
+        canopy_max = 1.0f;
+    }
+
+    uint16_t stage_1_end = plant->stage_days_ini;
+    uint16_t stage_2_end = stage_1_end + plant->stage_days_dev;
+    float progress = 1.0f;
+
+    if (plant->stage_days_dev == 0U) {
+        progress = (days_after_planting <= stage_1_end) ? 0.0f : 1.0f;
+    } else if (days_after_planting <= stage_1_end) {
+        progress = 0.0f;
+    } else if (days_after_planting >= stage_2_end) {
+        progress = 1.0f;
+    } else {
+        progress = (float)(days_after_planting - stage_1_end) /
+                   (float)plant->stage_days_dev;
+        if (progress < 0.0f) progress = 0.0f;
+        if (progress > 1.0f) progress = 1.0f;
+    }
+
+    float canopy_factor = canopy_max * progress;
+    if (canopy_factor < 0.0f) canopy_factor = 0.0f;
+    if (canopy_factor > 1.0f) canopy_factor = 1.0f;
+    return canopy_factor;
 }
 
 const soil_enhanced_data_t *fao56_get_channel_soil(uint8_t channel_id, const watering_channel_t *channel)
@@ -183,6 +530,492 @@ const soil_enhanced_data_t *fao56_get_channel_soil(uint8_t channel_id, const wat
     }
 
     return soil_db_get_by_index(resolved->soil_db_index);
+}
+
+static float fao56_calc_surface_tew_mm(const soil_enhanced_data_t *soil)
+{
+    float tew_mm = 0.0f;
+    if (soil) {
+        float fc = soil->fc_pctvol_x100 / 100.0f;
+        float wp = soil->pwp_pctvol_x100 / 100.0f;
+        if (fc > 0.0f && wp >= 0.0f && fc > wp) {
+            tew_mm = 1000.0f * FAO56_SURFACE_LAYER_M * (fc - wp);
+        } else if (soil->awc_mm_per_m > 0.0f) {
+            tew_mm = soil->awc_mm_per_m * FAO56_SURFACE_LAYER_M;
+        }
+    }
+    if (tew_mm <= 0.0f) {
+        tew_mm = 8.0f;
+    }
+    if (tew_mm < FAO56_SURFACE_TEW_MIN_MM) tew_mm = FAO56_SURFACE_TEW_MIN_MM;
+    if (tew_mm > FAO56_SURFACE_TEW_MAX_MM) tew_mm = FAO56_SURFACE_TEW_MAX_MM;
+    return tew_mm;
+}
+
+static float fao56_calc_surface_rew_mm(const soil_enhanced_data_t *soil, float tew_mm)
+{
+    float rew_mm = tew_mm * FAO56_SURFACE_REW_FRAC;
+    if (soil && soil->texture[0] != '\0') {
+        if (strstr(soil->texture, "Sand") || strstr(soil->texture, "sand")) {
+            rew_mm = 3.0f;
+        } else if (strstr(soil->texture, "Clay") || strstr(soil->texture, "clay")) {
+            rew_mm = 8.0f;
+        } else if (strstr(soil->texture, "Loam") || strstr(soil->texture, "loam")) {
+            rew_mm = 6.0f;
+        }
+    }
+    if (rew_mm < FAO56_SURFACE_REW_MIN_MM) rew_mm = FAO56_SURFACE_REW_MIN_MM;
+    if (rew_mm > FAO56_SURFACE_REW_MAX_MM) rew_mm = FAO56_SURFACE_REW_MAX_MM;
+    if (rew_mm > tew_mm) rew_mm = tew_mm;
+    return rew_mm;
+}
+
+static float fao56_apply_wetting_fraction_slew(uint8_t channel_id, float wetting_fraction)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return wetting_fraction;
+    }
+
+    if (wetting_fraction < FAO56_WF_MIN) wetting_fraction = FAO56_WF_MIN;
+    if (wetting_fraction > FAO56_WF_MAX) wetting_fraction = FAO56_WF_MAX;
+
+    uint32_t now_s = k_uptime_get_32() / 1000U;
+    float last = s_wetting_fraction_last[channel_id];
+    uint32_t last_s = s_wetting_fraction_last_time_s[channel_id];
+
+    if (last_s == 0U || last <= 0.0f) {
+        s_wetting_fraction_last[channel_id] = wetting_fraction;
+        s_wetting_fraction_last_time_s[channel_id] = now_s;
+        return wetting_fraction;
+    }
+
+    uint32_t dt_s = (now_s >= last_s) ? (now_s - last_s) : 0U;
+    if (dt_s > 0U) {
+        float max_delta = FAO56_WF_SLEW_MAX_FRAC_PER_DAY * ((float)dt_s / 86400.0f);
+        float delta = wetting_fraction - last;
+        if (fabsf(delta) > max_delta) {
+            wetting_fraction = last + (delta > 0.0f ? max_delta : -max_delta);
+        }
+    } else {
+        wetting_fraction = last;
+    }
+
+    if (wetting_fraction < FAO56_WF_MIN) wetting_fraction = FAO56_WF_MIN;
+    if (wetting_fraction > FAO56_WF_MAX) wetting_fraction = FAO56_WF_MAX;
+
+    s_wetting_fraction_last[channel_id] = wetting_fraction;
+    s_wetting_fraction_last_time_s[channel_id] = now_s;
+    return wetting_fraction;
+}
+
+static float fao56_get_surface_wet_fraction(water_balance_t *balance,
+                                            float target_wet_fraction,
+                                            float et0_mm_day)
+{
+    if (!balance) {
+        return target_wet_fraction;
+    }
+
+    if (target_wet_fraction < FAO56_WF_MIN) target_wet_fraction = FAO56_WF_MIN;
+    if (target_wet_fraction > 1.0f) target_wet_fraction = 1.0f;
+
+    uint32_t now_s = k_uptime_get_32() / 1000U;
+    float current = balance->surface_wet_fraction;
+    uint32_t last_s = balance->surface_wet_update_s;
+
+    if (last_s == 0U || current <= 0.0f) {
+        balance->surface_wet_fraction = target_wet_fraction;
+        balance->surface_wet_update_s = now_s;
+        return target_wet_fraction;
+    }
+
+    uint32_t dt_s = (now_s >= last_s) ? (now_s - last_s) : 0U;
+    if (dt_s > 0U) {
+        if (et0_mm_day > 0.05f) {
+            float et0_cum = et0_mm_day * ((float)dt_s / 86400.0f);
+            float decay = expf(-et0_cum / FAO56_SURFACE_WET_DECAY_ET0_MM);
+            current = target_wet_fraction + (current - target_wet_fraction) * decay;
+        } else {
+            float alpha = expf(-((float)dt_s) / (float)FAO56_SURFACE_WET_DECAY_SECONDS);
+            current = target_wet_fraction + (current - target_wet_fraction) * alpha;
+        }
+        balance->surface_wet_fraction = current;
+        balance->surface_wet_update_s = now_s;
+    }
+
+    if (balance->surface_wet_fraction < FAO56_WF_MIN) {
+        balance->surface_wet_fraction = FAO56_WF_MIN;
+    }
+    if (balance->surface_wet_fraction > 1.0f) {
+        balance->surface_wet_fraction = 1.0f;
+    }
+
+    return balance->surface_wet_fraction;
+}
+
+static void fao56_apply_surface_wet_event(water_balance_t *balance,
+                                          float event_fraction)
+{
+    if (!balance) {
+        return;
+    }
+
+    if (event_fraction < FAO56_WF_MIN) event_fraction = FAO56_WF_MIN;
+    if (event_fraction > 1.0f) event_fraction = 1.0f;
+
+    float current = balance->surface_wet_fraction;
+    if (balance->surface_wet_update_s == 0U || current <= 0.0f) {
+        balance->surface_wet_fraction = event_fraction;
+        balance->surface_wet_update_s = k_uptime_get_32() / 1000U;
+        return;
+    }
+
+    if (event_fraction > current + 0.001f) {
+        balance->surface_wet_fraction = event_fraction;
+        balance->surface_wet_update_s = k_uptime_get_32() / 1000U;
+    }
+}
+
+static void fao56_update_surface_bucket(water_balance_t *balance,
+                                        const soil_enhanced_data_t *soil,
+                                        float surface_wet_fraction)
+{
+    if (!balance) {
+        return;
+    }
+
+    float base_tew_mm = fao56_calc_surface_tew_mm(soil);
+    if (surface_wet_fraction < 0.0f) surface_wet_fraction = 0.0f;
+    if (surface_wet_fraction > 1.0f) surface_wet_fraction = 1.0f;
+    balance->surface_wet_fraction = surface_wet_fraction;
+
+    float tew_mm = base_tew_mm * surface_wet_fraction;
+    if (tew_mm < 0.0f) tew_mm = 0.0f;
+    float base_rew_mm = fao56_calc_surface_rew_mm(soil, base_tew_mm);
+    float rew_mm = base_rew_mm * surface_wet_fraction;
+    if (rew_mm > tew_mm * 0.9f) {
+        rew_mm = tew_mm * 0.9f;
+        LOG_DBG("Surface REW clamped to TEW for channel bucket (TEW=%.2f)", (double)tew_mm);
+    }
+    if (rew_mm < 0.0f) rew_mm = 0.0f;
+
+    float old_tew_mm = balance->surface_tew_mm;
+    if (old_tew_mm > 0.0f && tew_mm > 0.0f && fabsf(old_tew_mm - tew_mm) > 0.01f) {
+        float frac = balance->surface_deficit_mm / old_tew_mm;
+        if (frac < 0.0f) frac = 0.0f;
+        if (frac > 1.0f) frac = 1.0f;
+        balance->surface_deficit_mm = frac * tew_mm;
+    }
+
+    balance->surface_tew_mm = tew_mm;
+    balance->surface_rew_mm = rew_mm;
+
+    if (balance->surface_deficit_mm < 0.0f ||
+        balance->surface_deficit_mm > balance->surface_tew_mm ||
+        (balance->last_update_time == 0U && balance->surface_deficit_mm == 0.0f)) {
+        balance->surface_deficit_mm = balance->surface_tew_mm;
+        LOG_DBG("Surface deficit clamped to TEW (TEW=%.2f)", (double)balance->surface_tew_mm);
+    }
+}
+
+static void fao56_rescale_deficit_for_awc_change(water_balance_t *balance,
+                                                 float new_wetting_awc_mm)
+{
+    if (!balance) {
+        return;
+    }
+
+    float old_awc_mm = balance->wetting_awc_mm;
+    if (old_awc_mm > 0.0f && new_wetting_awc_mm > 0.0f &&
+        fabsf(new_wetting_awc_mm - old_awc_mm) > 0.01f) {
+        float frac = balance->current_deficit_mm / old_awc_mm;
+        if (frac < 0.0f) frac = 0.0f;
+        if (frac > 1.0f) frac = 1.0f;
+        balance->current_deficit_mm = frac * new_wetting_awc_mm;
+    }
+
+    balance->wetting_awc_mm = new_wetting_awc_mm;
+}
+
+static float fao56_route_effective_precipitation(water_balance_t *balance,
+                                                 float effective_mm)
+{
+    if (!balance || effective_mm <= 0.0f) {
+        return 0.0f;
+    }
+
+    float surface_recharge = 0.0f;
+    if (balance->surface_tew_mm > 0.0f && balance->surface_deficit_mm > 0.0f) {
+        surface_recharge = effective_mm;
+        if (surface_recharge > balance->surface_deficit_mm) {
+            surface_recharge = balance->surface_deficit_mm;
+        }
+        balance->surface_deficit_mm -= surface_recharge;
+        if (balance->surface_deficit_mm < 0.0f) {
+            balance->surface_deficit_mm = 0.0f;
+        }
+    }
+
+    if (surface_recharge >= effective_mm) {
+        return 0.0f;
+    }
+
+    return effective_mm - surface_recharge;
+}
+
+static void fao56_get_efficiency_split(const irrigation_method_data_t *method,
+                                       float wetting_fraction,
+                                       float *eff_surface,
+                                       float *eff_root)
+{
+    float efficiency = 0.8f;
+    float du = 1.0f;
+    float wf = wetting_fraction;
+
+    if (method) {
+        efficiency = method->efficiency_pct / 100.0f;
+        if (efficiency <= 0.0f || efficiency > 1.0f) {
+            efficiency = 0.8f;
+        }
+        du = method->distribution_uniformity_pct / 100.0f;
+        if (du <= 0.0f || du > 1.0f) {
+            du = 1.0f;
+        }
+        if (wf <= 0.0f || wf > 1.0f) {
+            wf = method->wetting_fraction_x1000 / 1000.0f;
+        }
+    }
+
+    if (wf <= 0.0f || wf > 1.0f) {
+        wf = 1.0f;
+    }
+
+    float root_eff = efficiency * du;
+    float surface_eff = 1.0f;
+
+    if (root_eff < 0.0f) root_eff = 0.0f;
+    if (root_eff > 1.0f) root_eff = 1.0f;
+    if (surface_eff < 0.0f) surface_eff = 0.0f;
+    if (surface_eff > 1.0f) surface_eff = 1.0f;
+
+    if (eff_surface) *eff_surface = surface_eff;
+    if (eff_root) *eff_root = root_eff;
+}
+
+static float fao56_get_surface_wet_target(const irrigation_method_data_t *method,
+                                          float wetting_fraction)
+{
+    float wf = wetting_fraction;
+    if (wf <= 0.0f || wf > 1.0f) {
+        if (method) {
+            wf = method->wetting_fraction_x1000 / 1000.0f;
+        }
+    }
+    if (wf <= 0.0f || wf > 1.0f) {
+        wf = 1.0f;
+    }
+
+    float du = 1.0f;
+    if (method) {
+        du = method->distribution_uniformity_pct / 100.0f;
+        if (du <= 0.0f || du > 1.0f) {
+            du = 1.0f;
+        }
+    }
+
+    float target = wf * du;
+    if (target <= 0.0f || target > 1.0f) {
+        target = wf;
+    }
+
+    return target;
+}
+
+static float fao56_calc_ke(const water_balance_t *balance,
+                           float tew_mm,
+                           float rew_mm,
+                           const irrigation_method_data_t *method,
+                           const plant_full_data_t *plant,
+                           uint16_t days_after_planting)
+{
+    if (!balance || !method || tew_mm <= 0.0f) {
+        return 0.0f;
+    }
+
+    float d_surface = balance->surface_deficit_mm;
+    if (d_surface < 0.0f) d_surface = 0.0f;
+    if (d_surface > tew_mm) d_surface = tew_mm;
+
+    float wet_area = method->wetting_fraction_x1000 / 1000.0f;
+    if (balance) {
+        if (balance->surface_wet_fraction > 0.0f && balance->surface_wet_fraction <= 1.0f) {
+            wet_area = balance->surface_wet_fraction;
+        } else if (balance->wetting_fraction > 0.0f && balance->wetting_fraction <= 1.0f) {
+            wet_area = balance->wetting_fraction;
+        }
+    }
+    if (wet_area <= 0.0f || wet_area > 1.0f) {
+        wet_area = 1.0f;
+    }
+    float canopy_factor = 0.0f;
+    if (plant) {
+        canopy_factor = fao56_get_dynamic_canopy_factor(plant, days_after_planting);
+    }
+    float canopy_reduction = 1.0f - FAO56_KE_CANOPY_REDUCTION * canopy_factor;
+    if (canopy_reduction < 0.3f) canopy_reduction = 0.3f;
+
+    float ke_max = FAO56_KE_MAX_BASE * wet_area * canopy_reduction;
+    if (ke_max < 0.0f) ke_max = 0.0f;
+    if (ke_max > 1.2f) ke_max = 1.2f;
+
+    if (d_surface <= rew_mm || tew_mm <= rew_mm) {
+        return ke_max;
+    }
+
+    float ke = ke_max * (tew_mm - d_surface) / (tew_mm - rew_mm);
+    if (ke < 0.0f) ke = 0.0f;
+    if (ke > ke_max) ke = ke_max;
+    return ke;
+}
+
+static float fao56_get_effective_wetting_fraction(const irrigation_method_data_t *method,
+                                                  const soil_enhanced_data_t *soil,
+                                                  const plant_full_data_t *plant)
+{
+    if (!method) {
+        return 1.0f;
+    }
+
+    float base_wf = method->wetting_fraction_x1000 / 1000.0f;
+    if (base_wf <= 0.0f || base_wf > 1.0f) {
+        base_wf = 1.0f;
+    }
+
+    float wf = base_wf;
+    if (base_wf < 0.95f) {
+        float depth_mm = 0.0f;
+        if (method->depth_typical_min_mm > 0 && method->depth_typical_max_mm > 0) {
+            depth_mm = (method->depth_typical_min_mm + method->depth_typical_max_mm) * 0.5f;
+        }
+        if (depth_mm <= 0.0f) {
+            depth_mm = 10.0f;
+        }
+        wf *= 1.0f + FAO56_WF_DEPTH_LOG_COEFF * log1pf(depth_mm / 10.0f);
+
+        if (soil) {
+            if (strstr(soil->texture, "Clay") || strstr(soil->texture, "clay")) {
+                wf *= 1.15f;
+            } else if (strstr(soil->texture, "Sand") || strstr(soil->texture, "sand")) {
+                wf *= 0.85f;
+            }
+
+            if (soil->infil_mm_h > 20.0f) {
+                wf *= 0.9f;
+            } else if (soil->infil_mm_h > 0.0f && soil->infil_mm_h < 5.0f) {
+                wf *= 1.1f;
+            }
+        }
+
+        if (plant) {
+            float row_spacing_m = plant->spacing_row_m_x1000 / 1000.0f;
+            float plant_spacing_m = plant->spacing_plant_m_x1000 / 1000.0f;
+            float area_per_plant = 0.0f;
+            if (row_spacing_m > 0.0f && plant_spacing_m > 0.0f) {
+                area_per_plant = row_spacing_m * plant_spacing_m;
+            } else {
+                float density = plant->default_density_plants_m2_x100 / 100.0f;
+                if (density > 0.0f) {
+                    area_per_plant = 1.0f / density;
+                }
+            }
+            if (area_per_plant > 1.0f) {
+                wf *= 0.9f;
+            } else if (area_per_plant > 0.0f && area_per_plant < 0.1f) {
+                wf *= 1.1f;
+            }
+        }
+
+        float min_rel = base_wf * 0.5f;
+        float max_rel = base_wf * 1.5f;
+        if (max_rel > 1.0f) max_rel = 1.0f;
+        if (wf < min_rel) wf = min_rel;
+        if (wf > max_rel) wf = max_rel;
+    }
+
+    if (wf < FAO56_WF_MIN) wf = FAO56_WF_MIN;
+    if (wf > FAO56_WF_MAX) wf = FAO56_WF_MAX;
+    return wf;
+}
+
+static float fao56_get_antecedent_moisture_pct(uint8_t channel_id,
+                                               const water_balance_t *balance)
+{
+    bool enabled = false;
+    uint8_t moisture_pct = 0;
+    bool has_data = false;
+
+    if (soil_moisture_get_channel_override_with_presence(channel_id, &enabled, &moisture_pct, &has_data) == 0 &&
+        enabled) {
+        return (float)moisture_pct;
+    }
+
+    if (soil_moisture_get_global_with_presence(&enabled, &moisture_pct, &has_data) == 0 &&
+        enabled) {
+        return (float)moisture_pct;
+    }
+
+    if (balance && channel_id < WATERING_CHANNELS_COUNT) {
+        bool have_root = (balance->wetting_awc_mm > 0.0f);
+        bool have_surface = (balance->surface_tew_mm > 0.0f);
+        float m_root = 0.0f;
+        float m_surface = 0.0f;
+
+        if (have_root) {
+            m_root = 1.0f - (balance->current_deficit_mm / balance->wetting_awc_mm);
+            if (m_root < 0.0f) m_root = 0.0f;
+            if (m_root > 1.0f) m_root = 1.0f;
+        }
+        if (have_surface) {
+            m_surface = 1.0f - (balance->surface_deficit_mm / balance->surface_tew_mm);
+            if (m_surface < 0.0f) m_surface = 0.0f;
+            if (m_surface > 1.0f) m_surface = 1.0f;
+        }
+
+        float m_est = 0.0f;
+        if (have_surface && have_root) {
+            m_est = 0.7f * m_surface + 0.3f * m_root;
+        } else if (have_surface) {
+            m_est = m_surface;
+        } else if (have_root) {
+            m_est = m_root;
+        } else {
+            return (float)soil_moisture_get_effective_pct(channel_id);
+        }
+        if (m_est < 0.0f) m_est = 0.0f;
+        if (m_est > 1.0f) m_est = 1.0f;
+
+        uint32_t now_s = k_uptime_get_32() / 1000U;
+        bool update = true;
+        if (s_antecedent_moisture_last_update_s[channel_id] > 0U &&
+            (now_s - s_antecedent_moisture_last_update_s[channel_id]) < (6U * 3600U)) {
+            update = false;
+        }
+
+        if (!s_antecedent_moisture_valid[channel_id]) {
+            s_antecedent_moisture_ema[channel_id] = m_est;
+            s_antecedent_moisture_valid[channel_id] = true;
+            s_antecedent_moisture_last_update_s[channel_id] = now_s;
+        } else if (update) {
+            float ema = s_antecedent_moisture_ema[channel_id];
+            ema += 0.5f * (m_est - ema);
+            s_antecedent_moisture_ema[channel_id] = ema;
+            s_antecedent_moisture_last_update_s[channel_id] = now_s;
+        }
+
+        return s_antecedent_moisture_ema[channel_id] * 100.0f;
+    }
+
+    return (float)soil_moisture_get_effective_pct(channel_id);
 }
 
 static bool fao56_build_weekly_et0_climatology(float latitude_rad,
@@ -767,15 +1600,25 @@ watering_error_t fao56_calculate_simplified_irrigation(uint8_t channel_id,
     if (channel->use_area_based) {
         result->volume_liters = result->gross_irrigation_mm * channel->coverage.area_m2;
     } else {
-        // Assume 0.5 m² per plant for simplified calculation
-        result->volume_liters = result->gross_irrigation_mm * channel->coverage.plant_count * 0.5f;
-        result->volume_per_plant_liters = result->gross_irrigation_mm * 0.5f;
+        const plant_full_data_t *plant = NULL;
+        float area_m2 = 0.0f;
+        if (channel->plant_db_index < PLANT_FULL_SPECIES_COUNT) {
+            plant = &plant_full_database[channel->plant_db_index];
+        }
+        if (plant) {
+            area_m2 = fao56_calc_plant_irrigated_area_m2(
+                plant, channel->coverage.plant_count, NULL, NULL, false);
+        }
+        if (area_m2 <= 0.0f) {
+            area_m2 = channel->coverage.plant_count * 0.5f;
+        }
+        result->volume_liters = result->gross_irrigation_mm * area_m2;
+        result->volume_per_plant_liters = result->volume_liters / channel->coverage.plant_count;
     }
-    
     // Apply eco mode if enabled
     if (channel->auto_mode == WATERING_AUTOMATIC_ECO) {
-        result->volume_liters *= 0.7f;
-        result->volume_per_plant_liters *= 0.7f;
+        result->volume_liters *= ECO_ETC_FACTOR;
+        result->volume_per_plant_liters *= ECO_ETC_FACTOR;
     }
     
     // Apply volume limits
@@ -1001,8 +1844,8 @@ watering_error_t fao56_get_default_irrigation_schedule(uint8_t channel_id,
     
     // Apply eco mode if enabled
     if (channel->auto_mode == WATERING_AUTOMATIC_ECO) {
-        result->volume_liters *= 0.7f;
-        result->volume_per_plant_liters *= 0.7f;
+        result->volume_liters *= ECO_ETC_FACTOR;
+        result->volume_per_plant_liters *= ECO_ETC_FACTOR;
     }
     
     // Apply volume limits
@@ -1187,8 +2030,14 @@ float calc_crop_coefficient(
         case PHENO_STAGE_DEVELOPMENT:
             // Linear interpolation from Kc_ini to Kc_mid
             {
+                if (plant->stage_days_dev == 0U) {
+                    kc_result = kc_mid;
+                    break;
+                }
                 uint16_t days_in_stage = days_after_planting - stage_1_end;
                 float stage_progress = (float)days_in_stage / plant->stage_days_dev;
+                if (stage_progress > 1.0f) stage_progress = 1.0f;
+                if (stage_progress < 0.0f) stage_progress = 0.0f;
                 kc_result = kc_ini + (kc_mid - kc_ini) * stage_progress;
             }
             break;
@@ -1201,10 +2050,15 @@ float calc_crop_coefficient(
         case PHENO_STAGE_END_SEASON:
             // Linear interpolation from Kc_mid to Kc_end
             {
+                if (plant->stage_days_end == 0U) {
+                    kc_result = kc_end;
+                    break;
+                }
                 uint16_t days_in_stage = days_after_planting - stage_3_end;
                 float stage_progress = (float)days_in_stage / plant->stage_days_end;
                 // Clamp progress to avoid extrapolation beyond end stage
                 if (stage_progress > 1.0f) stage_progress = 1.0f;
+                if (stage_progress < 0.0f) stage_progress = 0.0f;
                 kc_result = kc_mid + (kc_end - kc_mid) * stage_progress;
             }
             break;
@@ -1383,6 +2237,13 @@ float calc_et0_penman_monteith(
     
     // Actual vapor pressure from relative humidity
     float ea = es * env->rel_humidity_pct / 100.0f;
+    if (env->derived_values_calculated && env->vapor_pressure_kpa > 0.0f) {
+        float dew_es = calc_saturation_vapor_pressure(env->dewpoint_temp_c);
+        if (dew_es > 0.0f && env->dewpoint_temp_c <= env->air_temp_max_c + 2.0f) {
+            ea = dew_es;
+        }
+    }
+    if (ea > es) ea = es;
     
     // Slope of saturation vapor pressure curve
     float delta = calc_vapor_pressure_slope(temp_mean);
@@ -1425,6 +2286,9 @@ float calc_et0_penman_monteith(
     }
     if (rs > rso) {
         rs = rso;
+    }
+    if ((rs / rso) < 0.05f) {
+        rs = rso * 0.05f;
     }
 
     float rns = (1.0f - ASSUMED_ALBEDO) * rs;
@@ -1554,21 +2418,15 @@ static float calc_runoff_coefficient(
 )
 {
     float infiltration_rate = soil->infil_mm_h;
+    float moisture_frac = antecedent_moisture_pct / 100.0f;
+    if (moisture_frac < 0.0f) moisture_frac = 0.0f;
+    if (moisture_frac > 1.0f) moisture_frac = 1.0f;
+    float infil_eff = infiltration_rate * (0.6f + 0.4f * (1.0f - moisture_frac));
     float runoff_coeff = 0.0f;
     
     // Base runoff calculation - if rainfall exceeds infiltration capacity
-    if (rainfall_intensity_mm_h > infiltration_rate) {
-        runoff_coeff = (rainfall_intensity_mm_h - infiltration_rate) / rainfall_intensity_mm_h;
-    }
-    
-    // Adjust for antecedent moisture conditions
-    // Wet soils have reduced infiltration capacity
-    if (antecedent_moisture_pct > 70.0f) {
-        // Soil is already wet, increase runoff
-        runoff_coeff += 0.1f * (antecedent_moisture_pct - 70.0f) / 30.0f;
-    } else if (antecedent_moisture_pct < 30.0f) {
-        // Dry soil has higher initial infiltration, reduce runoff
-        runoff_coeff -= 0.05f * (30.0f - antecedent_moisture_pct) / 30.0f;
+    if (rainfall_intensity_mm_h > infil_eff) {
+        runoff_coeff = (rainfall_intensity_mm_h - infil_eff) / rainfall_intensity_mm_h;
     }
     
     // Adjust for soil texture
@@ -1582,8 +2440,8 @@ static float calc_runoff_coefficient(
     if (runoff_coeff < 0.0f) runoff_coeff = 0.0f;
     if (runoff_coeff > 0.8f) runoff_coeff = 0.8f;  // Max 80% runoff
     
-    LOG_DBG("Runoff coefficient: %.2f (intensity=%.1f, infiltration=%.1f, moisture=%.0f%%)",
-            (double)runoff_coeff, (double)rainfall_intensity_mm_h, (double)infiltration_rate, (double)antecedent_moisture_pct);
+    LOG_DBG("Runoff coefficient: %.2f (intensity=%.1f, infil_eff=%.1f, moisture=%.0f%%)",
+            (double)runoff_coeff, (double)rainfall_intensity_mm_h, (double)infil_eff, (double)antecedent_moisture_pct);
     
     return runoff_coeff;
 }
@@ -1649,6 +2507,101 @@ static float calc_evaporation_losses(
  * @param antecedent_moisture_pct Current soil moisture percentage
  * @param temperature_c Ambient temperature for evaporation calculation (°C)
  */
+static float calc_effective_precipitation_core(
+    float rainfall_mm,
+    const soil_enhanced_data_t *soil,
+    const irrigation_method_data_t *irrigation_method,
+    float antecedent_moisture_pct,
+    float temperature_c,
+    float duration_h,
+    float intensity_mm_h,
+    bool intensity_valid
+)
+{
+    (void)irrigation_method;
+
+    if (!soil || rainfall_mm <= 0.0f) {
+        return 0.0f;
+    }
+
+    // For very light rainfall (< 1mm), most is lost to evaporation
+    if (rainfall_mm < 1.0f) {
+        float effective = rainfall_mm * 0.3f;
+        LOG_DBG("Light rainfall: %.2f mm -> %.2f mm effective", (double)rainfall_mm, (double)effective);
+        return effective;
+    }
+
+    if (antecedent_moisture_pct < 0.0f) {
+        antecedent_moisture_pct = 0.0f;
+    }
+    if (antecedent_moisture_pct > 100.0f) {
+        antecedent_moisture_pct = 100.0f;
+    }
+
+    if (!intensity_valid || intensity_mm_h <= 0.0f || duration_h <= 0.0f) {
+        calc_rainfall_characteristics(rainfall_mm, &duration_h, &intensity_mm_h);
+    } else {
+        if (duration_h <= 0.0f) {
+            duration_h = rainfall_mm / intensity_mm_h;
+        }
+    }
+
+    if (duration_h <= 0.0f) {
+        duration_h = 0.5f;
+    }
+    if (duration_h < 0.05f) {
+        duration_h = 0.05f;
+    }
+    if (duration_h > 24.0f) {
+        duration_h = 24.0f;
+    }
+
+    intensity_mm_h = rainfall_mm / duration_h;
+    if (intensity_mm_h < 0.1f) {
+        intensity_mm_h = 0.1f;
+    }
+    if (intensity_mm_h > RAIN_INTENSITY_MAX_MM_H) {
+        intensity_mm_h = RAIN_INTENSITY_MAX_MM_H;
+    }
+
+    float runoff_coeff = calc_runoff_coefficient(intensity_mm_h, soil, antecedent_moisture_pct);
+    float runoff_loss = rainfall_mm * runoff_coeff;
+    float after_runoff = rainfall_mm - runoff_loss;
+
+    float temp_for_evap = temperature_c;
+    if (temp_for_evap < -20.0f || temp_for_evap > 50.0f) {
+        temp_for_evap = 20.0f;
+    }
+    float evap_loss = calc_evaporation_losses(after_runoff, duration_h, temp_for_evap);
+
+    float effective_rainfall = after_runoff - evap_loss;
+    if (effective_rainfall < 0.0f) {
+        effective_rainfall = 0.0f;
+    }
+
+    float effectiveness_pct = rainfall_mm > 0 ? (effective_rainfall / rainfall_mm * 100.0f) : 0.0f;
+    LOG_INF("Effective precipitation: %.1f mm from %.1f mm rainfall (%.0f%% effective)",
+            (double)effective_rainfall, (double)rainfall_mm, (double)effectiveness_pct);
+    LOG_DBG("Losses: runoff=%.1f mm (%.0f%%), evaporation=%.1f mm",
+            (double)runoff_loss, (double)(runoff_coeff * 100.0f), (double)evap_loss);
+
+    return effective_rainfall;
+}
+
+static float calc_effective_precipitation_with_moisture_timing(
+    float rainfall_mm,
+    const soil_enhanced_data_t *soil,
+    const irrigation_method_data_t *irrigation_method,
+    float antecedent_moisture_pct,
+    float temperature_c,
+    float duration_h,
+    float intensity_mm_h
+)
+{
+    return calc_effective_precipitation_core(rainfall_mm, soil, irrigation_method,
+                                             antecedent_moisture_pct, temperature_c,
+                                             duration_h, intensity_mm_h, true);
+}
 static float calc_effective_precipitation_with_moisture(
     float rainfall_mm,
     const soil_enhanced_data_t *soil,
@@ -1657,58 +2610,9 @@ static float calc_effective_precipitation_with_moisture(
     float temperature_c
 )
 {
-    if (!soil || rainfall_mm <= 0.0f) {
-        return 0.0f;
-    }
-
-    // For very light rainfall (< 1mm), most is lost to evaporation
-    if (rainfall_mm < 1.0f) {
-        float effective = rainfall_mm * 0.3f;  // Only 30% effective
-        LOG_DBG("Light rainfall: %.2f mm -> %.2f mm effective", (double)rainfall_mm, (double)effective);
-        return effective;
-    }
-
-    // Calculate rainfall characteristics
-    float duration_h, intensity_mm_h;
-    calc_rainfall_characteristics(rainfall_mm, &duration_h, &intensity_mm_h);
-    
-    if (antecedent_moisture_pct < 0.0f) {
-        antecedent_moisture_pct = 0.0f;
-    }
-    if (antecedent_moisture_pct > 100.0f) {
-        antecedent_moisture_pct = 100.0f;
-    }
-    
-    // Calculate runoff losses
-    float runoff_coeff = calc_runoff_coefficient(intensity_mm_h, soil, antecedent_moisture_pct);
-    float runoff_loss = rainfall_mm * runoff_coeff;
-    float after_runoff = rainfall_mm - runoff_loss;
-    
-    // Calculate evaporation losses using actual temperature
-    // Use 20°C as fallback if temperature is invalid/out of range
-    float temp_for_evap = temperature_c;
-    if (temp_for_evap < -20.0f || temp_for_evap > 50.0f) {
-        temp_for_evap = 20.0f;
-    }
-    float evap_loss = calc_evaporation_losses(after_runoff, duration_h, temp_for_evap);
-    
-    // Final effective precipitation
-    float effective_rainfall = after_runoff - evap_loss;
-    
-    // Ensure non-negative result
-    if (effective_rainfall < 0.0f) {
-        effective_rainfall = 0.0f;
-    }
-    
-    // Calculate effectiveness percentage
-    float effectiveness_pct = rainfall_mm > 0 ? (effective_rainfall / rainfall_mm * 100.0f) : 0.0f;
-    
-    LOG_INF("Effective precipitation: %.1f mm from %.1f mm rainfall (%.0f%% effective)",
-            (double)effective_rainfall, (double)rainfall_mm, (double)effectiveness_pct);
-    LOG_DBG("Losses: runoff=%.1f mm (%.0f%%), evaporation=%.1f mm",
-            (double)runoff_loss, (double)(runoff_coeff * 100.0f), (double)evap_loss);
-    
-    return effective_rainfall;
+    return calc_effective_precipitation_core(rainfall_mm, soil, irrigation_method,
+                                             antecedent_moisture_pct, temperature_c,
+                                             0.0f, 0.0f, false);
 }
 
 float calc_effective_precipitation(
@@ -1720,6 +2624,104 @@ float calc_effective_precipitation(
     float antecedent = (float)soil_moisture_get_global_effective_pct();
     // Use default 20°C for backward compatibility when temperature not available
     return calc_effective_precipitation_with_moisture(rainfall_mm, soil, irrigation_method, antecedent, 20.0f);
+}
+
+static float fao56_calc_effective_rain_hourly(uint32_t now_ts,
+                                              float rainfall_remainder_mm,
+                                              const soil_enhanced_data_t *soil,
+                                              const irrigation_method_data_t *irrigation_method,
+                                              float antecedent_moisture_pct,
+                                              float temperature_c)
+{
+    if (!soil || rainfall_remainder_mm <= 0.0f) {
+        return 0.0f;
+    }
+
+    if (temperature_c < -20.0f || temperature_c > 50.0f) {
+        temperature_c = 20.0f;
+    }
+
+    uint32_t end_hour = now_ts - (now_ts % 3600U);
+    uint32_t start_hour = (end_hour >= (24U * 3600U)) ? (end_hour - (24U * 3600U)) : 0U;
+
+    rain_hourly_data_t hourly_entries[32];
+    uint16_t entry_count = 0;
+    if (rain_history_get_hourly(start_hour, end_hour, hourly_entries,
+                                (uint16_t)(sizeof(hourly_entries) / sizeof(hourly_entries[0])),
+                                &entry_count) != WATERING_SUCCESS ||
+        entry_count == 0U) {
+        return -1.0f;
+    }
+
+    float total_raw_mm = 0.0f;
+    float hourly_mm[32] = {0};
+    uint16_t valid_indices[32] = {0};
+    uint16_t valid_count = 0;
+    for (uint16_t i = 0; i < entry_count; i++) {
+        if (hourly_entries[i].data_quality < RAIN_QUALITY_POOR) {
+            continue;
+        }
+        float mm = hourly_entries[i].rainfall_mm_x100 / 100.0f;
+        if (mm > 0.0f) {
+            total_raw_mm += mm;
+            hourly_mm[i] = mm;
+            if (valid_count < (uint16_t)(sizeof(valid_indices) / sizeof(valid_indices[0]))) {
+                valid_indices[valid_count++] = i;
+            }
+        }
+    }
+
+    if (total_raw_mm <= 0.0f) {
+        return 0.0f;
+    }
+
+    if (rainfall_remainder_mm > total_raw_mm) {
+        rainfall_remainder_mm = total_raw_mm;
+    }
+    if (rainfall_remainder_mm <= 0.0f) {
+        return 0.0f;
+    }
+
+    float excess = total_raw_mm - rainfall_remainder_mm;
+    if (excess > 0.0f && valid_count > 1U) {
+        for (uint16_t i = 0; i < valid_count - 1U; i++) {
+            for (uint16_t j = i + 1U; j < valid_count; j++) {
+                uint16_t idx_i = valid_indices[i];
+                uint16_t idx_j = valid_indices[j];
+                if (hourly_entries[idx_j].hour_epoch > hourly_entries[idx_i].hour_epoch) {
+                    valid_indices[i] = idx_j;
+                    valid_indices[j] = idx_i;
+                }
+            }
+        }
+    }
+
+    for (uint16_t k = 0; k < valid_count && excess > 0.0f; k++) {
+        uint16_t idx = valid_indices[k];
+        float available = hourly_mm[idx];
+        if (available <= 0.0f) {
+            continue;
+        }
+        float reduce = (available < excess) ? available : excess;
+        hourly_mm[idx] = available - reduce;
+        excess -= reduce;
+    }
+
+    float effective_total_mm = 0.0f;
+    for (uint16_t i = 0; i < entry_count; i++) {
+        if (hourly_entries[i].data_quality < RAIN_QUALITY_POOR) {
+            continue;
+        }
+        float mm = hourly_mm[i];
+        if (mm <= 0.0f) {
+            continue;
+        }
+        float effective = calc_effective_precipitation_with_moisture_timing(
+            mm, soil, irrigation_method, antecedent_moisture_pct, temperature_c, 1.0f, mm);
+        effective_total_mm += effective;
+    }
+
+    return effective_total_mm;
 }
 
 /**
@@ -2084,8 +3086,8 @@ float calc_effective_awc_with_wetting_fraction(
         return total_awc_mm;
     }
 
-    // Get wetting fraction from irrigation method
-    float wetting_fraction = method->wetting_fraction_x1000 / 1000.0f;
+    // Get wetting fraction from irrigation method (dynamic estimate)
+    float wetting_fraction = fao56_get_effective_wetting_fraction(method, NULL, plant);
     
     // Validate wetting fraction
     if (wetting_fraction <= 0.0f || wetting_fraction > 1.0f) {
@@ -2278,22 +3280,29 @@ watering_error_t calc_water_balance(
     float awc_mm_per_m = soil->awc_mm_per_m;
     balance->rwz_awc_mm = awc_mm_per_m * root_depth_current_m;
     
-    // Adjust for irrigation method wetting fraction
-    float wetting_fraction = method->wetting_fraction_x1000 / 1000.0f;
-    balance->wetting_awc_mm = balance->rwz_awc_mm * wetting_fraction;
+    // Adjust for irrigation method wetting fraction (dynamic estimate)
+    float wetting_fraction = fao56_get_effective_wetting_fraction(method, soil, plant);
+    if (wetting_fraction < FAO56_WF_MIN) wetting_fraction = FAO56_WF_MIN;
+    if (wetting_fraction > FAO56_WF_MAX) wetting_fraction = FAO56_WF_MAX;
+    balance->wetting_fraction = wetting_fraction;
+    fao56_rescale_deficit_for_awc_change(balance, balance->rwz_awc_mm * wetting_fraction);
     
     // Calculate readily available water (RAW) based on management allowed depletion
     float depletion_fraction = plant->depletion_fraction_p_x1000 / 1000.0f;
     balance->raw_mm = balance->wetting_awc_mm * depletion_fraction;
     
     // Calculate effective precipitation
-    balance->effective_rain_mm = calc_effective_precipitation(
+    float effective_rain_mm = calc_effective_precipitation(
         env->rain_mm_24h, soil, method);
-    
+    balance->effective_rain_mm = effective_rain_mm;
+
+    if (effective_rain_mm > 0.0f) {
+        fao56_apply_surface_wet_event(balance, FAO56_SURFACE_WET_RAIN_FRACTION);
+    }
+
     // Soil sensors removed: always use accumulation method.
-    // Compute daily ETc (crop evapotranspiration) using heuristic ET0 + real plant Kc interpolation.
+    // Compute daily ET0 (mm/day) using heuristic when only temp+humidity available.
     float daily_et0 = 0.0f;
-    float daily_kc = 1.0f; // default safety
     if (env->temp_valid && env->humidity_valid) {
         // Approximate ET0 from mean temperature and VPD (derived from saturation vs actual vapor pressure)
         float t_mean = env->air_temp_mean_c;
@@ -2309,15 +3318,33 @@ watering_error_t calc_water_balance(
         if (daily_et0 < HEURISTIC_ET0_MIN) daily_et0 = HEURISTIC_ET0_MIN;
         if (daily_et0 > HEURISTIC_ET0_MAX) daily_et0 = HEURISTIC_ET0_MAX;
     }
-    daily_kc = fao56_get_kc_for_day(plant, days_after_planting);
-    float daily_etc = daily_et0 * daily_kc; // mm/day
-    watering_error_t err = track_deficit_accumulation(balance, daily_etc, balance->effective_rain_mm, 0.0f);
+
+    // Initialize surface evaporation bucket (dual-Kc light)
+    float surface_wet_target = fao56_get_surface_wet_target(method, wetting_fraction);
+    float surface_wet_fraction = fao56_get_surface_wet_fraction(balance, surface_wet_target, daily_et0);
+    fao56_update_surface_bucket(balance, soil, surface_wet_fraction);
+    
+    float daily_kc = 1.0f; // default safety
+    float kc_base = fao56_get_kc_base_for_day(plant, days_after_planting);
+    daily_kc = fao56_apply_canopy_to_kc(plant, kc_base, days_after_planting);
+    float ke = fao56_calc_ke(balance, balance->surface_tew_mm, balance->surface_rew_mm,
+                             method, plant, days_after_planting);
+    float daily_etc_root = daily_et0 * daily_kc; // mm/day (root only)
+    float root_recharge = fao56_route_effective_precipitation(balance, effective_rain_mm);
+    watering_error_t err = track_deficit_accumulation(balance, daily_etc_root, root_recharge, 0.0f);
     if (err != WATERING_SUCCESS) {
         LOG_ERR("Deficit accumulation failed");
         return err;
     }
-    LOG_DBG("Water balance (assumed met) ET0=%.2f mm Kc=%.2f ETc=%.2f mm deficit=%.2f mm",
-            (double)daily_et0, (double)daily_kc, (double)daily_etc, (double)balance->current_deficit_mm);
+    if (ke > 0.0f && balance->surface_tew_mm > 0.0f) {
+        balance->surface_deficit_mm += daily_et0 * ke;
+        if (balance->surface_deficit_mm > balance->surface_tew_mm) {
+            balance->surface_deficit_mm = balance->surface_tew_mm;
+        }
+    }
+    LOG_DBG("Water balance (assumed met) ET0=%.2f mm Kc=%.2f Ke=%.2f ETroot=%.2f mm deficit=%.2f mm",
+            (double)daily_et0, (double)daily_kc, (double)ke, (double)daily_etc_root,
+            (double)balance->current_deficit_mm);
     
     // Determine if irrigation is needed based on readily available water depletion
     balance->irrigation_needed = (balance->current_deficit_mm >= balance->raw_mm);
@@ -2330,6 +3357,87 @@ watering_error_t calc_water_balance(
             balance->irrigation_needed ? "needed" : "not needed");
     
     return WATERING_SUCCESS;
+}
+
+static float fao56_calc_plant_irrigated_area_m2(
+    const plant_full_data_t *plant,
+    uint16_t plant_count,
+    float *area_per_plant_m2_out,
+    float *canopy_factor_out,
+    bool log_details
+)
+{
+    if (!plant || plant_count == 0) {
+        if (area_per_plant_m2_out) {
+            *area_per_plant_m2_out = 0.0f;
+        }
+        if (canopy_factor_out) {
+            *canopy_factor_out = 1.0f;
+        }
+        return 0.0f;
+    }
+
+    float row_spacing_m = plant->spacing_row_m_x1000 / 1000.0f;
+    float plant_spacing_m = plant->spacing_plant_m_x1000 / 1000.0f;
+    float area_per_plant_m2 = 0.0f;
+
+    if (row_spacing_m > 0.0f && plant_spacing_m > 0.0f) {
+        area_per_plant_m2 = row_spacing_m * plant_spacing_m;
+        if (log_details) {
+            LOG_DBG("Using spacing: %.2f m x %.2f m = %.2f m2/plant",
+                    (double)row_spacing_m, (double)plant_spacing_m, (double)area_per_plant_m2);
+        }
+    } else {
+        float density_plants_per_m2 = plant->default_density_plants_m2_x100 / 100.0f;
+        if (density_plants_per_m2 > 0.0f) {
+            area_per_plant_m2 = 1.0f / density_plants_per_m2;
+            if (log_details) {
+                LOG_DBG("Using density: %.2f plants/m2 = %.2f m2/plant",
+                        (double)density_plants_per_m2, (double)area_per_plant_m2);
+            }
+        } else {
+            area_per_plant_m2 = 1.0f;
+            if (log_details) {
+                LOG_WRN("No spacing/density data, using default 1 m2/plant");
+            }
+        }
+    }
+
+    if (area_per_plant_m2 < 0.002f) {
+        if (log_details) {
+            LOG_DBG("Dense crop detected: %.4f m2/plant clamped to 0.002 m2",
+                    (double)area_per_plant_m2);
+        }
+        area_per_plant_m2 = 0.002f;
+    } else if (area_per_plant_m2 > 100.0f) {
+        area_per_plant_m2 = 100.0f;
+        if (log_details) {
+            LOG_WRN("Area per plant too large, using maximum 100 m2");
+        }
+    }
+
+    float canopy_cover = plant->canopy_cover_max_frac_x1000 / 1000.0f;
+    float canopy_factor = 1.0f;
+    if (canopy_cover > 0.0f && canopy_cover <= 1.0f) {
+        canopy_factor = canopy_cover;
+        if (log_details) {
+            LOG_DBG("Canopy cover factor: %.1f%%", (double)(canopy_cover * 100.0f));
+        }
+    } else if (canopy_cover > 1.0f) {
+        canopy_factor = 1.0f;
+        if (log_details) {
+            LOG_DBG("Canopy cover > 100%%; using full canopy factor");
+        }
+    }
+
+    if (area_per_plant_m2_out) {
+        *area_per_plant_m2_out = area_per_plant_m2;
+    }
+    if (canopy_factor_out) {
+        *canopy_factor_out = canopy_factor;
+    }
+
+    return area_per_plant_m2 * plant_count;
 }
 
 /**
@@ -2358,10 +3466,9 @@ watering_error_t calc_irrigation_volume_area(
     // Start with net irrigation requirement (mm)
     result->net_irrigation_mm = balance->current_deficit_mm;
     
-    // Apply eco mode reduction (70% of calculated requirement)
     if (eco_mode) {
-        result->net_irrigation_mm *= 0.7f;
-    LOG_DBG("Eco mode: reducing irrigation by 30%%");
+        result->net_irrigation_mm *= ECO_ETC_FACTOR;
+        LOG_DBG("Eco mode: net refill scaled by %.2f", (double)ECO_ETC_FACTOR);
     }
     
     // Get irrigation method efficiency
@@ -2454,59 +3561,15 @@ watering_error_t calc_irrigation_volume_plants(
     // Initialize result structure
     memset(result, 0, sizeof(irrigation_calculation_t));
 
-    // Calculate effective area per plant based on spacing with enhanced accuracy
-    float row_spacing_m = plant->spacing_row_m_x1000 / 1000.0f;
-    float plant_spacing_m = plant->spacing_plant_m_x1000 / 1000.0f;
     float area_per_plant_m2 = 0.0f;
-    
-    // Primary method: use row and plant spacing
-    if (row_spacing_m > 0.0f && plant_spacing_m > 0.0f) {
-        area_per_plant_m2 = row_spacing_m * plant_spacing_m;
-    LOG_DBG("Using spacing: %.2f m × %.2f m = %.2f m²/plant", 
-        (double)row_spacing_m, (double)plant_spacing_m, (double)area_per_plant_m2);
+    float canopy_factor = 1.0f;
+    float total_irrigated_area_m2 = fao56_calc_plant_irrigated_area_m2(
+        plant, plant_count, &area_per_plant_m2, &canopy_factor, true);
+
+    if (total_irrigated_area_m2 <= 0.0f) {
+        LOG_ERR("Invalid irrigated area for plant-based calculation");
+        return WATERING_ERROR_INVALID_DATA;
     }
-    // Secondary method: use plant density
-    else {
-        float density_plants_per_m2 = plant->default_density_plants_m2_x100 / 100.0f;
-        if (density_plants_per_m2 > 0.0f) {
-            area_per_plant_m2 = 1.0f / density_plants_per_m2;
-        LOG_DBG("Using density: %.2f plants/m² = %.2f m²/plant", 
-            (double)density_plants_per_m2, (double)area_per_plant_m2);
-        } else {
-            // Fallback based on plant type
-            area_per_plant_m2 = 1.0f;  // Default 1 m² per plant
-            LOG_WRN("No spacing/density data, using default 1 m²/plant");
-        }
-    }
-    
-    // Validate area per plant - dense crops like wheat/grass have very small areas
-    // 0.01 m² = 10cm × 10cm, corresponds to 100 plants/m² which is valid for cereals
-    if (area_per_plant_m2 < 0.002f) {  // Minimum 0.002 m² (4.5cm × 4.5cm = ~500 plants/m²)
-        LOG_DBG("Dense crop detected: %.4f m²/plant clamped to 0.002 m² (max ~500/m²)",
-                (double)area_per_plant_m2);
-        area_per_plant_m2 = 0.002f;
-    } else if (area_per_plant_m2 > 100.0f) {  // Maximum 100 m² per plant
-        area_per_plant_m2 = 100.0f;
-        LOG_WRN("Area per plant too large, using maximum 100 m²");
-    }
-    
-    // Calculate total base area
-    float total_base_area_m2 = area_per_plant_m2 * plant_count;
-    
-    // Apply canopy cover factor for more accurate irrigation area
-    float canopy_cover = plant->canopy_cover_max_frac_x1000 / 1000.0f;
-    float canopy_factor = 1.0f;  // Default full coverage
-    
-    if (canopy_cover > 0.0f && canopy_cover <= 1.0f) {
-        canopy_factor = canopy_cover;
-    LOG_DBG("Canopy cover adjustment: %.1f%% coverage", (double)(canopy_cover * 100.0f));
-    } else if (canopy_cover > 1.0f) {
-        // Some plants may have overlapping canopy (e.g., vining plants)
-        canopy_factor = fminf(canopy_cover, 1.5f);  // Max 150% coverage
-    LOG_DBG("Overlapping canopy: %.1f%% coverage", (double)(canopy_factor * 100.0f));
-    }
-    
-    float total_irrigated_area_m2 = total_base_area_m2 * canopy_factor;
     
     // Get irrigation method characteristics
     float efficiency = method->efficiency_pct / 100.0f;
@@ -2519,10 +3582,9 @@ watering_error_t calc_irrigation_volume_plants(
     // Start with net irrigation requirement
     result->net_irrigation_mm = balance->current_deficit_mm;
     
-    // Apply eco mode reduction
     if (eco_mode) {
-        result->net_irrigation_mm *= 0.7f;
-    LOG_DBG("Eco mode: reducing irrigation by 30%%");
+        result->net_irrigation_mm *= ECO_ETC_FACTOR;
+        LOG_DBG("Eco mode: net refill scaled by %.2f", (double)ECO_ETC_FACTOR);
     }
     
     // Wetting fraction already applied in water balance (AWC/RAW); avoid double scaling here.
@@ -2691,10 +3753,14 @@ watering_error_t calc_cycle_and_soak(
     if (result->cycle_count < 2) result->cycle_count = 2;
     if (result->cycle_count > 6) result->cycle_count = 6;
     
-    // Calculate cycle duration and soak interval
-    float total_duration_hours = result->gross_irrigation_mm / target_rate;
-    float cycle_duration_hours = total_duration_hours / result->cycle_count;
-    
+    // Calculate cycle duration and soak interval using actual application rate
+    float depth_per_cycle_mm = (result->cycle_count > 0) ?
+        (result->gross_irrigation_mm / result->cycle_count) : 0.0f;
+    float cycle_duration_hours = 0.0f;
+    if (depth_per_cycle_mm > 0.0f && application_rate_mm_h > 0.0f) {
+        cycle_duration_hours = depth_per_cycle_mm / application_rate_mm_h;
+    }
+
     result->cycle_duration_min = (uint16_t)(cycle_duration_hours * 60.0f);
     
     // Soak interval should allow water to infiltrate
@@ -2734,6 +3800,8 @@ watering_error_t calc_cycle_and_soak(
  * @param plant Plant database entry (for plant-based calculations)
  * @param area_m2 Area to irrigate (for area-based calculations, 0 for plant-based)
  * @param plant_count Number of plants (for plant-based calculations, 0 for area-based)
+ * @param application_rate_mm_h Application rate override (mm/h, 0 to use method defaults)
+ * @param application_rate_mm_h Application rate override (mm/h, 0 to use method defaults)
  * @param max_volume_limit_l Maximum volume limit (liters)
  * @param result Calculation results structure
  * @return WATERING_SUCCESS on success, error code on failure
@@ -2745,6 +3813,7 @@ watering_error_t apply_quality_irrigation_mode(
     const plant_full_data_t *plant,
     float area_m2,
     uint16_t plant_count,
+    float application_rate_mm_h,
     float max_volume_limit_l,
     irrigation_calculation_t *result
 )
@@ -2781,7 +3850,7 @@ watering_error_t apply_quality_irrigation_mode(
     }
 
     // Apply cycle and soak logic if needed
-    err = calc_cycle_and_soak(method, soil, 0.0f, result);
+    err = calc_cycle_and_soak(method, soil, application_rate_mm_h, result);
     if (err != WATERING_SUCCESS) {
         LOG_WRN("Cycle and soak calculation failed, using single cycle");
         result->cycle_count = 1;
@@ -2795,10 +3864,9 @@ watering_error_t apply_quality_irrigation_mode(
 }
 
 /**
- * @brief Apply eco irrigation mode (70% of calculated requirement)
+ * @brief Apply eco irrigation mode (reduced refill target)
  * 
- * Eco mode applies 70% of the calculated irrigation requirement for water conservation
- * while maintaining acceptable plant health. This mode prioritizes water savings.
+ * Eco mode reduces refill volume without altering ET physics.
  * 
  * @param balance Current water balance state
  * @param method Irrigation method database entry
@@ -2816,6 +3884,7 @@ watering_error_t apply_eco_irrigation_mode(
     const plant_full_data_t *plant,
     float area_m2,
     uint16_t plant_count,
+    float application_rate_mm_h,
     float max_volume_limit_l,
     irrigation_calculation_t *result
 )
@@ -2826,20 +3895,20 @@ watering_error_t apply_eco_irrigation_mode(
     }
 
     watering_error_t err;
-    bool eco_mode = true;  // Eco mode = 70% of calculated requirement
+    bool eco_mode = true;  // Eco scales net refill volume
 
     // Determine calculation method based on parameters
     if (area_m2 > 0.0f && plant_count == 0) {
         // Area-based calculation
         err = calc_irrigation_volume_area(balance, method, area_m2, 
                                         eco_mode, max_volume_limit_l, result);
-    LOG_INF("Eco mode: %.1f L for %.1f m² (70%% requirement)", 
+    LOG_INF("Eco mode: %.1f L for %.1f m2 (scaled refill)",
         (double)result->volume_liters, (double)area_m2);
     } else if (plant_count > 0 && area_m2 == 0.0f && plant != NULL) {
         // Plant-based calculation
         err = calc_irrigation_volume_plants(balance, method, plant, plant_count,
                                           eco_mode, max_volume_limit_l, result);
-    LOG_INF("Eco mode: %.1f L for %d plants (70%% requirement)", 
+    LOG_INF("Eco mode: %.1f L for %d plants (scaled refill)",
         (double)result->volume_liters, plant_count);
     } else {
         LOG_ERR("Invalid parameters: must specify either area_m2 OR plant_count");
@@ -2852,14 +3921,14 @@ watering_error_t apply_eco_irrigation_mode(
     }
 
     // Apply cycle and soak logic if needed
-    err = calc_cycle_and_soak(method, soil, 0.0f, result);
+    err = calc_cycle_and_soak(method, soil, application_rate_mm_h, result);
     if (err != WATERING_SUCCESS) {
         LOG_WRN("Cycle and soak calculation failed, using single cycle");
         result->cycle_count = 1;
         result->soak_interval_min = 0;
     }
 
-    LOG_INF("Eco irrigation mode applied: %.1f L total (70%% of requirement), %d cycles", 
+    LOG_INF("Eco irrigation mode applied: %.1f L total, %d cycles",
             (double)result->volume_liters, result->cycle_count);
 
     return WATERING_SUCCESS;
@@ -3011,14 +4080,33 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
 
     float area_m2 = channel->use_area_based ? channel->coverage.area_m2 : 0.0f;
     uint16_t plant_count = channel->use_area_based ? 0 : channel->coverage.plant_count;
+    float application_rate_mm_h = 0.0f;
+    if (channel->hydraulic.nominal_flow_ml_min > 0) {
+        float flow_l_min = channel->hydraulic.nominal_flow_ml_min / 1000.0f;
+        float area_for_rate = area_m2;
+        if (!channel->use_area_based) {
+            float area_per_plant_m2 = 0.0f;
+            float canopy_factor = 1.0f;
+            area_for_rate = fao56_calc_plant_irrigated_area_m2(
+                plant, plant_count, &area_per_plant_m2, &canopy_factor, false);
+            if (area_for_rate <= 0.0f) {
+                area_for_rate = plant_count * 0.5f;
+            }
+        }
+        if (area_for_rate > 0.0f) {
+            application_rate_mm_h = (flow_l_min * 60.0f) / area_for_rate;
+        }
+    }
 
     if (calc_mode == WATERING_AUTOMATIC_ECO) {
         err = apply_eco_irrigation_mode(balance, method, soil, plant,
                                         area_m2, plant_count,
+                                        application_rate_mm_h,
                                         channel->max_volume_limit_l, result);
     } else {
         err = apply_quality_irrigation_mode(balance, method, soil, plant,
                                             area_m2, plant_count,
+                                            application_rate_mm_h,
                                             channel->max_volume_limit_l, result);
     }
     if (err != WATERING_SUCCESS) {
@@ -3046,7 +4134,8 @@ watering_error_t fao56_calculate_irrigation_requirement(uint8_t channel_id,
  * This avoids per-call static allocation differences between helpers.
  */
 static water_balance_t s_auto_channel_balance[WATERING_CHANNELS_COUNT];
-static float s_rain_applied_mm[WATERING_CHANNELS_COUNT];
+static float s_rain_applied_surface_mm[WATERING_CHANNELS_COUNT];
+static float s_rain_applied_root_mm[WATERING_CHANNELS_COUNT];
 
 water_balance_t *fao56_bind_channel_balance(uint8_t channel_id, watering_channel_t *channel)
 {
@@ -3067,7 +4156,9 @@ water_balance_t *fao56_bind_channel_balance(uint8_t channel_id, watering_channel
 
     resolved->water_balance = &s_auto_channel_balance[channel_id];
     memset(resolved->water_balance, 0, sizeof(water_balance_t));
-    s_rain_applied_mm[channel_id] = 0.0f;
+    s_rain_applied_surface_mm[channel_id] = 0.0f;
+    s_rain_applied_root_mm[channel_id] = 0.0f;
+    s_rain_applied_raw_mm[channel_id] = 0.0f;
     return resolved->water_balance;
 }
 
@@ -3117,9 +4208,12 @@ watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
     float awc_mm_per_m = soil->awc_mm_per_m;
     balance->rwz_awc_mm = awc_mm_per_m * root_depth_m;
 
-    float wetting_fraction = method->wetting_fraction_x1000 / 1000.0f;
-    if (wetting_fraction < 0.1f) wetting_fraction = 0.1f;
-    balance->wetting_awc_mm = balance->rwz_awc_mm * wetting_fraction;
+    float wetting_fraction = fao56_get_effective_wetting_fraction(method, soil, plant);
+    if (wetting_fraction < FAO56_WF_MIN) wetting_fraction = FAO56_WF_MIN;
+    if (wetting_fraction > FAO56_WF_MAX) wetting_fraction = FAO56_WF_MAX;
+    wetting_fraction = fao56_apply_wetting_fraction_slew(channel_id, wetting_fraction);
+    balance->wetting_fraction = wetting_fraction;
+    fao56_rescale_deficit_for_awc_change(balance, balance->rwz_awc_mm * wetting_fraction);
 
     float depletion_fraction = plant->depletion_fraction_p_x1000 / 1000.0f;
     if (depletion_fraction < 0.1f) depletion_fraction = 0.5f;
@@ -3137,21 +4231,36 @@ watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
 
     uint16_t day_of_year = fao56_get_current_day_of_year();
     float latitude_rad = channel->latitude_deg * (PI / 180.0f);
-    float daily_et0 = calc_et0_hargreaves_samani(&env_data, latitude_rad, day_of_year);
-    if (daily_et0 < HEURISTIC_ET0_MIN) daily_et0 = HEURISTIC_ET0_MIN;
-    if (daily_et0 > HEURISTIC_ET0_MAX) daily_et0 = HEURISTIC_ET0_MAX;
+    float et0_hs = 0.0f;
+    float et0_pm = 0.0f;
+    float daily_et0 = fao56_calc_et0_ensemble(&env_data, latitude_rad, day_of_year, &et0_hs, &et0_pm);
+    (void)et0_hs;
+    (void)et0_pm;
+    uint32_t now_ms = k_uptime_get_32();
+    uint32_t now_s = now_ms / 1000U;
+    float max_inc = ET0_SLEW_MAX_INC_MM_DAY;
+    float max_dec = ET0_SLEW_MAX_DEC_MM_DAY;
+    fao56_get_et0_slew_limits(&env_data, &max_inc, &max_dec);
+    daily_et0 = fao56_apply_et0_slew(channel_id, daily_et0, now_s, max_inc, max_dec);
 
-    float kc = fao56_get_kc_for_day(plant, days_after_planting);
-    float etc_mm_day = daily_et0 * kc;
+    // Initialize surface evaporation bucket (dual-Kc light)
+    float surface_wet_target = fao56_get_surface_wet_target(method, wetting_fraction);
+    float surface_wet_fraction = fao56_get_surface_wet_fraction(balance, surface_wet_target, daily_et0);
+    fao56_update_surface_bucket(balance, soil, surface_wet_fraction);
+
+    float kc_base = fao56_get_kc_base_for_day(plant, days_after_planting);
+    float kc = fao56_apply_canopy_to_kc(plant, kc_base, days_after_planting);
+    float ke = fao56_calc_ke(balance, balance->surface_tew_mm, balance->surface_rew_mm,
+                             method, plant, days_after_planting);
+    float et_root_mm_day = daily_et0 * kc;
 
     // Apply sun exposure adjustment (consistent with daily update)
     float sun_factor = channel->sun_exposure_pct / 100.0f;
     if (sun_factor < 0.3f) sun_factor = 0.3f;
     if (sun_factor > 1.0f) sun_factor = 1.0f;
-    etc_mm_day *= sun_factor;
-
+    et_root_mm_day *= sun_factor;
+    float surface_evap_mm_day = daily_et0 * ke * sun_factor;
     // Accumulate fractional ETc based on elapsed uptime
-    uint32_t now_ms = k_uptime_get_32();
     if (balance->last_update_time == 0U) {
         balance->last_update_time = now_ms;
         balance->irrigation_needed = (balance->current_deficit_mm >= balance->raw_mm);
@@ -3165,10 +4274,18 @@ watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
         return WATERING_SUCCESS;
     }
 
-    float delta_etc_mm = etc_mm_day * (delta_s / 86400.0f);
+    float delta_etc_mm = et_root_mm_day * (delta_s / 86400.0f);
     err = track_deficit_accumulation(balance, delta_etc_mm, 0.0f, 0.0f);
     if (err != WATERING_SUCCESS) {
         return err;
+    }
+
+    if (surface_evap_mm_day > 0.0f) {
+        float delta_surface_mm = surface_evap_mm_day * (delta_s / 86400.0f);
+        balance->surface_deficit_mm += delta_surface_mm;
+        if (balance->surface_deficit_mm > balance->surface_tew_mm) {
+            balance->surface_deficit_mm = balance->surface_tew_mm;
+        }
     }
 
     balance->last_update_time = now_ms;
@@ -3264,45 +4381,75 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     float awc_mm_per_m = soil->awc_mm_per_m;
     balance->rwz_awc_mm = awc_mm_per_m * root_depth_m;
     
-    float wetting_fraction = method->wetting_fraction_x1000 / 1000.0f;
-    if (wetting_fraction < 0.1f) wetting_fraction = 0.1f;
-    balance->wetting_awc_mm = balance->rwz_awc_mm * wetting_fraction;
+    float wetting_fraction = fao56_get_effective_wetting_fraction(method, soil, plant);
+    if (wetting_fraction < FAO56_WF_MIN) wetting_fraction = FAO56_WF_MIN;
+    if (wetting_fraction > FAO56_WF_MAX) wetting_fraction = FAO56_WF_MAX;
+    wetting_fraction = fao56_apply_wetting_fraction_slew(channel_id, wetting_fraction);
+    balance->wetting_fraction = wetting_fraction;
+    fao56_rescale_deficit_for_awc_change(balance, balance->rwz_awc_mm * wetting_fraction);
     
     float depletion_fraction = plant->depletion_fraction_p_x1000 / 1000.0f;
     if (depletion_fraction < 0.1f) depletion_fraction = 0.5f; // Default to 50%
     balance->raw_mm = balance->wetting_awc_mm * depletion_fraction;
-    
-    // Calculate effective precipitation (uses global/per-channel antecedent moisture estimate)
-    float antecedent_moisture_pct = (float)soil_moisture_get_effective_pct(channel_id);
-    float effective_rain = calc_effective_precipitation_with_moisture(
-        rainfall_24h, soil, method, antecedent_moisture_pct, env_data.air_temp_mean_c);
 
-    // Avoid double-counting rain already applied via incremental updates.
-    float applied_rain = s_rain_applied_mm[channel_id];
-    if (applied_rain > 0.0f) {
-        if (applied_rain >= effective_rain) {
-            effective_rain = 0.0f;
-        } else {
-            effective_rain -= applied_rain;
-        }
-    }
-
-    balance->effective_rain_mm = effective_rain;
-    decision->effective_rain_mm = effective_rain;
-    
     // Calculate daily ET0 using Hargreaves-Samani (temperature-based method)
     uint16_t day_of_year = fao56_get_current_day_of_year();
     float latitude_rad = channel->latitude_deg * (PI / 180.0f);
     
-    float daily_et0 = calc_et0_hargreaves_samani(&env_data, latitude_rad, day_of_year);
-    if (daily_et0 < HEURISTIC_ET0_MIN) daily_et0 = HEURISTIC_ET0_MIN;
-    if (daily_et0 > HEURISTIC_ET0_MAX) daily_et0 = HEURISTIC_ET0_MAX;
+    float et0_hs = 0.0f;
+    float et0_pm = 0.0f;
+    float daily_et0 = fao56_calc_et0_ensemble(&env_data, latitude_rad, day_of_year, &et0_hs, &et0_pm);
+    (void)et0_hs;
+    (void)et0_pm;
+    uint32_t now_s = k_uptime_get_32() / 1000U;
+    float max_inc = ET0_SLEW_MAX_INC_MM_DAY;
+    float max_dec = ET0_SLEW_MAX_DEC_MM_DAY;
+    fao56_get_et0_slew_limits(&env_data, &max_inc, &max_dec);
+    daily_et0 = fao56_apply_et0_slew(channel_id, daily_et0, now_s, max_inc, max_dec);
+
+    float rain_applied_raw = s_rain_applied_raw_mm[channel_id];
+    float rainfall_remainder = rainfall_24h;
+    if (rain_applied_raw > 0.0f) {
+        if (rain_applied_raw >= rainfall_remainder) {
+            rainfall_remainder = 0.0f;
+        } else {
+            rainfall_remainder -= rain_applied_raw;
+        }
+    }
+
+    // Calculate effective precipitation (uses global/per-channel antecedent moisture estimate)
+    float antecedent_moisture_pct = fao56_get_antecedent_moisture_pct(channel_id, balance);
+    float effective_rain = 0.0f;
+    float hourly_effective = fao56_calc_effective_rain_hourly(
+        current_time, rainfall_remainder, soil, method, antecedent_moisture_pct, env_data.air_temp_mean_c);
+    if (hourly_effective >= 0.0f) {
+        effective_rain = hourly_effective;
+    } else {
+        effective_rain = calc_effective_precipitation_with_moisture(
+            rainfall_remainder, soil, method, antecedent_moisture_pct, env_data.air_temp_mean_c);
+    }
+
+    balance->effective_rain_mm = effective_rain;
+    decision->effective_rain_mm = effective_rain;
+    if (effective_rain > 0.0f) {
+        fao56_apply_surface_wet_event(balance, FAO56_SURFACE_WET_RAIN_FRACTION);
+    }
+    float surface_wet_target = fao56_get_surface_wet_target(method, wetting_fraction);
+    float surface_wet_fraction = fao56_get_surface_wet_fraction(balance, surface_wet_target, daily_et0);
+    fao56_update_surface_bucket(balance, soil, surface_wet_fraction);
+    float root_recharge = fao56_route_effective_precipitation(balance, effective_rain);
     
     // Calculate crop coefficient (Kc) based on growth stage
-    float kc = fao56_get_kc_for_day(plant, days_after_planting);
+    float kc_base = fao56_get_kc_base_for_day(plant, days_after_planting);
+    float kc = fao56_apply_canopy_to_kc(plant, kc_base, days_after_planting);
+    float ke = fao56_calc_ke(balance, balance->surface_tew_mm, balance->surface_rew_mm,
+                             method, plant, days_after_planting);
+    float kc_total = kc + ke;
+    if (kc_total > 2.0f) kc_total = 2.0f;
+    if (kc_total < 0.1f) kc_total = 0.1f;
     
     // Calculate daily ETc (crop evapotranspiration)
-    float daily_etc = daily_et0 * kc;
+    float daily_etc = daily_et0 * kc_total;
     
     // B0 #4: Apply sun exposure adjustment (shaded areas have lower evapotranspiration)
     // sun_exposure_pct: 100% = full sun, 0% = full shade
@@ -3311,32 +4458,39 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     if (sun_factor > 1.0f) sun_factor = 1.0f;
     daily_etc *= sun_factor;
     
-    // B0 #3: Apply eco mode factor (70% of calculated requirement for water savings)
-    bool eco_mode = (channel->auto_mode == WATERING_AUTOMATIC_ECO);
-    if (eco_mode) {
-        daily_etc *= 0.7f;
-        LOG_DBG("AUTO mode: Eco factor (0.7) applied to ETc for channel %u", channel_id);
-    }
+    bool eco_mode = (channel->auto_mode == WATERING_AUTOMATIC_ECO ||
+                     channel->watering_event.watering_mode == WATERING_AUTOMATIC_ECO);
     
     decision->daily_etc_mm = daily_etc;
     
-    LOG_DBG("AUTO mode: ET0=%.2f, Kc=%.2f, sun=%.0f%%, eco=%d -> ETc=%.2f mm for channel %u",
-            (double)daily_et0, (double)kc, (double)(sun_factor * 100.0f), 
-            eco_mode ? 1 : 0, (double)daily_etc, channel_id);
+    LOG_DBG("AUTO mode: ET0=%.2f, Kc=%.2f, sun=%.0f%% -> ETc=%.2f mm (eco_mad=%d) ch%u",
+            (double)daily_et0, (double)kc, (double)(sun_factor * 100.0f),
+            (double)daily_etc, eco_mode ? 1 : 0, channel_id);
     
-    // Apply environmental stress adjustment for hot/dry conditions
-    float base_mad = depletion_fraction;
-    float adjusted_mad = apply_environmental_stress_adjustment(base_mad, &env_data, plant);
-    decision->stress_factor = adjusted_mad / base_mad;
+    // Apply ETc-based MAD adjustment + environmental stress adjustment (use Kc only, no Ke)
+    float base_mad = plant->depletion_fraction_p_x1000 / 1000.0f;
+    float etc_for_mad = daily_et0 * kc * sun_factor;
+    float etc_adjusted_mad = base_mad + FAO56_MAD_ETC_ADJ_COEFF * (FAO56_MAD_ETC_REF_MM_DAY - etc_for_mad);
+    if (etc_adjusted_mad < FAO56_MAD_MIN_FRACTION) etc_adjusted_mad = FAO56_MAD_MIN_FRACTION;
+    if (etc_adjusted_mad > FAO56_MAD_MAX_FRACTION) etc_adjusted_mad = FAO56_MAD_MAX_FRACTION;
+    float adjusted_mad = apply_environmental_stress_adjustment(etc_adjusted_mad, &env_data, plant);
+    if (eco_mode) {
+        float eco_boost = 1.0f - ECO_ETC_FACTOR;
+        adjusted_mad = adjusted_mad + (1.0f - adjusted_mad) * eco_boost;
+        if (adjusted_mad > 1.0f) adjusted_mad = 1.0f;
+    }
+    decision->stress_factor = (base_mad > 0.0f) ? (adjusted_mad / base_mad) : 1.0f;
     
-    // Daily check: subtract effective rain (ETc is accumulated continuously)
-    err = track_deficit_accumulation(balance, 0.0f, effective_rain, 0.0f);
+    // Daily check: subtract effective rain routed to root (ETc is accumulated continuously)
+    err = track_deficit_accumulation(balance, 0.0f, root_recharge, 0.0f);
     if (err != WATERING_SUCCESS) {
         LOG_ERR("AUTO mode: Deficit tracking failed for channel %u", channel_id);
         return err;
     }
 
-    s_rain_applied_mm[channel_id] = 0.0f;
+    s_rain_applied_surface_mm[channel_id] = 0.0f;
+    s_rain_applied_root_mm[channel_id] = 0.0f;
+    s_rain_applied_raw_mm[channel_id] = 0.0f;
     
     // Update decision output values
     decision->current_deficit_mm = balance->current_deficit_mm;
@@ -3353,17 +4507,26 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
         // Apply irrigation efficiency (efficiency_pct is 0-100)
         float efficiency = method->efficiency_pct / 100.0f;
         if (efficiency < 0.5f) efficiency = 0.8f; // Default 80% if invalid
+        float distribution_uniformity = method->distribution_uniformity_pct / 100.0f;
+        if (distribution_uniformity <= 0.0f || distribution_uniformity > 1.0f) {
+            distribution_uniformity = 1.0f;
+        }
         float gross_irrigation_mm = net_irrigation_mm / efficiency;
-        
-        // Convert mm to liters based on coverage
-        float area_m2;
-        if (channel->use_area_based) {
-            area_m2 = channel->coverage.area_m2;
-        } else {
-            // Assume 0.5 m² per plant for volume calculation
-            area_m2 = channel->coverage.plant_count * 0.5f;
+        if (distribution_uniformity < 1.0f) {
+            gross_irrigation_mm /= distribution_uniformity;
         }
         
+        // Convert mm to liters based on coverage
+        float area_m2 = channel->coverage.area_m2;
+        if (!channel->use_area_based) {
+            float area_per_plant_m2 = 0.0f;
+            float canopy_factor = 1.0f;
+            area_m2 = fao56_calc_plant_irrigated_area_m2(
+                plant, channel->coverage.plant_count, &area_per_plant_m2, &canopy_factor, false);
+            if (area_m2 <= 0.0f) {
+                area_m2 = channel->coverage.plant_count * 0.5f;
+            }
+        }
         decision->volume_liters = gross_irrigation_mm * area_m2;
         
         // Apply max volume limit if configured
@@ -3397,8 +4560,10 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
 
 /**
  * @brief Apply incremental rainfall to AUTO water balance (best-effort)
+ *
+ * Uses the provided duration to estimate rainfall intensity for runoff/evap losses.
  */
-watering_error_t fao56_apply_rainfall_increment(float rainfall_mm, float air_temp_c)
+watering_error_t fao56_apply_rainfall_increment(float rainfall_mm, float air_temp_c, uint32_t duration_s)
 {
     if (rainfall_mm <= 0.0f) {
         return WATERING_SUCCESS;
@@ -3441,6 +4606,14 @@ watering_error_t fao56_apply_rainfall_increment(float rainfall_mm, float air_tem
             continue;
         }
 
+        s_rain_applied_raw_mm[channel_id] += rainfall_mm;
+
+        float wetting_fraction = fao56_get_effective_wetting_fraction(method, soil, plant);
+        if (wetting_fraction < FAO56_WF_MIN) wetting_fraction = FAO56_WF_MIN;
+        if (wetting_fraction > FAO56_WF_MAX) wetting_fraction = FAO56_WF_MAX;
+        wetting_fraction = fao56_apply_wetting_fraction_slew(channel_id, wetting_fraction);
+        balance->wetting_fraction = wetting_fraction;
+
         if (balance->wetting_awc_mm <= 0.0f || balance->raw_mm <= 0.0f) {
             uint32_t current_time = timezone_get_unix_utc();
             uint16_t days_after_planting = fao56_get_days_after_planting(channel, current_time);
@@ -3448,28 +4621,58 @@ watering_error_t fao56_apply_rainfall_increment(float rainfall_mm, float air_tem
             float root_depth_m = fao56_get_root_depth_m(plant, days_after_planting);
             balance->rwz_awc_mm = soil->awc_mm_per_m * root_depth_m;
 
-            float wetting_fraction = method->wetting_fraction_x1000 / 1000.0f;
-            if (wetting_fraction < 0.1f) wetting_fraction = 0.1f;
-            balance->wetting_awc_mm = balance->rwz_awc_mm * wetting_fraction;
+            fao56_rescale_deficit_for_awc_change(balance, balance->rwz_awc_mm * wetting_fraction);
 
             float depletion_fraction = plant->depletion_fraction_p_x1000 / 1000.0f;
             if (depletion_fraction < 0.1f) depletion_fraction = 0.5f;
             balance->raw_mm = balance->wetting_awc_mm * depletion_fraction;
         }
 
-        float antecedent_moisture_pct = (float)soil_moisture_get_effective_pct(channel_id);
-        float effective_rain = calc_effective_precipitation_with_moisture(
-            rainfall_mm, soil, method, antecedent_moisture_pct, air_temp_c);
+        float antecedent_moisture_pct = fao56_get_antecedent_moisture_pct(channel_id, balance);
+        float duration_h = 0.0f;
+        float intensity_mm_h = 0.0f;
+        if (duration_s > 0U) {
+            duration_h = (float)duration_s / 3600.0f;
+            if (duration_h > 0.0f) {
+                if (duration_h < (1.0f / 60.0f)) {
+                    duration_h = 1.0f / 60.0f;
+                }
+                if (duration_h > 1.0f) {
+                    duration_h = 1.0f;
+                }
+                intensity_mm_h = rainfall_mm / duration_h;
+            }
+        }
+        float effective_rain = 0.0f;
+        if (duration_h > 0.0f && intensity_mm_h > 0.0f) {
+            effective_rain = calc_effective_precipitation_with_moisture_timing(
+                rainfall_mm, soil, method, antecedent_moisture_pct, air_temp_c,
+                duration_h, intensity_mm_h);
+        } else {
+            effective_rain = calc_effective_precipitation_with_moisture(
+                rainfall_mm, soil, method, antecedent_moisture_pct, air_temp_c);
+        }
         if (effective_rain <= 0.0f) {
             continue;
         }
 
-        watering_error_t err = track_deficit_accumulation(balance, 0.0f, effective_rain, 0.0f);
+        fao56_apply_surface_wet_event(balance, FAO56_SURFACE_WET_RAIN_FRACTION);
+        float surface_wet_target = fao56_get_surface_wet_target(method, wetting_fraction);
+        float surface_wet_fraction = fao56_get_surface_wet_fraction(balance, surface_wet_target, 0.0f);
+        fao56_update_surface_bucket(balance, soil, surface_wet_fraction);
+
+        float root_recharge = fao56_route_effective_precipitation(balance, effective_rain);
+        float surface_recharge = effective_rain - root_recharge;
+        if (surface_recharge < 0.0f) {
+            surface_recharge = 0.0f;
+        }
+        watering_error_t err = track_deficit_accumulation(balance, 0.0f, root_recharge, 0.0f);
         if (err != WATERING_SUCCESS) {
             continue;
         }
 
-        s_rain_applied_mm[channel_id] += effective_rain;
+        s_rain_applied_surface_mm[channel_id] += surface_recharge;
+        s_rain_applied_root_mm[channel_id] += root_recharge;
         balance->irrigation_needed = (balance->current_deficit_mm >= balance->raw_mm);
     }
 
@@ -3506,15 +4709,42 @@ watering_error_t fao56_apply_missed_days_deficit(uint8_t channel_id,
         LOG_WRN("AUTO mode: No water balance for channel %u, skipping missed days", channel_id);
         return WATERING_SUCCESS;
     }
+
+    water_balance_t *balance = channel->water_balance;
     
     // Get plant data for Kc
     if (channel->plant_db_index >= PLANT_FULL_SPECIES_COUNT) {
         return WATERING_ERROR_INVALID_DATA;
     }
     const plant_full_data_t *plant = &plant_full_database[channel->plant_db_index];
+    if (channel->irrigation_method_index >= IRRIGATION_METHODS_COUNT) {
+        return WATERING_ERROR_INVALID_DATA;
+    }
+    const irrigation_method_data_t *method = &irrigation_methods_database[channel->irrigation_method_index];
+    const soil_enhanced_data_t *soil = fao56_get_channel_soil(channel_id, channel);
+    if (!soil) {
+        return WATERING_ERROR_INVALID_DATA;
+    }
     
     uint32_t current_time = timezone_get_unix_utc();
     uint16_t days_after_planting = fao56_get_days_after_planting(channel, current_time);
+    float root_depth_m = fao56_get_root_depth_m(plant, days_after_planting);
+
+    float wetting_fraction = fao56_get_effective_wetting_fraction(method, soil, plant);
+    if (wetting_fraction < FAO56_WF_MIN) wetting_fraction = FAO56_WF_MIN;
+    if (wetting_fraction > FAO56_WF_MAX) wetting_fraction = FAO56_WF_MAX;
+    wetting_fraction = fao56_apply_wetting_fraction_slew(channel_id, wetting_fraction);
+    balance->wetting_fraction = wetting_fraction;
+    balance->rwz_awc_mm = soil->awc_mm_per_m * root_depth_m;
+    fao56_rescale_deficit_for_awc_change(balance, balance->rwz_awc_mm * wetting_fraction);
+
+    float depletion_fraction = plant->depletion_fraction_p_x1000 / 1000.0f;
+    if (depletion_fraction < 0.1f) depletion_fraction = 0.5f;
+    balance->raw_mm = balance->wetting_awc_mm * depletion_fraction;
+
+    float surface_wet_target = fao56_get_surface_wet_target(method, wetting_fraction);
+    float surface_wet_fraction = fao56_get_surface_wet_fraction(balance, surface_wet_target, 0.0f);
+    fao56_update_surface_bucket(balance, soil, surface_wet_fraction);
 
     float latitude_rad = channel->latitude_deg * (PI / 180.0f);
     float week_et0_avg[FAO56_CLIMATOLOGY_WEEKS] = {0};
@@ -3557,11 +4787,15 @@ watering_error_t fao56_apply_missed_days_deficit(uint8_t channel_id,
 
         uint16_t dap_day = (days_after_planting >= offset) ? (days_after_planting - offset) : 0U;
         float kc = fao56_get_kc_for_day(plant, dap_day);
+        if (kc > 2.0f) kc = 2.0f;
+        if (kc < 0.1f) kc = 0.1f;
         total_missed_deficit += et0_day * kc * sun_factor;
     }
-    
-    water_balance_t *balance = channel->water_balance;
+
     balance->current_deficit_mm += total_missed_deficit;
+    if (balance->surface_tew_mm > 0.0f) {
+        balance->surface_deficit_mm = balance->surface_tew_mm;
+    }
     
     // Clamp to AWC maximum
     if (balance->current_deficit_mm > balance->wetting_awc_mm && balance->wetting_awc_mm > 0) {
@@ -3602,26 +4836,67 @@ watering_error_t fao56_reduce_deficit_after_irrigation(uint8_t channel_id,
     water_balance_t *balance = channel->water_balance;
 
     float efficiency = 0.8f;
+    float distribution_uniformity = 1.0f;
+    float efficiency_surface = 1.0f;
+    float efficiency_root = 0.8f;
+
+    const irrigation_method_data_t *method = NULL;
     if (channel->irrigation_method_index < IRRIGATION_METHODS_COUNT) {
-        const irrigation_method_data_t *method = &irrigation_methods_database[channel->irrigation_method_index];
+        method = &irrigation_methods_database[channel->irrigation_method_index];
+    }
+
+    const plant_full_data_t *plant = NULL;
+    if (!channel->use_area_based && channel->plant_db_index < PLANT_FULL_SPECIES_COUNT) {
+        plant = &plant_full_database[channel->plant_db_index];
+    }
+    const soil_enhanced_data_t *soil = fao56_get_channel_soil(channel_id, channel);
+
+    float wetting_fraction = balance->wetting_fraction;
+    if (wetting_fraction <= 0.0f || wetting_fraction > 1.0f) {
+        if (soil && method) {
+            wetting_fraction = fao56_get_effective_wetting_fraction(method, soil, plant);
+        } else {
+            wetting_fraction = 1.0f;
+        }
+    }
+    wetting_fraction = fao56_apply_wetting_fraction_slew(channel_id, wetting_fraction);
+    if (wetting_fraction < FAO56_WF_MIN) wetting_fraction = FAO56_WF_MIN;
+    if (wetting_fraction > 1.0f) wetting_fraction = 1.0f;
+    balance->wetting_fraction = wetting_fraction;
+
+    if (method) {
         efficiency = method->efficiency_pct / 100.0f;
         if (efficiency < 0.5f) {
             efficiency = 0.8f;
         }
+        distribution_uniformity = method->distribution_uniformity_pct / 100.0f;
+        if (distribution_uniformity <= 0.0f || distribution_uniformity > 1.0f) {
+            distribution_uniformity = 1.0f;
+        }
+        fao56_get_efficiency_split(method, wetting_fraction, &efficiency_surface, &efficiency_root);
     } else {
         LOG_WRN("AUTO mode: Invalid irrigation_method_index %u for channel %u, using 80%%",
                 channel->irrigation_method_index, channel_id);
+        efficiency_root = efficiency * distribution_uniformity;
+        efficiency_surface = 1.0f;
     }
-    
+
     // Convert liters to mm based on coverage area
-    float area_m2;
-    if (channel->use_area_based) {
-        area_m2 = channel->coverage.area_m2;
-    } else {
-        // Assume 0.5 m² per plant
-        area_m2 = channel->coverage.plant_count * 0.5f;
+    float area_m2 = channel->coverage.area_m2;
+    if (!channel->use_area_based) {
+        float area_per_plant_m2 = 0.0f;
+        float canopy_factor = 1.0f;
+        if (plant) {
+            area_m2 = fao56_calc_plant_irrigated_area_m2(
+                plant, channel->coverage.plant_count, &area_per_plant_m2, &canopy_factor, false);
+        } else {
+            area_m2 = 0.0f;
+        }
+        if (area_m2 <= 0.0f) {
+            area_m2 = channel->coverage.plant_count * 0.5f;
+        }
     }
-    
+
     if (area_m2 <= 0) {
         LOG_WRN("AUTO mode: Invalid coverage area for channel %u", channel_id);
         return WATERING_SUCCESS;
@@ -3630,8 +4905,8 @@ watering_error_t fao56_reduce_deficit_after_irrigation(uint8_t channel_id,
     float irrigation_mm = volume_applied_liters / area_m2;
     
     // Apply irrigation efficiency (match gross->net in AUTO schedule)
-    float effective_irrigation_mm = irrigation_mm * efficiency;
-    
+    float effective_irrigation_mm = irrigation_mm * efficiency_root;
+
     // Reduce deficit
     float old_deficit = balance->current_deficit_mm;
     balance->current_deficit_mm -= effective_irrigation_mm;
@@ -3639,6 +4914,31 @@ watering_error_t fao56_reduce_deficit_after_irrigation(uint8_t channel_id,
     // Clamp to zero (cannot have negative deficit)
     if (balance->current_deficit_mm < 0) {
         balance->current_deficit_mm = 0;
+    }
+
+    if (soil) {
+        float surface_event_fraction = wetting_fraction;
+        if (method) {
+            float du = method->distribution_uniformity_pct / 100.0f;
+            if (du > 0.0f && du < 1.0f) {
+                surface_event_fraction *= du;
+            }
+        }
+        if (surface_event_fraction < FAO56_WF_MIN) surface_event_fraction = FAO56_WF_MIN;
+        if (surface_event_fraction > 1.0f) surface_event_fraction = 1.0f;
+
+        float surface_wet_target = fao56_get_surface_wet_target(method, wetting_fraction);
+        fao56_apply_surface_wet_event(balance, surface_event_fraction);
+        float surface_state = fao56_get_surface_wet_fraction(balance, surface_wet_target, 0.0f);
+        fao56_update_surface_bucket(balance, soil, surface_state);
+
+        float surface_recharge = irrigation_mm * efficiency_surface;
+        if (surface_recharge > 0.0f) {
+            balance->surface_deficit_mm -= surface_recharge;
+            if (balance->surface_deficit_mm < 0.0f) {
+                balance->surface_deficit_mm = 0.0f;
+            }
+        }
     }
     
     balance->irrigation_needed = false;

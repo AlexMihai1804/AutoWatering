@@ -75,7 +75,7 @@ typedef enum watering_mode {
     WATERING_BY_DURATION,         /**< Water for a specific time duration */
     WATERING_BY_VOLUME,           /**< Water until a specific volume is reached */
     WATERING_AUTOMATIC_QUALITY,   /**< Automatic mode: 100% of calculated requirement */
-    WATERING_AUTOMATIC_ECO        /**< Automatic mode: 70% of calculated requirement for water conservation */
+    WATERING_AUTOMATIC_ECO        /**< Automatic mode: ETc-scaled deficit for water conservation */
 } watering_mode_t;
 
 /**

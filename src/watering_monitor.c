@@ -52,6 +52,7 @@ static uint8_t flow_error_attempts = 0;
 
 /** Timestamp of last flow check */
 static uint32_t last_flow_check_time = 0;
+static uint32_t last_rain_apply_time_s = 0;
 
 /** Mutex for protecting flow monitor state */
 K_MUTEX_DEFINE(flow_monitor_mutex);
@@ -802,6 +803,12 @@ watering_error_t check_flow_anomalies(void)
         
         /* Run rain-related checks only when sensor is initialized/enabled */
         if (rain_sensor_is_enabled()) {
+            uint32_t now_s = k_uptime_get_32() / 1000;
+            uint32_t duration_s = 0U;
+            if (last_rain_apply_time_s > 0U && now_s > last_rain_apply_time_s) {
+                duration_s = now_s - last_rain_apply_time_s;
+            }
+
             /* Update hourly tracking and persist completed hours to history */
             rain_sensor_update_hourly();
 
@@ -815,19 +822,37 @@ watering_error_t check_flow_anomalies(void)
                 uint32_t delta_pulses = current_pulses - last_rain_pulses_applied;
                 if (delta_pulses > 0) {
                     float delta_mm = (float)delta_pulses * rain_sensor_get_calibration();
+                    float rate_mm_h = rain_sensor_get_hourly_rate_mm();
+                    uint32_t duration_est_s = duration_s;
+                    if (duration_est_s > 0U) {
+                        if (duration_est_s < 60U) {
+                            duration_est_s = 60U;
+                        }
+                        if (duration_est_s > 3600U) {
+                            duration_est_s = 3600U;
+                        }
+                    }
+                    if (rate_mm_h > 0.1f && delta_mm > 0.0f) {
+                        float est_s = (delta_mm / rate_mm_h) * 3600.0f;
+                        if (est_s < 60.0f) est_s = 60.0f;
+                        if (est_s > 3600.0f) est_s = 3600.0f;
+                        duration_est_s = (uint32_t)est_s;
+                    }
                     if (delta_mm > 0.0f) {
                         environmental_data_t env_data = {0};
                         float air_temp_c = 20.0f;
                         if (env_sensors_read(&env_data) == WATERING_SUCCESS && env_data.temp_valid) {
                             air_temp_c = env_data.air_temp_mean_c;
                         }
-                        (void)fao56_apply_rainfall_increment(delta_mm, air_temp_c);
+                        (void)fao56_apply_rainfall_increment(delta_mm, air_temp_c, duration_est_s);
                     }
                     last_rain_pulses_applied = current_pulses;
                 }
             } else {
                 last_rain_pulses_applied = current_pulses;
             }
+
+            last_rain_apply_time_s = now_s;
 
             /* Check rain integration system health */
             /* Perform periodic maintenance on rain history system (independent of integration) */

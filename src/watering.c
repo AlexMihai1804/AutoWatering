@@ -1356,6 +1356,33 @@ watering_error_t watering_process_automatic_irrigation(
     } else {
         plant_count = channel->coverage.plant_count;
     }
+
+    float application_rate_mm_h = 0.0f;
+    if (channel->hydraulic.nominal_flow_ml_min > 0) {
+        float flow_l_min = channel->hydraulic.nominal_flow_ml_min / 1000.0f;
+        float area_for_rate = area_m2;
+        if (!channel->use_area_based) {
+            float row_spacing_m = 0.0f;
+            float plant_spacing_m = 0.0f;
+            float area_per_plant = 0.0f;
+            if (plant) {
+                row_spacing_m = plant->spacing_row_m_x1000 / 1000.0f;
+                plant_spacing_m = plant->spacing_plant_m_x1000 / 1000.0f;
+            }
+            if (row_spacing_m > 0.0f && plant_spacing_m > 0.0f) {
+                area_per_plant = row_spacing_m * plant_spacing_m;
+            } else if (plant && plant->default_density_plants_m2_x100 > 0) {
+                float density = plant->default_density_plants_m2_x100 / 100.0f;
+                area_per_plant = (density > 0.0f) ? (1.0f / density) : 0.0f;
+            } else {
+                area_per_plant = 0.5f;
+            }
+            area_for_rate = area_per_plant * plant_count;
+        }
+        if (area_for_rate > 0.0f) {
+            application_rate_mm_h = (flow_l_min * 60.0f) / area_for_rate;
+        }
+    }
     
     // Process based on automatic mode
     switch (mode) {
@@ -1363,6 +1390,7 @@ watering_error_t watering_process_automatic_irrigation(
             mode_name = "Quality";
             err = apply_quality_irrigation_mode(balance, method, soil, plant, 
                                               area_m2, plant_count,
+                                              application_rate_mm_h,
                                               channel->max_volume_limit_l, result);
             break;
             
@@ -1370,6 +1398,7 @@ watering_error_t watering_process_automatic_irrigation(
             mode_name = "Eco";
             err = apply_eco_irrigation_mode(balance, method, soil, plant,
                                           area_m2, plant_count,
+                                          application_rate_mm_h,
                                           channel->max_volume_limit_l, result);
             break;
             
