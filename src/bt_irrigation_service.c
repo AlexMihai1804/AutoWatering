@@ -7018,6 +7018,9 @@ static ssize_t read_growing_env(struct bt_conn *conn, const struct bt_gatt_attr 
             read_value.irrigation_freq_days = 1;
             read_value.prefer_area_based = read_value.use_area_based;
         }
+        
+        /* Pack storage custom plant ID */
+        read_value.custom_plant_id = channel->custom_plant_id;
     }
     
     LOG_DBG("Growing Env read: ch=%u, plant=%u.%u, soil=%u, method=%u, area=%s %.2f, sun=%u%%",
@@ -7124,8 +7127,11 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
             env_data->prefer_area_based = channel->custom_plant.prefer_area_based ? 1 : 0;
         }
         
-        printk("✅ BLE: Growing env channel %u selected (plant_db=%u, soil_db=%u, method_db=%u, auto=%u)\n", 
-                channel_id, env_data->plant_db_index, env_data->soil_db_index, env_data->irrigation_method_index, env_data->auto_mode);
+        /* Pack storage custom plant ID */
+        env_data->custom_plant_id = channel->custom_plant_id;
+        
+        printk("✅ BLE: Growing env channel %u selected (plant_db=%u, soil_db=%u, method_db=%u, auto=%u, custom_plant=%u)\n", 
+                channel_id, env_data->plant_db_index, env_data->soil_db_index, env_data->irrigation_method_index, env_data->auto_mode, env_data->custom_plant_id);
         
         return len;
     }
@@ -7519,6 +7525,9 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
     }
     
+    /* Pack storage custom plant ID (0 = use plant_db_index, >=1000 = custom plant from pack) */
+    updated.custom_plant_id = env_data->custom_plant_id;
+    
     /* Update basic channel config flags based on what was set */
     if (env_data->plant_db_index != UINT16_MAX) {
         onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_PLANT_TYPE_SET, true);
@@ -7618,11 +7627,14 @@ static void growing_env_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
             env_data->latitude_deg = channel->latitude_deg;
             env_data->sun_exposure_pct = channel->sun_exposure_pct;
             
-    LOG_INF("Initialized with channel 0: plant_db=%u, soil_db=%u, method_db=%u, %s=%.2f, auto=%u",
+            /* Pack storage custom plant ID */
+            env_data->custom_plant_id = channel->custom_plant_id;
+            
+    LOG_INF("Initialized with channel 0: plant_db=%u, soil_db=%u, method_db=%u, %s=%.2f, auto=%u, custom_plant=%u",
                     env_data->plant_db_index, env_data->soil_db_index, env_data->irrigation_method_index,
                     env_data->use_area_based ? "area" : "count",
             env_data->use_area_based ? (double)env_data->coverage.area_m2 : (double)((float)env_data->coverage.plant_count),
-                    env_data->auto_mode);
+                    env_data->auto_mode, env_data->custom_plant_id);
         } else {
             /* Default values if channel not available */
             memset(env_data, 0, sizeof(struct growing_env_data));

@@ -241,6 +241,9 @@ struct growing_env_data {
     float water_need_factor;      /* Water need multiplier (0.1-5.0) */
     uint8_t irrigation_freq_days; /* Recommended irrigation frequency (days) */
     uint8_t prefer_area_based;    /* 1=plant prefers m² measurement, 0=prefers plant count */
+    
+    /* Pack storage custom plant (v3.1+) */
+    uint16_t custom_plant_id;     /* Custom plant ID from pack storage (0 = use plant_db_index, >=1000 = custom) */
 } __packed;
 
 /* Structure for automatic calculation status */
@@ -445,7 +448,7 @@ BUILD_ASSERT(sizeof(struct rain_history_cmd_data) == 16, "rain_history_cmd_data 
 BUILD_ASSERT(sizeof(history_fragment_header_t) == 8, "history_fragment_header_t must be 8 bytes");
 BUILD_ASSERT(sizeof(struct rain_integration_status_ble) == 78, "rain_integration_status_ble must be 78 bytes");
 BUILD_ASSERT(sizeof(struct channel_compensation_config_data) == 44, "channel_compensation_config_data must be 44 bytes");
-BUILD_ASSERT(sizeof(struct growing_env_data) == 71, "growing_env_data must be 71 bytes");
+BUILD_ASSERT(sizeof(struct growing_env_data) == 73, "growing_env_data must be 73 bytes");
 BUILD_ASSERT(sizeof(struct auto_calc_status_data) == 64, "auto_calc_status_data must be 64 bytes");
 BUILD_ASSERT(sizeof(struct onboarding_status_data) == 33, "onboarding_status_data must be 33 bytes");
 /* Newly audited: ensure reset control struct stays at 16 bytes */
