@@ -98,6 +98,7 @@ target_sources(app PRIVATE
     src/bt_environmental_history_handlers.c
     src/bt_custom_soil_handlers.c
     src/bt_interval_mode_handlers.c
+    src/bt_pack_handlers.c
     
     # Environmental sensors
     src/env_sensors.c
@@ -135,6 +136,9 @@ target_sources(app PRIVATE
     # External flash storage (W25Q128 + LittleFS)
     src/database_flash.c
     src/history_flash.c
+    
+    # Plant/Pack storage on external flash
+    src/pack_storage.c
     
     # Generated enhanced database files - will be created automatically
     ${SRC_DIR}/plant_full_db.c

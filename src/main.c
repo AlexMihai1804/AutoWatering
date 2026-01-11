@@ -41,6 +41,8 @@
 #include "reset_controller.h"
 #include "database_flash.h"
 #include "history_flash.h"
+#include "pack_storage.h"
+#include "bt_pack_handlers.h"
 
 #ifdef CONFIG_BT
 #include "bt_irrigation_service.h"
@@ -590,6 +592,15 @@ int main(void) {
         printk("History flash storage initialized successfully\n");
     }
 
+    // Initialize pack storage (custom plants/packs on external flash)
+    printk("Initializing pack storage...\n");
+    pack_result_t pack_ret = pack_storage_init();
+    if (pack_ret != PACK_RESULT_SUCCESS) {
+        printk("Warning: Pack storage initialization failed: %d\n", pack_ret);
+    } else {
+        printk("Pack storage initialized successfully\n");
+    }
+
     // Initialize environmental history
     printk("Initializing environmental history system...\n");
     ret = environmental_history_init();
@@ -680,6 +691,15 @@ int main(void) {
         if (resume_ret == 1) {
             printk("Resuming interrupted factory wipe...\n");
         }
+    }
+    
+    // Initialize BLE pack handlers
+    printk("Initializing BLE pack handlers...\n");
+    ret = bt_pack_handlers_init();
+    if (ret != 0) {
+        printk("Warning: BLE pack handlers initialization failed: %d\n", ret);
+    } else {
+        printk("BLE pack handlers initialized successfully\n");
     }
 #endif
     

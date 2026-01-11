@@ -492,6 +492,7 @@ int nvs_save_complete_channel_config(uint8_t ch, const watering_channel_t *chann
         .plant_db_index = channel->plant_db_index,
         .soil_db_index = channel->soil_db_index,
         .irrigation_method_index = channel->irrigation_method_index,
+        .custom_plant_id = channel->custom_plant_id,
         .use_area_based = channel->use_area_based,
         .auto_mode = (uint8_t)channel->auto_mode,
         .max_volume_limit_l = channel->max_volume_limit_l,
@@ -575,6 +576,7 @@ int nvs_load_complete_channel_config(uint8_t ch, watering_channel_t *channel)
         channel->plant_db_index = enhanced_config.plant_db_index;
         channel->soil_db_index = enhanced_config.soil_db_index;
         channel->irrigation_method_index = enhanced_config.irrigation_method_index;
+        channel->custom_plant_id = enhanced_config.custom_plant_id;
         channel->use_area_based = enhanced_config.use_area_based;
         /* Handle union assignment separately */
         if (enhanced_config.use_area_based) {
