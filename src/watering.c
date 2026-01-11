@@ -736,7 +736,14 @@ bool watering_channel_auto_mode_valid(const watering_channel_t *channel)
         return false;
     }
 
-    bool missing_plant = (channel->plant_db_index == UINT16_MAX);
+    /* Plant is valid if either:
+     * 1. custom_plant_id > 0 (custom plant from pack storage), or
+     * 2. plant_db_index < UINT16_MAX (ROM database plant)
+     */
+    bool has_custom_plant = (channel->custom_plant_id > 0);
+    bool has_rom_plant = (channel->plant_db_index != UINT16_MAX);
+    bool missing_plant = !(has_custom_plant || has_rom_plant);
+    
     bool missing_soil = (channel->soil_db_index == UINT8_MAX);
     bool missing_date = (channel->planting_date_unix == 0);
     bool missing_coverage = false;
@@ -759,9 +766,10 @@ bool watering_channel_auto_mode_valid(const watering_channel_t *channel)
         if (channel_id < WATERING_CHANNELS_COUNT) {
             static uint32_t last_log_ms[WATERING_CHANNELS_COUNT];
             if (now_ms - last_log_ms[channel_id] > 60000U) {
-                LOG_WRN("AUTO config missing ch=%u: plant=%u soil=%u date=%u coverage=%u area=%.2f count=%u use_area=%u",
+                LOG_WRN("AUTO config missing ch=%u: plant_rom=%u custom=%u soil=%u date=%u coverage=%u area=%.2f count=%u use_area=%u",
                         channel_id,
                         channel->plant_db_index,
+                        channel->custom_plant_id,
                         channel->soil_db_index,
                         channel->planting_date_unix,
                         missing_coverage ? 1U : 0U,
@@ -773,8 +781,9 @@ bool watering_channel_auto_mode_valid(const watering_channel_t *channel)
         } else {
             static uint32_t last_unknown_log_ms;
             if (now_ms - last_unknown_log_ms > 60000U) {
-                LOG_WRN("AUTO config missing for unknown channel: plant=%u soil=%u date=%u coverage=%u area=%.2f count=%u use_area=%u",
+                LOG_WRN("AUTO config missing for unknown channel: plant_rom=%u custom=%u soil=%u date=%u coverage=%u area=%.2f count=%u use_area=%u",
                         channel->plant_db_index,
+                        channel->custom_plant_id,
                         channel->soil_db_index,
                         channel->planting_date_unix,
                         missing_coverage ? 1U : 0U,
