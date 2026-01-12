@@ -62,6 +62,7 @@ typedef struct {
     uint32_t free_bytes;        /**< Free bytes */
     uint16_t plant_count;       /**< Installed custom plants */
     uint16_t pack_count;        /**< Installed packs */
+    uint32_t change_counter;    /**< Increments on each install/delete (for cache invalidation) */
 } pack_storage_stats_t;
 
 /* ============================================================================
@@ -260,45 +261,66 @@ uint32_t pack_storage_crc32(const void *data, size_t len);
  * ============================================================================ */
 
 /**
- * @brief Get Kc (crop coefficient) for a custom or built-in plant
+ * @brief Get Kc (crop coefficient) for a plant from pack storage
  * 
- * This helper looks up Kc from either a custom plant (if custom_plant_id > 0)
- * or falls back to the built-in ROM database (via plant_db_index).
+ * Looks up Kc from pack storage using the unified plant_id.
+ * Plant IDs 1-223 are default plants, >=1000 are custom plants.
  * 
- * @param custom_plant_id Custom plant ID from pack storage (0 = use built-in)
- * @param plant_db_index Built-in plant index (used when custom_plant_id == 0)
+ * @param plant_id Plant ID in pack storage (1-223=default, >=1000=custom, 0=not set)
  * @param days_after_planting Days since planting for Kc interpolation
  * @param out_kc Output: interpolated Kc value
  * @return pack_result_t PACK_RESULT_SUCCESS or error
  */
-pack_result_t pack_storage_get_kc(uint16_t custom_plant_id,
-                                   uint16_t plant_db_index,
+pack_result_t pack_storage_get_kc(uint16_t plant_id,
                                    uint16_t days_after_planting,
                                    float *out_kc);
 
 /**
- * @brief Get root depth for a custom or built-in plant
+ * @brief Get root depth for a plant from pack storage
  * 
- * @param custom_plant_id Custom plant ID from pack storage (0 = use built-in)
- * @param plant_db_index Built-in plant index (used when custom_plant_id == 0)
+ * @param plant_id Plant ID in pack storage (1-223=default, >=1000=custom, 0=not set)
  * @param days_after_planting Days since planting
  * @param out_root_depth_mm Output: root depth in mm
  * @return pack_result_t PACK_RESULT_SUCCESS or error
  */
-pack_result_t pack_storage_get_root_depth(uint16_t custom_plant_id,
-                                           uint16_t plant_db_index,
+pack_result_t pack_storage_get_root_depth(uint16_t plant_id,
                                            uint16_t days_after_planting,
                                            float *out_root_depth_mm);
 
 /**
- * @brief Get all FAO-56 parameters for a custom plant
+ * @brief Get all FAO-56 parameters for a plant from pack storage
  * 
- * @param custom_plant_id Custom plant ID (must be > 0)
+ * @param plant_id Plant ID in pack storage (must be > 0)
  * @param plant Output buffer for plant data
  * @return pack_result_t PACK_RESULT_SUCCESS or error
  */
-pack_result_t pack_storage_get_fao56_plant(uint16_t custom_plant_id,
+pack_result_t pack_storage_get_fao56_plant(uint16_t plant_id,
                                             pack_plant_v1_t *plant);
+
+/* ============================================================================
+ * Default Plant Provisioning
+ * ============================================================================ */
+
+/**
+ * @brief Provision default plants from ROM to pack storage
+ * 
+ * Copies all 223 built-in plants from ROM database to external flash.
+ * Plants that already exist are skipped. This should be called once
+ * at first boot to populate the unified plant storage.
+ * 
+ * Plant IDs 1-223 are reserved for default plants.
+ * Custom plants should use IDs >= 1000.
+ * 
+ * @return pack_result_t PACK_RESULT_SUCCESS or error
+ */
+pack_result_t pack_storage_provision_defaults(void);
+
+/**
+ * @brief Check if default plants have been provisioned
+ * 
+ * @return true if default plants are available in pack storage
+ */
+bool pack_storage_defaults_provisioned(void);
 
 #ifdef __cplusplus
 }

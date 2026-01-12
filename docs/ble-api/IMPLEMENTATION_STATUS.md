@@ -42,11 +42,11 @@ Legend: R=Read, W=Write, N=Notify, F=Custom fragmentation (4B header), H=Unified
 
 | # | Caracteristica | Struct cod | Proprietati | Dimensiune | Observatii |
 | --- | --- | --- | --- | --- | --- |
-| 30 | Custom Soil Configuration | custom_soil_config_data | R/W/N | 76 B | Per-channel custom soil |
+| 30 | Custom Soil Configuration | custom_soil_config_data | R/W/N | 70 B | Per-channel custom soil |
 | 31 | Soil Moisture Configuration | soil_moisture_config_data | R/W/N | 8 B | Global + per-channel override |
 | 32 | Config Reset | reset_response | R/N | Var. | Configuration reset ops |
 | 33 | Config Status | status_response | R/W/N | Var. | Configuration completeness |
-| 34 | Interval Mode Configuration | interval_mode_config_data | R/W/N | 16 B | Cycle & Soak config |
+| 34 | Interval Mode Configuration | interval_mode_config_data | R/W/N | 17 B | Cycle & Soak config |
 
 ## Total: 34 characteristics (29 Irrigation Service + 5 Custom Configuration Service)
 

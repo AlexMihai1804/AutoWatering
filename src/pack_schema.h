@@ -137,6 +137,11 @@ typedef struct __attribute__((packed)) {
     /* Irrigation */
     uint8_t typ_irrig_method_id; /**< Typical irrigation method ID */
     
+    /* User-adjustable parameters (for unified system - no separate custom_plant struct) */
+    uint16_t water_need_factor_x100; /**< Water need multiplier (10-500 = 0.1-5.0, default 100) */
+    uint8_t irrigation_freq_days;    /**< Recommended irrigation frequency in days (1-30, default 3) */
+    uint8_t prefer_area_based;       /**< 1 = area-based (m²), 0 = plant count based */
+    
 } pack_plant_v1_t;
 
 #define PACK_PLANT_V1_EXPECTED_SIZE sizeof(pack_plant_v1_t)
@@ -236,6 +241,7 @@ typedef enum {
 #define PACK_PLANT_PLANT_SPACING_M(p) ((p)->spacing_plant_mm / 1000.0f)
 #define PACK_PLANT_DENSITY(p) ((p)->density_x100 / 100.0f)
 #define PACK_PLANT_CANOPY_MAX(p) ((p)->canopy_max_x1000 / 1000.0f)
+#define PACK_PLANT_WATER_FACTOR(p) ((p)->water_need_factor_x100 / 100.0f)
 
 #ifdef __cplusplus
 }

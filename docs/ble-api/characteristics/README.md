@@ -19,8 +19,8 @@ See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fr
 | #  | Characteristic                                                    | UUID | Size | Properties | Purpose                                          |
 | -- | ----------------------------------------------------------------- | ---- | ---- | ---------- | ------------------------------------------------ |
 | 4  | **[Channel Configuration](04-channel-configuration.md)**          | def4 | 76B  | R/W/N      | Channel setup (fragmented header types 1/2/3)    |
-| 5  | **[Schedule Configuration](05-schedule-configuration.md)**        | def5 | 9B   | R/W/N      | Watering schedules                               |
-| 6  | **[System Configuration](06-system-configuration.md)**            | def6 | 67B  | R/W/N      | System + master valve + sensor (long write)      |
+| 5  | **[Schedule Configuration](05-schedule-configuration.md)**        | def5 | 12B  | R/W/N      | Watering schedules (extended with solar timing)  |
+| 6  | **[System Configuration](06-system-configuration.md)**            | def6 | 56B  | R/W/N      | System + master valve + sensor (long write)      |
 
 ### Management Characteristics
 
@@ -46,7 +46,7 @@ See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fr
 | 14 | **[Growing Environment](14-growing-environment.md)**              | defe | 71B  | R/W/N      | Enhanced plant config (fragmented 2/3)                           |
 | 15 | **[Auto Calc Status](15-auto-calc-status.md)**                    | de00 | 64B  | R/W/N      | Auto irrigation calc (Notify = 8B header + 64B payload)          |
 | 16 | **[Current Task Status](16-current-task-status.md)**              | deff | 21B  | R/W/N      | Active task progress                                             |
-| 17 | **[Timezone Configuration](17-timezone-configuration.md)**        | 6793 | 16B  | R/W/N      | Timezone & DST                                                   |
+| 17 | **[Timezone Configuration](17-timezone-configuration.md)**        | 6793 | 11B  | R/W/N      | Timezone & DST                                                   |
 
 ### Environmental & Compensation Characteristics
 
@@ -58,9 +58,9 @@ See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fr
 | 21 | **[Environmental Data](21-environmental-data.md)**                | de15 | 24B   | R/N        | BME280 snapshot                                 |
 | 22 | **[Environmental History](22-environmental-history.md)**          | de16 | Var.  | R/W/N      | Env. history (fragmented)                       |
 | 23 | **[Compensation Status](23-compensation-status.md)**              | de17 | 40B   | R/W/N      | Compensation metrics                            |
-| 24 | **[Rain Integration Status](24-rain-integration-status.md)**      | de18 | 78B   | R/N        | Rain integration snapshot                       |
-| 25 | **[Onboarding Status](25-onboarding-status.md)**                  | de20 | 29B   | R/N        | Onboarding progress                             |
-| 26 | **[Reset Control](26-reset-control.md)**                          | de21 | 16B   | R/W/N      | Controlled resets                               |
+| 24 | **[Onboarding Status](24-onboarding-status.md)**                  | de20 | 33B   | R/N        | Onboarding progress                             |
+| 25 | **[Reset Control](25-reset-control.md)**                          | de21 | 16B   | R/W/N      | Controlled resets                               |
+| 26 | **[Rain Integration Status](26-rain-integration-status.md)**      | de18 | 78B   | R/N        | Rain integration snapshot                       |
 
 ### Extension Characteristics
 
@@ -74,11 +74,11 @@ See `../GLOSSARY.md` for standardized terminology (e.g., "Unified 8B header", fr
 
 | #  | Characteristic                                                             | UUID (full)                          | Size | Properties | Purpose                                                             |
 | -- | -------------------------------------------------------------------------- | ------------------------------------ | ---- | ---------- | ------------------------------------------------------------------- |
-| 30 | **[Custom Soil Configuration](30-custom-soil-configuration.md)**           | 12345678-1234-5678-9abc-def123456781 | 76B  | R/W/N      | Create/update/delete per-channel custom soil                        |
-| 31 | **[Soil Moisture Configuration](31-soil-moisture-configuration.md)**       | 12345678-1234-5678-9abc-def123456782 | 8B   | R/W/N      | Configure antecedent soil moisture (global + per-channel override)  |
-| 32 | **[Config Reset](32-config-reset.md)**                                     | 12345678-1234-5678-9abc-def123456783 | Var. | R/N        | Configuration reset operations (read-only + notify)                 |
-| 33 | **[Config Status](33-config-status.md)**                                   | 12345678-1234-5678-9abc-def123456784 | Var. | R/W/N      | Configuration status and completeness                               |
-| 34 | **[Interval Mode Configuration](34-interval-mode-configuration.md)**       | 12345678-1234-5678-9abc-def123456785 | 16B  | R/W/N      | Cycle & Soak / interval watering config                             |
+| 30 | **[Custom Soil Configuration](30-custom-soil-configuration.md)**           | 12345678-1234-5678-9abc-def123456781 | 70B  | R/W/N      | Create/update/delete per-channel custom soil                        |
+| 31 | **[Soil Moisture Configuration](31-soil-moisture-configuration.md)**       | 12345678-1234-5678-9abc-def123456784 | 8B   | R/W/N      | Configure antecedent soil moisture (global + per-channel override)  |
+| 32 | **[Config Reset](32-config-reset.md)**                                     | 12345678-1234-5678-9abc-def123456782 | Var. | R/N        | Configuration reset operations (read-only + notify)                 |
+| 33 | **[Config Status](33-config-status.md)**                                   | 12345678-1234-5678-9abc-def123456783 | Var. | R/W/N      | Configuration status and completeness                               |
+| 34 | **[Interval Mode Configuration](34-interval-mode-configuration.md)**       | 12345678-1234-5678-9abc-def123456785 | 17B  | R/W/N      | Cycle & Soak / interval watering config                             |
 
 **Legend**: R=Read, W=Write, N=Notify
 
@@ -120,9 +120,9 @@ To track system performance:
 3. **[Diagnostics](13-diagnostics.md)** - Monitor system health
 4. **[Alarm Status](10-alarm-status.md)** - Check for system alerts
 5. **[Hydraulic Status](29-hydraulic-status.md)** - Review hydraulic profiles and lock state
-6. **[Environmental Data](23-environmental-data.md)** - Monitor real-time environmental conditions
-7. **[Environmental History](24-environmental-history.md)** - Access historical environmental data
-8. **[Compensation Status](25-compensation-status.md)** - View environmental compensation calculations
+6. **[Environmental Data](21-environmental-data.md)** - Monitor real-time environmental conditions
+7. **[Environmental History](22-environmental-history.md)** - Access historical environmental data
+8. **[Compensation Status](23-compensation-status.md)** - View environmental compensation calculations
 
 ### Calibration & Setup
 

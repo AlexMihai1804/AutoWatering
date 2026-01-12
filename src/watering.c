@@ -20,6 +20,7 @@
 #include "onboarding_state.h"          /* Onboarding state management */
 #include "timezone.h"                  /* For UTC timestamping */
 #include "nvs_config.h"                /* For lock persistence */
+#include "pack_storage.h"              /* Pack storage for unified plant system */
 
 #ifdef CONFIG_BT
 int bt_irrigation_hydraulic_status_notify(uint8_t channel_id);
@@ -724,7 +725,7 @@ watering_error_t watering_validate_event_config(const watering_event_t *event) {
 /**
  * @brief Check if a channel has valid configuration for AUTO (FAO-56) scheduling mode
  * 
- * AUTO mode requires plant_db_index, soil_db_index, and planting_date_unix to be configured.
+ * AUTO mode requires plant_id, soil_db_index, and planting_date_unix to be configured.
  * This function validates that all prerequisites are met before enabling SCHEDULE_AUTO.
  * 
  * @param channel Pointer to the watering channel to validate
@@ -736,13 +737,8 @@ bool watering_channel_auto_mode_valid(const watering_channel_t *channel)
         return false;
     }
 
-    /* Plant is valid if either:
-     * 1. custom_plant_id > 0 (custom plant from pack storage), or
-     * 2. plant_db_index < UINT16_MAX (ROM database plant)
-     */
-    bool has_custom_plant = (channel->custom_plant_id > 0);
-    bool has_rom_plant = (channel->plant_db_index != UINT16_MAX);
-    bool missing_plant = !(has_custom_plant || has_rom_plant);
+    /* Plant is valid if plant_id > 0 (all plants in pack storage) */
+    bool missing_plant = (channel->plant_id == 0);
     
     bool missing_soil = (channel->soil_db_index == UINT8_MAX);
     bool missing_date = (channel->planting_date_unix == 0);
@@ -766,10 +762,9 @@ bool watering_channel_auto_mode_valid(const watering_channel_t *channel)
         if (channel_id < WATERING_CHANNELS_COUNT) {
             static uint32_t last_log_ms[WATERING_CHANNELS_COUNT];
             if (now_ms - last_log_ms[channel_id] > 60000U) {
-                LOG_WRN("AUTO config missing ch=%u: plant_rom=%u custom=%u soil=%u date=%u coverage=%u area=%.2f count=%u use_area=%u",
+                LOG_WRN("AUTO config missing ch=%u: plant_id=%u soil=%u date=%u coverage=%u area=%.2f count=%u use_area=%u",
                         channel_id,
-                        channel->plant_db_index,
-                        channel->custom_plant_id,
+                        channel->plant_id,
                         channel->soil_db_index,
                         channel->planting_date_unix,
                         missing_coverage ? 1U : 0U,
@@ -781,9 +776,8 @@ bool watering_channel_auto_mode_valid(const watering_channel_t *channel)
         } else {
             static uint32_t last_unknown_log_ms;
             if (now_ms - last_unknown_log_ms > 60000U) {
-                LOG_WRN("AUTO config missing for unknown channel: plant_rom=%u custom=%u soil=%u date=%u coverage=%u area=%.2f count=%u use_area=%u",
-                        channel->plant_db_index,
-                        channel->custom_plant_id,
+                LOG_WRN("AUTO config missing for unknown channel: plant_id=%u soil=%u date=%u coverage=%u area=%.2f count=%u use_area=%u",
+                        channel->plant_id,
                         channel->soil_db_index,
                         channel->planting_date_unix,
                         missing_coverage ? 1U : 0U,
@@ -1037,52 +1031,7 @@ watering_error_t watering_get_sun_percentage(uint8_t channel_id, uint8_t *sun_pe
     return WATERING_SUCCESS;
 }
 
-/**
- * @brief Set custom plant configuration for a channel
- */
-watering_error_t watering_set_custom_plant(uint8_t channel_id, const custom_plant_config_t *custom_config) {
-    if (channel_id >= WATERING_CHANNELS_COUNT || custom_config == NULL) {
-        return WATERING_ERROR_INVALID_PARAM;
-    }
-    
-    // Validate water need factor range
-    if (custom_config->water_need_factor < 0.1f || custom_config->water_need_factor > 5.0f) {
-        return WATERING_ERROR_INVALID_PARAM;
-    }
-    
-    // Validate irrigation frequency
-    if (custom_config->irrigation_freq == 0 || custom_config->irrigation_freq > 30) {
-        return WATERING_ERROR_INVALID_PARAM;
-    }
-    
-    // Copy the configuration
-    watering_channels[channel_id].custom_plant = *custom_config;
-    
-    // Ensure custom name is null-terminated
-    watering_channels[channel_id].custom_plant.custom_name[31] = '\0';
-    
-    // Save configuration changes
-    watering_save_config();
-    
-    // Update onboarding flag - water need factor has been set
-    onboarding_update_channel_flag(channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
-    
-    printk("Channel %d custom plant configured: %s (factor: %.1f)\n", 
-           channel_id, custom_config->custom_name, (double)custom_config->water_need_factor);
-    return WATERING_SUCCESS;
-}
-
-/**
- * @brief Get custom plant configuration for a channel
- */
-watering_error_t watering_get_custom_plant(uint8_t channel_id, custom_plant_config_t *custom_config) {
-    if (channel_id >= WATERING_CHANNELS_COUNT || custom_config == NULL) {
-        return WATERING_ERROR_INVALID_PARAM;
-    }
-    
-    *custom_config = watering_channels[channel_id].custom_plant;
-    return WATERING_SUCCESS;
-}
+/* watering_set_custom_plant and watering_get_custom_plant removed - use pack storage directly */
 
 /**
  * @brief Get the recommended coverage measurement type based on irrigation method
@@ -1107,52 +1056,28 @@ bool watering_recommend_area_based_measurement(irrigation_method_t irrigation_me
 }
 
 /**
- * @brief Get water need factor for a specific plant type
+ * @brief Get water need factor for a channel from pack storage
  */
-float watering_get_plant_water_factor(plant_type_t plant_type, const custom_plant_config_t *custom_config) {
-    // If custom configuration is provided, use it
-    if (custom_config != NULL) {
-        if (custom_config->custom_name[0] != '\0') {
-            // Try to find the specific species in the database
-            const plant_full_data_t *plant_data = plant_db_find_species(custom_config->custom_name);
-            if (plant_data != NULL) {
-                // Use mid-season coefficient as the base water factor
-                return plant_db_get_crop_coefficient(plant_data, 1);
-            }
-        }
-        // If species not found, use the custom water factor
-        return custom_config->water_need_factor;
+float watering_get_plant_water_factor(uint8_t channel_id) {
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return 1.0f;
     }
     
-    // Default factors based on plant type categories
-    switch (plant_type) {
-        case PLANT_TYPE_VEGETABLES:
-            return 1.2f;  // Higher water needs for vegetables
-            
-        case PLANT_TYPE_HERBS:
-            return 0.8f;  // Moderate water needs for herbs
-            
-        case PLANT_TYPE_FLOWERS:
-            return 1.0f;  // Standard water needs for flowers
-            
-        case PLANT_TYPE_SHRUBS:
-            return 0.7f;  // Lower water needs for established shrubs
-            
-        case PLANT_TYPE_TREES:
-            return 0.9f;  // Moderate water needs for trees
-            
-        case PLANT_TYPE_LAWN:
-            return 1.1f;  // Regular watering for lawn
-            
-        case PLANT_TYPE_SUCCULENTS:
-            return 0.3f;  // Very low water needs for succulents
-            
-        case PLANT_TYPE_OTHER:
-            return 1.0f;  // Default factor
-            
-        default:
-            return 1.0f;  // Default factor for unknown types
+    watering_channel_t *channel = &watering_channels[channel_id];
+    
+    /* Get plant from pack storage */
+    if (channel->plant_id == 0) {
+        return 1.0f;  /* No plant configured */
     }
+    
+    pack_plant_v1_t plant;
+    pack_result_t res = pack_storage_get_plant(channel->plant_id, &plant);
+    if (res != PACK_RESULT_SUCCESS) {
+        return 1.0f;  /* Plant not found, use default */
+    }
+    
+    /* Return water_need_factor from pack storage */
+    return PACK_PLANT_WATER_FACTOR(&plant);
 }
 
 /**
@@ -1171,23 +1096,17 @@ watering_error_t watering_get_channel_environment(uint8_t channel_id,
                                                  soil_type_t *soil_type,
                                                  irrigation_method_t *irrigation_method,
                                                  channel_coverage_t *coverage,
-                                                 uint8_t *sun_percentage,
-                                                 custom_plant_config_t *custom_config) {
+                                                 uint8_t *sun_percentage) {
     if (channel_id >= WATERING_CHANNELS_COUNT) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
     watering_channel_t *channel = &watering_channels[channel_id];
-    const soil_enhanced_data_t *soil = fao56_get_channel_soil(channel_id, channel);
-    if (!soil) {
-        return WATERING_ERROR_INVALID_DATA;
-    }
     
     if (plant_type) *plant_type = channel->plant_info.main_type;
     if (soil_type) *soil_type = channel->soil_type;
     if (irrigation_method) *irrigation_method = channel->irrigation_method;
     if (coverage) {
-        // Get coverage information
         coverage->use_area = channel->use_area_based;
         if (coverage->use_area) {
             coverage->area.area_m2 = channel->coverage.area_m2;
@@ -1196,7 +1115,6 @@ watering_error_t watering_get_channel_environment(uint8_t channel_id,
         }
     }
     if (sun_percentage) *sun_percentage = channel->sun_percentage;
-    if (custom_config) *custom_config = channel->custom_plant;
     
     return WATERING_SUCCESS;
 }
@@ -1209,8 +1127,7 @@ watering_error_t watering_set_channel_environment(uint8_t channel_id,
                                                  soil_type_t soil_type,
                                                  irrigation_method_t irrigation_method,
                                                  const channel_coverage_t *coverage,
-                                                 uint8_t sun_percentage,
-                                                 const custom_plant_config_t *custom_config) {
+                                                 uint8_t sun_percentage) {
     if (channel_id >= WATERING_CHANNELS_COUNT) {
         return WATERING_ERROR_INVALID_PARAM;
     }
@@ -1225,11 +1142,10 @@ watering_error_t watering_set_channel_environment(uint8_t channel_id,
     
     watering_channel_t *channel = &watering_channels[channel_id];
     
-    // Set all environment parameters
-    // Legacy plant_type assignment removed
+    /* Set all environment parameters - plant comes from pack storage via plant_id */
+    channel->plant_info.main_type = plant_type;
     channel->soil_type = soil_type;
     channel->irrigation_method = irrigation_method;
-    // Set coverage information
     channel->use_area_based = coverage->use_area;
     if (coverage->use_area) {
         channel->coverage.area_m2 = coverage->area.area_m2;
@@ -1238,32 +1154,9 @@ watering_error_t watering_set_channel_environment(uint8_t channel_id,
     }
     channel->sun_percentage = sun_percentage;
     
-    // Set custom plant config if provided and plant type is OTHER
-    if (plant_type == PLANT_TYPE_OTHER && custom_config != NULL) {
-        // Validate custom config
-        if (custom_config->water_need_factor < 0.1f || custom_config->water_need_factor > 5.0f) {
-            return WATERING_ERROR_INVALID_PARAM;
-        }
-        if (custom_config->irrigation_freq == 0 || custom_config->irrigation_freq > 30) {
-            return WATERING_ERROR_INVALID_PARAM;
-        }
-        
-        channel->custom_plant = *custom_config;
-        // Ensure custom name is null-terminated
-        channel->custom_plant.custom_name[31] = '\0';
-    } else if (plant_type == PLANT_TYPE_OTHER) {
-        // Clear custom config if plant type is OTHER but no config provided
-        memset(&channel->custom_plant, 0, sizeof(custom_plant_config_t));
-        strncpy(channel->custom_plant.custom_name, "Custom Plant", 31);
-        channel->custom_plant.water_need_factor = 1.0f;
-        channel->custom_plant.irrigation_freq = 3;
-        channel->custom_plant.prefer_area_based = watering_recommend_area_based_measurement(irrigation_method);
-    }
-    
-    // Save configuration changes
     watering_save_config();
     
-    printk("Channel %d environment configured: plant=%d, soil=%d, irrigation=%d, sun=%d%%\n",
+    printk("Channel %d environment configured: plant_type=%d, soil=%d, irrigation=%d, sun=%d%%\n",
            channel_id, plant_type, soil_type, irrigation_method, sun_percentage);
     
     return WATERING_SUCCESS;

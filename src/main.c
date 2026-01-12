@@ -599,6 +599,17 @@ int main(void) {
         printk("Warning: Pack storage initialization failed: %d\n", pack_ret);
     } else {
         printk("Pack storage initialized successfully\n");
+        
+        // Provision default plants from ROM to pack storage (first boot only)
+        if (!pack_storage_defaults_provisioned()) {
+            printk("Provisioning default plants to pack storage...\n");
+            pack_ret = pack_storage_provision_defaults();
+            if (pack_ret != PACK_RESULT_SUCCESS) {
+                printk("Warning: Default plant provisioning failed: %d\n", pack_ret);
+            } else {
+                printk("Default plants provisioned successfully (223 species)\n");
+            }
+        }
     }
 
     // Initialize environmental history

@@ -149,11 +149,10 @@ typedef struct {
  * the basic channel configuration with scientific irrigation capabilities.
  */
 typedef struct {
-    /* Enhanced growing environment configuration */
-    uint16_t plant_db_index;           /**< Index into plant_full_database (0-based, UINT16_MAX = not set) */
+    /* Growing environment configuration - unified pack storage */
+    uint16_t plant_id;                 /**< Plant ID in pack storage (0=not set, 1+=valid plant) */
     uint8_t soil_db_index;             /**< Index into soil_enhanced_database (0-based, UINT8_MAX = not set) */
     uint8_t irrigation_method_index;   /**< Index into irrigation_methods_database (0-based, UINT8_MAX = not set) */
-    uint16_t custom_plant_id;          /**< Custom plant ID from pack storage (0 = use plant_db_index) */
     
     /* Coverage specification */
     bool use_area_based;               /**< True = area-based calculation, false = plant count-based */
@@ -246,10 +245,9 @@ typedef struct {
 
 /* Default enhanced channel configuration */
 #define DEFAULT_ENHANCED_CHANNEL_CONFIG { \
-    .plant_db_index = UINT16_MAX,         /* Not set */ \
+    .plant_id = 0,                        /* Not set (0=none, 1+=valid plant) */ \
     .soil_db_index = UINT8_MAX,           /* Not set */ \
     .irrigation_method_index = UINT8_MAX, /* Not set */ \
-    .custom_plant_id = 0,                 /* No custom plant from pack storage */ \
     .use_area_based = true,               /* Default to area-based */ \
     .coverage = { .area_m2 = 1.0f },      /* 1 square meter */ \
     .auto_mode = 0,                       /* WATERING_BY_DURATION (disabled) */ \

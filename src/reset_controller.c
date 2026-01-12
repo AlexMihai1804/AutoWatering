@@ -380,17 +380,12 @@ static void reset_controller_build_default_channel(uint8_t channel_id,
     out_channel->last_auto_check_julian_day = 0;
     out_channel->auto_check_ran_today = false;
 
-    /* Database indexes: sentinel values mean "not configured" */
-    out_channel->plant_db_index = UINT16_MAX;
-    out_channel->custom_plant_id = 0;  /* No custom plant from pack storage */
+    /* Database indexes: plant_id 0 = not configured, 1+ = plant in pack storage */
+    out_channel->plant_id = 0;
     out_channel->soil_db_index = UINT8_MAX;
     out_channel->irrigation_method_index = UINT8_MAX;
 
-    /* Custom plant defaults */
-    memset(&out_channel->custom_plant, 0, sizeof(out_channel->custom_plant));
-    out_channel->custom_plant.water_need_factor = 1.0f;
-    out_channel->custom_plant.irrigation_freq = 3;
-    out_channel->custom_plant.prefer_area_based = true;
+    /* custom_plant removed - unified system uses pack storage via plant_id */
 
     /* Compensation defaults */
     out_channel->rain_compensation.enabled = false;

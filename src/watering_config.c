@@ -120,15 +120,11 @@ watering_error_t load_default_config(void) {
         watering_channels[i].last_auto_check_julian_day = 0;
         watering_channels[i].auto_check_ran_today = false;
         
-        // Initialize custom plant configuration
-        memset(&watering_channels[i].custom_plant, 0, sizeof(watering_channels[i].custom_plant));
-        watering_channels[i].custom_plant.water_need_factor = 1.0f;
-        watering_channels[i].custom_plant.irrigation_freq = 3;
-        watering_channels[i].custom_plant.prefer_area_based = true;
+        /* custom_plant removed - unified system uses pack storage via plant_id */
         
         // Initialize database index fields to sentinel values (not configured)
-        // These sentinel values prevent onboarding flags from being set during system config save
-        watering_channels[i].plant_db_index = UINT16_MAX;
+        // plant_id: 0 = not set, 1+ = plant in pack storage
+        watering_channels[i].plant_id = 0;
         watering_channels[i].soil_db_index = UINT8_MAX;
         watering_channels[i].irrigation_method_index = UINT8_MAX;
 

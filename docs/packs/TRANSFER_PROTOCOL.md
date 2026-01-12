@@ -14,11 +14,11 @@ The Pack Transfer Protocol enables reliable transfer of large plant packs (multi
 | Scenario | Single Plant | Pack Transfer |
 |----------|--------------|---------------|
 | Plants | 1 | 1-64 |
-| Size | 120 bytes | Up to 7,680 bytes |
+| Size | 156 bytes | Up to 9,984 bytes |
 | Writes | 1 | 1 START + N DATA + 1 COMMIT |
 | Use case | Quick install | Bulk pack install |
 
-Single-plant install via Pack Plant characteristic works for 1 plant (120 bytes). For packs with multiple plants, the transfer protocol provides:
+Single-plant install via Pack Plant characteristic works for 1 plant (156 bytes). For packs with multiple plants, the transfer protocol provides:
 
 - **Chunking**: Works with any MTU
 - **Progress**: Real-time transfer progress
@@ -113,8 +113,8 @@ typedef struct __attribute__((packed)) {
 
 **Constraints:**
 - `plant_count` must be 1-64
-- `total_size` must equal `plant_count × 120`
-- `total_size` must be ≤ 7,680 bytes
+- `total_size` must equal `plant_count × 156`
+- `total_size` must be ≤ 9,984 bytes
 
 **Example (hex):**
 ```
@@ -122,7 +122,7 @@ typedef struct __attribute__((packed)) {
 01 00                       // pack_id = 1
 01 00                       // version = 1
 05 00                       // plant_count = 5
-58 02 00 00                 // total_size = 600 (5 × 120)
+0C 03 00 00                 // total_size = 780 (5 × 156)
 AB CD EF 12                 // crc32 = 0x12EFCDAB
 56 65 67 65 74 61 62 6C 65 73 00 ...  // "Vegetables"
 ```
@@ -263,8 +263,8 @@ typedef struct __attribute__((packed)) {
 01                          // state = RECEIVING
 32                          // progress_pct = 50%
 01 00                       // pack_id = 1
-2C 01 00 00                 // bytes_received = 300
-58 02 00 00                 // bytes_expected = 600
+86 01 00 00                 // bytes_received = 390
+0C 03 00 00                 // bytes_expected = 780
 00                          // last_error = SUCCESS
 00 00 00                    // reserved
 ```
@@ -276,7 +276,7 @@ typedef struct __attribute__((packed)) {
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | `PACK_TRANSFER_MAX_PLANTS` | 64 | Maximum plants per transfer |
-| `PACK_TRANSFER_BUFFER_SIZE` | 7,680 | 64 × 120 bytes |
+| `PACK_TRANSFER_BUFFER_SIZE` | 9,984 | 64 × 156 bytes |
 | `PACK_TRANSFER_CHUNK_SIZE` | 240 | Recommended chunk (MTU-7) |
 | `PACK_TRANSFER_TIMEOUT_SEC` | 120 | Inactivity timeout |
 
@@ -290,7 +290,7 @@ typedef struct __attribute__((packed)) {
 - pack_id: 1
 - version: 1
 - plant_count: 5
-- total_size: 600 bytes (5 × 120)
+- total_size: 780 bytes (5 × 156)
 - CRC32: 0x12EFCDAB
 
 ### Step 1: Calculate CRC32
@@ -314,7 +314,7 @@ crc = zlib.crc32(plants_data) & 0xFFFFFFFF
 
 **Expected notification:**
 ```hex
-01 00 01 00 00 00 00 00 58 02 00 00 00 00 00 00
+01 00 01 00 00 00 00 00 0C 03 00 00 00 00 00 00
 ```
 (state=RECEIVING, progress=0%, pack_id=1)
 
@@ -327,9 +327,9 @@ crc = zlib.crc32(plants_data) & 0xFFFFFFFF
 
 **Notification:**
 ```hex
-01 28 01 00 F0 00 00 00 58 02 00 00 00 00 00 00
+01 1E 01 00 F0 00 00 00 0C 03 00 00 00 00 00 00
 ```
-(state=RECEIVING, progress=40%, bytes=240/600)
+(state=RECEIVING, progress=30%, bytes=240/780)
 
 **Chunk 2 (offset 240, 240 bytes):**
 ```hex
@@ -338,20 +338,31 @@ crc = zlib.crc32(plants_data) & 0xFFFFFFFF
 
 **Notification:**
 ```hex
-01 50 01 00 E0 01 00 00 58 02 00 00 00 00 00 00
+01 3D 01 00 E0 01 00 00 0C 03 00 00 00 00 00 00
 ```
-(progress=80%, bytes=480/600)
+(progress=61%, bytes=480/780)
 
-**Chunk 3 (offset 480, 120 bytes):**
+**Chunk 3 (offset 480, 240 bytes):**
 ```hex
-02 E0 01 00 00 78 00 [120 bytes plant data]
+02 E0 01 00 00 F0 00 [240 bytes plant data]
 ```
 
 **Notification:**
 ```hex
-01 64 01 00 58 02 00 00 58 02 00 00 00 00 00 00
+01 5C 01 00 D0 02 00 00 0C 03 00 00 00 00 00 00
 ```
-(progress=100%, bytes=600/600)
+(progress=92%, bytes=720/780)
+
+**Chunk 4 (offset 720, 60 bytes - final chunk):**
+```hex
+02 D0 02 00 00 3C 00 [60 bytes plant data]
+```
+
+**Notification:**
+```hex
+01 64 01 00 0C 03 00 00 0C 03 00 00 00 00 00 00
+```
+(progress=100%, bytes=780/780)
 
 ### Step 4: Send COMMIT
 
@@ -414,7 +425,7 @@ If some plants fail to install during COMMIT:
 static uint8_t transfer_buffer[PACK_TRANSFER_BUFFER_SIZE] __attribute__((aligned(4)));
 ```
 
-7,680 bytes allocated statically to avoid heap fragmentation.
+9,984 bytes allocated statically to avoid heap fragmentation (64 plants × 156 bytes).
 
 ### CRC32 Calculation
 

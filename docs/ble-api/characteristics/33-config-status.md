@@ -10,7 +10,7 @@ Provides configuration completeness status and triggers configuration operations
 
 | Property | Value |
 | --- | --- |
-| UUID | `12345678-1234-5678-9abc-def123456784` |
+| UUID | `12345678-1234-5678-9abc-def123456783` |
 | Size | Variable |
 | Properties | READ, WRITE, NOTIFY |
 | Service | Custom Configuration Service |

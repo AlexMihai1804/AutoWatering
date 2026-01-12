@@ -7,10 +7,10 @@ This characteristic exposes the **ON/OFF timing** parameters used by the firmwar
 ## Operation Summary
 | Operation | Payload | Size | Notes |
 |-----------|---------|------|------|
-| Read | `struct interval_mode_config_data` | 16 B | Returns configuration for the last selected channel (defaults to channel 0) |
+| Read | `struct interval_mode_config_data` | 17 B | Returns configuration for the last selected channel (defaults to channel 0) |
 | Write | Channel select byte | 1 B | Sets cached channel context for subsequent reads |
-| Write | `struct interval_mode_config_data` | 16 B | Updates per-channel interval timing + enable flag |
-| Notify | `struct interval_mode_config_data` | 16 B | Emitted after a successful config write |
+| Write | `struct interval_mode_config_data` | 17 B | Updates per-channel interval timing + enable flag |
+| Notify | `struct interval_mode_config_data` | 17 B | Emitted after a successful config write |
 
 ## Characteristic Metadata
 | Item | Value |
@@ -19,7 +19,7 @@ This characteristic exposes the **ON/OFF timing** parameters used by the firmwar
 | UUID | `12345678-1234-5678-9abc-def123456785` |
 | Properties | Read, Write, Notify |
 | Permissions | Read/Write require encryption |
-| Payload Size | 16 bytes (`sizeof(struct interval_mode_config_data)`) |
+| Payload Size | 17 bytes (`sizeof(struct interval_mode_config_data)`) |
 
 ## Payload Layout (`struct interval_mode_config_data`)
 Little-endian encoding for multi-byte fields.
@@ -41,7 +41,7 @@ Little-endian encoding for multi-byte fields.
   1. Write 1 byte: `channel_id`.
   2. Read the characteristic.
 - To **set timings**:
-  - Write the full 16-byte struct with desired `enabled` and timing fields.
+  - Write the full 17-byte struct with desired `enabled` and timing fields.
 - Disabling interval mode (`enabled=0`) keeps durations stored, but prevents interval execution.
 
 ## Firmware References

@@ -26,7 +26,7 @@ Properties come directly from the `BT_GATT_CHARACTERISTIC` declarations; sizes m
 | 2 | Flow Sensor | `12345678-1234-5678-1234-56789abcdef2` | 4 bytes | R / N | Unsigned 32-bit pulse count per second with notifications when flow changes. |
 | 3 | System Status | `12345678-1234-5678-1234-56789abcdef3` | 1 byte | R / N | Encoded health flags (idle, no flow, unexpected flow, RTC error, etc.). |
 | 4 | Channel Configuration | `12345678-1234-5678-1234-56789abcdef4` | 76 bytes | R / W / N | Fragmented write (4-byte header). First byte selects channel when issuing short writes. |
-| 5 | Schedule Configuration | `12345678-1234-5678-1234-56789abcdef5` | 9 bytes | R / W / N | Daily or periodic schedules. Initial one-byte write selects channel. |
+| 5 | Schedule Configuration | `12345678-1234-5678-1234-56789abcdef5` | 12 bytes | R / W / N | Daily, periodic, or auto schedules with solar timing. Initial one-byte write selects channel. |
 | 6 | System Configuration | `12345678-1234-5678-1234-56789abcdef6` | 56 bytes | R / W / N | Enhanced system block with master valve, sensor cadence, and global compensation fields. |
 | 7 | Task Queue | `12345678-1234-5678-1234-56789abcdef7` | 9 bytes | R / W / N | Queue depth, active task metadata, and control commands. |
 | 8 | Statistics | `12345678-1234-5678-1234-56789abcdef8` | 15 bytes | R / W / N | Per-channel totals (ml, sessions, timestamps). |
@@ -38,16 +38,16 @@ Properties come directly from the `BT_GATT_CHARACTERISTIC` declarations; sizes m
 | 14 | Growing Environment | `12345678-1234-5678-1234-56789abcdefe` | 71 bytes | R / W / N | Plant DB linkage, eco/quality mode, and volume limits. Fragment types 2 and 3 supported. |
 | 15 | Auto Calc Status | `12345678-1234-5678-1234-56789abcde00` | 64 bytes | R / W / N | Result of FAO-56 calculations, including ET0, deficit, cycle planning, and MAD status. |
 | 16 | Current Task Status | `12345678-1234-5678-1234-56789abcdeff` | 21 bytes | R / W / N | Active watering task snapshot (elapsed time, volume, state). Writes allow channel selection. |
-| 17 | Timezone Configuration | `12345678-1234-5678-9abc-def123456793` | 16 bytes | R / W / N | Packed `timezone_config_t` (UTC offset plus DST rules). |
+| 17 | Timezone Configuration | `12345678-1234-5678-9abc-def123456793` | 11 bytes | R / W / N | Packed `timezone_config_t` (UTC offset plus DST rules). |
 | 18 | Rain Sensor Configuration | `12345678-1234-5678-1234-56789abcde12` | 18 bytes | R / W / N | mm-per-pulse calibration, debounce, integration toggle. |
 | 19 | Rain Sensor Data | `12345678-1234-5678-1234-56789abcde13` | 24 bytes | R / N | Live rainfall totals, hourly rate, and sensor quality flags. |
 | 20 | Rain History Control | `12345678-1234-5678-1234-56789abcde14` | command header 16 bytes | R / W / N | Queries for aggregated rain history. Responses use the unified fragment header. |
 | 21 | Environmental Data | `12345678-1234-5678-1234-56789abcde15` | 24 bytes | R / N | BME280 snapshot (temperature, humidity, pressure, data quality). |
 | 22 | Environmental History | `12345678-1234-5678-1234-56789abcde16` | fragment header + payload | R / W / N | Buffered history with the same 8-byte fragment header used by irrigation history. |
 | 23 | Compensation Status | `12345678-1234-5678-1234-56789abcde17` | 40 bytes | R / W / N | Rain and temperature compensation activity, factors, and timestamps per channel. |
-| 24 | Rain Integration Status | `12345678-1234-5678-1234-56789abcde18` | 78 bytes | R / N | Aggregated rain integration metrics, per-channel reduction percentages, storage usage. |
-| 25 | Onboarding Status | `12345678-1234-5678-1234-56789abcde20` | 29 bytes | R / N | Read-only progress flags for onboarding workflows. |
-| 26 | Reset Control | `12345678-1234-5678-1234-56789abcde21` | 16 bytes | R / W / N | Two-step reset interface (code generate + confirmation). Notifies result and refreshed confirmation code. |
+| 24 | Onboarding Status | `12345678-1234-5678-1234-56789abcde20` | 33 bytes | R / N | Read-only progress flags for onboarding workflows. |
+| 25 | Reset Control | `12345678-1234-5678-1234-56789abcde21` | 16 bytes | R / W / N | Two-step reset interface (code generate + confirmation). Notifies result and refreshed confirmation code. |
+| 26 | Rain Integration Status | `12345678-1234-5678-1234-56789abcde18` | 78 bytes | R / N | Aggregated rain integration metrics, per-channel reduction percentages, storage usage. |
 | 27 | Channel Compensation Config | `12345678-1234-5678-1234-56789abcde19` | 44 bytes | R / W / N | Per-channel rain/temp compensation settings. 1-byte write selects channel; 44-byte write updates config. |
 | 28 | Bulk Sync Snapshot | `12345678-1234-5678-1234-56789abcde60` | 60 bytes | R | Single-read aggregate of system state, environmental data, rain totals, compensation status, and channel states. Use at connection to replace multiple queries. |
 | 29 | Hydraulic Status | `12345678-1234-5678-1234-56789abcde22` | 48 bytes | R / W / N | Hydraulic profile, tolerances, lock/anomaly counters, plus global lock snapshot. |
@@ -56,11 +56,11 @@ Properties come directly from the `BT_GATT_CHARACTERISTIC` declarations; sizes m
 
 | # | Characteristic | UUID | Size | Properties | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 30 | Custom Soil Configuration | `12345678-1234-5678-9abc-def123456781` | 76 bytes | R / W / N | Create/update/delete per-channel custom soil |
+| 30 | Custom Soil Configuration | `12345678-1234-5678-9abc-def123456781` | 70 bytes | R / W / N | Create/update/delete per-channel custom soil |
 | 31 | Soil Moisture Configuration | `12345678-1234-5678-9abc-def123456784` | 8 bytes | R / W / N | Configure antecedent soil moisture (global + per-channel) |
 | 32 | Config Reset | `12345678-1234-5678-9abc-def123456782` | Var. | R / N | Configuration reset operations (read-only + notify) |
 | 33 | Config Status | `12345678-1234-5678-9abc-def123456783` | Var. | R / W / N | Configuration status and completeness |
-| 34 | Interval Mode Configuration | `12345678-1234-5678-9abc-def123456785` | 16 bytes | R / W / N | Configure Cycle & Soak ON/OFF durations per-channel |
+| 34 | Interval Mode Configuration | `12345678-1234-5678-9abc-def123456785` | 17 bytes | R / W / N | Configure Cycle & Soak ON/OFF durations per-channel |
 
 Legend: R = Read, W = Write, N = Notify.
 

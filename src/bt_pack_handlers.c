@@ -202,6 +202,7 @@ ssize_t bt_pack_stats_read(struct bt_conn *conn,
         stats_response.free_bytes = stats.free_bytes;
         stats_response.plant_count = stats.plant_count;
         stats_response.pack_count = stats.pack_count;
+        stats_response.change_counter = stats.change_counter;
         stats_response.status = 0;
     } else {
         stats_response.status = 2; /* Error */
@@ -270,7 +271,7 @@ ssize_t bt_pack_plant_write(struct bt_conn *conn,
         return len;
     }
     
-    /* Check for install request (120 bytes = pack_plant_v1_t) */
+    /* Check for install request (156 bytes = pack_plant_v1_t) */
     if (len == sizeof(pack_plant_v1_t)) {
         const pack_plant_v1_t *plant = buf;
         LOG_INF("Pack plant install: id=%u, pack=%u, name=%s",

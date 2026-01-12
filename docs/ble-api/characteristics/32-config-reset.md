@@ -10,7 +10,7 @@ Provides the ability to reset configuration data to factory defaults or clear sp
 
 | Property | Value |
 | --- | --- |
-| UUID | `12345678-1234-5678-9abc-def123456783` |
+| UUID | `12345678-1234-5678-9abc-def123456782` |
 | Size | Variable |
 | Properties | READ, NOTIFY |
 | Service | Custom Configuration Service |

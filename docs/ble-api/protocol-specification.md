@@ -66,11 +66,11 @@ Condensed list - full per-characteristic semantics in `characteristics/*.md` (al
 
 | # | Characteristic | UUID Suffix | Nominal Size* | R | W | N | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| 30 | Custom Soil Configuration | 6781 | 76B | Y | Y | Y | Per-channel custom soil |
-| 31 | Soil Moisture Configuration | 6782 | 8B | Y | Y | Y | Global + per-channel override |
-| 32 | Config Reset | 6783 | Var. | Y | - | Y | Configuration reset ops |
-| 33 | Config Status | 6784 | Var. | Y | Y | Y | Configuration completeness |
-| 34 | Interval Mode Configuration | 6785 | 16B | Y | Y | Y | Cycle & Soak config |
+| 30 | Custom Soil Configuration | 6781 | 70B | Y | Y | Y | Per-channel custom soil |
+| 31 | Soil Moisture Configuration | 6784 | 8B | Y | Y | Y | Global + per-channel override |
+| 32 | Config Reset | 6782 | Var. | Y | - | Y | Configuration reset ops |
+| 33 | Config Status | 6783 | Var. | Y | Y | Y | Configuration completeness |
+| 34 | Interval Mode Configuration | 6785 | 17B | Y | Y | Y | Cycle & Soak config |
 
 *Nominal Size = packed struct size for single snapshot (excludes unified fragment header & multi-entry payloads).  
 **Priority governs minimum notification spacing; adaptive logic may stretch/shrink within bounds.

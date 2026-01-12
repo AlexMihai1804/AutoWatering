@@ -1,10 +1,10 @@
 # Watering System Integration Guide
 
-**Version**: 1.0.0
+**Version**: 2.0.0
 
 ## Overview
 
-This guide explains how the Pack system integrates with the AutoWatering FAO-56 irrigation calculations. Custom plants from packs are fully supported in all watering algorithms.
+This guide explains how the Pack system integrates with the AutoWatering FAO-56 irrigation calculations. All plants (default and custom) are stored in pack storage on external flash and accessed through a unified `plant_id` field.
 
 ---
 
@@ -19,14 +19,36 @@ This guide explains how the Pack system integrates with the AutoWatering FAO-56 
 │  └────────────────────────────────┬────────────────────────────┘    │
 └───────────────────────────────────┼─────────────────────────────────┘
                                     │
-                        ┌───────────┴───────────┐
-                        ▼                       ▼
-            ┌─────────────────────┐  ┌─────────────────────┐
-            │   ROM Plants        │  │   Custom Plants     │
-            │   (plant_db.h)      │  │   (pack_storage.h)  │
-            │   ID < 1000         │  │   ID ≥ 1000         │
-            └─────────────────────┘  └─────────────────────┘
+                                    ▼
+                    ┌─────────────────────────────────┐
+                    │   Unified Pack Storage          │
+                    │   (pack_storage.h)              │
+                    │                                 │
+                    │   plant_id = 0     → not set    │
+                    │   plant_id = 1-223 → default    │
+                    │   plant_id ≥ 1000  → custom     │
+                    └─────────────────────────────────┘
 ```
+
+---
+
+## Unified Plant Storage System
+
+### Overview
+
+All plants are stored on external flash using LittleFS. The 223 default plants from ROM are provisioned to flash on first boot, eliminating the need for dual storage lookups.
+
+### Plant ID Scheme
+
+| plant_id | Description |
+|----------|-------------|
+| 0 | Not configured |
+| 1-223 | Default plants (provisioned from ROM) |
+| ≥1000 | Custom plants from user or packs |
+
+### Storage Path
+
+Plants are stored at: `/lfs_ext/packs/plants/p_XXXX.bin`
 
 ---
 
@@ -34,15 +56,14 @@ This guide explains how the Pack system integrates with the AutoWatering FAO-56 
 
 ### watering_channel_t Structure
 
-Each irrigation channel includes a `custom_plant_id` field:
+Each irrigation channel uses a single `plant_id` field:
 
 ```c
 // In watering.h
 typedef struct {
     // ... other fields ...
     
-    uint8_t plant_index;        // ROM plant index (0-222)
-    uint16_t custom_plant_id;   // Custom plant ID (0 = use ROM)
+    uint16_t plant_id;          // Unified plant ID (0 = not set)
     
     // ... other fields ...
 } watering_channel_t;
@@ -50,22 +71,23 @@ typedef struct {
 
 ### Interpretation
 
-| custom_plant_id | plant_index | Source |
-|-----------------|-------------|--------|
-| 0 | 0-222 | ROM plant from `plant_full_db` |
-| 1000+ | (ignored) | Custom plant from pack storage |
+| plant_id | Source |
+|----------|--------|
+| 0 | Not configured - AUTO mode disabled |
+| 1-223 | Default plant from pack storage |
+| 1000+ | Custom plant from pack storage |
 
 ---
 
 ## NVS Persistence
 
-Custom plant IDs are persisted in NVS:
+Plant IDs are persisted in NVS:
 
 ```c
 // In nvs_config.h
 typedef struct __attribute__((packed)) {
     // ... other fields ...
-    uint16_t custom_plant_id;   // Custom plant ID (0 = ROM)
+    uint16_t plant_id;          // Unified plant ID (0 = not set)
     // ... other fields ...
 } enhanced_channel_config_t;
 ```
@@ -79,7 +101,7 @@ int nvs_save_complete_channel_config(uint8_t channel,
 {
     enhanced_channel_config_t enhanced = {
         // ... other fields ...
-        .custom_plant_id = config->custom_plant_id,
+        .plant_id = config->plant_id,
     };
     
     return nvs_write(&enhanced, sizeof(enhanced));
@@ -95,7 +117,7 @@ int nvs_load_complete_channel_config(uint8_t channel,
     enhanced_channel_config_t enhanced;
     // ... read from NVS ...
     
-    config->custom_plant_id = enhanced.custom_plant_id;
+    config->plant_id = enhanced.plant_id;
     
     return 0;
 }
@@ -107,40 +129,24 @@ int nvs_load_complete_channel_config(uint8_t channel,
 
 ### Unified Access Pattern
 
+All plant data is accessed through pack storage:
+
 ```c
 #include "pack_storage.h"
-#include "plant_db.h"
 #include "fao56_calc.h"
 
-float get_kc_for_channel(const watering_channel_t *channel, 
-                         growth_stage_t stage)
-{
-    uint16_t kc_scaled;
-    
-    if (channel->custom_plant_id >= 1000) {
-        // Custom plant from pack storage
-        kc_scaled = pack_storage_get_kc(channel->custom_plant_id, stage);
-    } else {
-        // ROM plant
-        const plant_full_species_t *plant = 
-            plant_full_get_by_index(channel->plant_index);
-        
-        switch (stage) {
-            case GROWTH_STAGE_INITIAL:
-                kc_scaled = PLANT_KC_INI(plant);
-                break;
-            case GROWTH_STAGE_MID:
-                kc_scaled = PLANT_KC_MID(plant);
-                break;
-            case GROWTH_STAGE_END:
-                kc_scaled = PLANT_KC_END(plant);
-                break;
-            default:
-                kc_scaled = 100; // 1.00 fallback
-        }
-    }
-    
-    return (float)kc_scaled / 100.0f;
+// Using high-level helper (recommended)
+const plant_full_data_t *plant = fao56_get_channel_plant(channel, channel_id);
+if (plant) {
+    float kc_mid = plant->kc_mid_x1000 / 1000.0f;
+    uint16_t root_max_mm = plant->root_depth_max_m_x1000; // Note: same units
+}
+
+// Or using pack storage directly
+float kc;
+pack_result_t res = pack_storage_get_kc(channel->plant_id, dap, &kc);
+if (res == PACK_RESULT_SUCCESS) {
+    // Use interpolated Kc value
 }
 ```
 
@@ -148,23 +154,38 @@ float get_kc_for_channel(const watering_channel_t *channel,
 
 ```c
 /**
- * Get Kc for any plant (ROM or custom)
+ * Get Kc for any plant from pack storage
  * 
- * @param plant_id Plant ID (< 1000 for ROM, >= 1000 for custom)
- * @param stage Growth stage
- * @return Kc scaled ×100
+ * @param plant_id Plant ID (1-223=default, >=1000=custom, 0=error)
+ * @param days_after_planting Days since planting for interpolation
+ * @param out_kc Output: interpolated Kc value
+ * @return PACK_RESULT_SUCCESS or error
  */
-uint16_t pack_storage_get_kc(uint16_t plant_id, growth_stage_t stage);
+pack_result_t pack_storage_get_kc(uint16_t plant_id,
+                                   uint16_t days_after_planting,
+                                   float *out_kc);
 
 /**
  * Get root depth for any plant
  * 
  * @param plant_id Plant ID
- * @param days_since_planting Days since start
- * @return Root depth in mm
+ * @param days_after_planting Days since start
+ * @param out_root_depth_mm Output: root depth in mm
+ * @return PACK_RESULT_SUCCESS or error
  */
-uint16_t pack_storage_get_root_depth(uint16_t plant_id, 
-                                     uint16_t days_since_planting);
+pack_result_t pack_storage_get_root_depth(uint16_t plant_id, 
+                                           uint16_t days_after_planting,
+                                           float *out_root_depth_mm);
+
+/**
+ * Get full plant data from pack storage
+ * 
+ * @param plant_id Plant ID
+ * @param plant Output buffer for plant data
+ * @return PACK_RESULT_SUCCESS or error
+ */
+pack_result_t pack_storage_get_fao56_plant(uint16_t plant_id,
+                                            pack_plant_v1_t *plant);
 ```
 
 ---
@@ -177,19 +198,19 @@ uint16_t pack_storage_get_root_depth(uint16_t plant_id,
 // In fao56_calc.c
 
 float calculate_etc(const watering_channel_t *channel,
+                    uint8_t channel_id,
                     float eto,
-                    growth_stage_t stage)
+                    uint16_t days_after_planting)
 {
-    // Get Kc from appropriate source
-    float kc;
-    
-    if (channel->custom_plant_id >= 1000) {
-        // Custom plant
-        kc = (float)pack_storage_get_kc(channel->custom_plant_id, stage) / 100.0f;
-    } else {
-        // ROM plant
-        kc = get_rom_plant_kc(channel->plant_index, stage);
+    // Get plant data from pack storage (cached per-channel)
+    const plant_full_data_t *plant = fao56_get_channel_plant(channel, channel_id);
+    if (!plant) {
+        return 0.0f;  // No plant configured
     }
+    
+    // Get interpolated Kc
+    float kc = 1.0f;
+    pack_storage_get_kc(channel->plant_id, days_after_planting, &kc);
     
     // Apply stress factors
     float ks = calculate_stress_factor(channel);
@@ -203,28 +224,24 @@ float calculate_etc(const watering_channel_t *channel,
 
 ```c
 float calculate_soil_water_balance(const watering_channel_t *channel,
-                                   uint16_t days_since_planting)
+                                   uint8_t channel_id,
+                                   uint16_t days_after_planting)
 {
-    // Get root zone depth
-    uint16_t root_depth_mm;
-    
-    if (channel->custom_plant_id >= 1000) {
-        root_depth_mm = pack_storage_get_root_depth(
-            channel->custom_plant_id, 
-            days_since_planting
-        );
-    } else {
-        root_depth_mm = get_rom_plant_root_depth(
-            channel->plant_index,
-            days_since_planting
-        );
+    // Get plant from pack storage
+    const plant_full_data_t *plant = fao56_get_channel_plant(channel, channel_id);
+    if (!plant) {
+        return 0.0f;
     }
     
+    // Get root zone depth
+    float root_depth_mm = 0.0f;
+    pack_storage_get_root_depth(channel->plant_id, days_after_planting, &root_depth_mm);
+    
     // Calculate TAW (Total Available Water)
-    float taw = calculate_taw(root_depth_mm, channel->soil_type);
+    float taw = calculate_taw(root_depth_mm, channel->soil_db_index);
     
     // Get depletion fraction
-    float p = get_depletion_fraction(channel) / 100.0f;
+    float p = plant->depletion_fraction_p_x1000 / 1000.0f;
     
     // RAW = TAW × p
     float raw = taw * p;
@@ -233,59 +250,61 @@ float calculate_soil_water_balance(const watering_channel_t *channel,
 }
 ```
 
-### Depletion Fraction
-
-```c
-uint16_t get_depletion_fraction(const watering_channel_t *channel)
-{
-    if (channel->custom_plant_id >= 1000) {
-        pack_plant_v1_t plant;
-        if (pack_storage_get_plant(channel->custom_plant_id, &plant) 
-            == PACK_RESULT_SUCCESS) {
-            return plant.depletion_fraction;
-        }
-        return 50; // Default 0.50
-    } else {
-        const plant_full_species_t *plant = 
-            plant_full_get_by_index(channel->plant_index);
-        return plant->depletion_fraction;
-    }
-}
-```
-
 ---
 
 ## BLE Configuration
 
-### Setting Custom Plant via BLE
+### Setting Plant via BLE
 
-Custom plant assignment is done through the existing channel configuration characteristic:
+Plant assignment is done through the Growing Environment characteristic:
 
 ```c
-// Write to Channel Config characteristic
-typedef struct __attribute__((packed)) {
-    uint8_t channel;            // Channel index
-    uint8_t plant_index;        // ROM plant (ignored if custom_plant_id != 0)
-    uint16_t custom_plant_id;   // Custom plant ID (0 = use ROM)
+// Write to Growing Environment Config characteristic
+struct growing_env_config_data {
+    uint8_t channel_id;
+    uint16_t plant_id;              // Unified plant ID (0 = not set)
+    uint8_t soil_db_index;
+    uint8_t irrigation_method_index;
+    uint8_t use_area_based;
     // ... other config fields ...
-} bt_channel_config_t;
+} __packed;
 ```
 
 ### Workflow
 
-1. Install custom plant via Pack Plant characteristic
-2. Note the plant_id (e.g., 1001)
-3. Write channel config with `custom_plant_id = 1001`
-4. Channel now uses custom plant parameters
+1. (For custom plants) Install custom plant via Pack Plant characteristic
+2. Note the plant_id (1-223 for default, ≥1000 for custom)
+3. Write growing environment config with the `plant_id`
+4. Channel now uses plant parameters from pack storage
 
 ---
 
 ## Example: Complete Integration
 
+### Using Default Plants
+
+```c
+// Configure channel to use default Tomato (ID = 15 for example)
+watering_channel_t channel;
+channel.plant_id = 15;          // Default plant from provisioned storage
+channel.enabled = true;
+// ... other config ...
+
+// Save to NVS
+nvs_save_complete_channel_config(0, &channel);
+
+// Calculate watering
+const plant_full_data_t *plant = fao56_get_channel_plant(&channel, 0);
+if (plant) {
+    float kc_mid = plant->kc_mid_x1000 / 1000.0f;
+    // ... use plant parameters
+}
+```
+
 ### Installing and Using a Custom Plant
 
 ```c
-// 1. Create custom plant
+// 1. Create custom plant (ID must be >= 1000)
 pack_plant_v1_t my_herb = {
     .plant_id = 1001,
     .pack_id = 1,
@@ -293,16 +312,16 @@ pack_plant_v1_t my_herb = {
     .source = PLANT_SOURCE_CUSTOM,
     .common_name = "My Basil",
     .scientific_name = "Ocimum basilicum",
-    .kc_ini = 40,       // 0.40
-    .kc_mid = 105,      // 1.05
-    .kc_end = 90,       // 0.90
-    .l_ini_days = 20,
-    .l_dev_days = 30,
-    .l_mid_days = 40,
-    .l_end_days = 10,
-    .root_depth_min = 200,
-    .root_depth_max = 600,
-    .depletion_fraction = 35,  // 0.35
+    .kc_ini_x1000 = 400,       // 0.40
+    .kc_mid_x1000 = 1050,      // 1.05
+    .kc_end_x1000 = 900,       // 0.90
+    .stage_days_ini = 20,
+    .stage_days_dev = 30,
+    .stage_days_mid = 40,
+    .stage_days_end = 10,
+    .root_depth_min_mm = 200,
+    .root_depth_max_mm = 600,
+    .depletion_fraction_p_x1000 = 350,  // 0.35
     // ... other fields ...
 };
 
@@ -311,18 +330,21 @@ pack_result_t result = pack_storage_install_plant(&my_herb);
 
 // 3. Configure channel
 watering_channel_t channel;
-channel.custom_plant_id = 1001;  // Use custom plant
+channel.plant_id = 1001;        // Use custom plant
 channel.enabled = true;
 // ... other config ...
 
 // 4. Save to NVS
 nvs_save_complete_channel_config(0, &channel);
 
-// 5. Calculate watering
-float eto = get_reference_et();  // From weather data
-float kc = (float)pack_storage_get_kc(1001, GROWTH_STAGE_MID) / 100.0f;
-float etc = eto * kc;
-float watering_mm = etc - effective_rainfall;
+// 5. Calculate watering using fao56_calc helpers
+const plant_full_data_t *plant = fao56_get_channel_plant(&channel, 0);
+if (plant) {
+    float kc = 1.0f;
+    pack_storage_get_kc(channel.plant_id, days_after_planting, &kc);
+    float etc = eto * kc;
+    float watering_mm = etc - effective_rainfall;
+}
 ```
 
 ---
@@ -335,40 +357,56 @@ ROM plants remain accessible via:
 - `plant_full_get_by_index(index)` - Direct access
 - `pack_storage_get_kc(id, stage)` with ID < 1000 - Unified access
 
+### Default Plant Provisioning
+
+At first boot, the 223 default plants are copied from ROM to pack storage:
+
+```c
+// In main.c or init sequence
+if (!pack_storage_defaults_provisioned()) {
+    pack_storage_provision_defaults();
+}
+```
+
+This enables:
+- Unified access pattern for all plants
+- Future updates to default plants via OTA
+- Consistent caching strategy
+
 ### Version Migration
 
 When updating plant data:
-1. Install new version via pack
+1. Install new version via pack (higher version number)
 2. Channel automatically uses updated parameters
 3. No channel reconfiguration needed
 
 ### Fallback Behavior
 
-If custom plant cannot be read:
-- Kc returns 100 (1.00)
-- Root depth returns 500mm
+If plant cannot be read from pack storage:
+- Error is returned (no silent fallback)
 - Log warning issued
+- Channel should check return values
 
 ```c
-uint16_t pack_storage_get_kc(uint16_t plant_id, growth_stage_t stage)
+pack_result_t pack_storage_get_kc(uint16_t plant_id,
+                                   uint16_t days_after_planting,
+                                   float *out_kc)
 {
-    if (plant_id < 1000) {
-        // ROM plant
-        return get_rom_kc(plant_id, stage);
+    if (plant_id == 0) {
+        LOG_WRN("plant_id=0 means no plant configured");
+        return PACK_RESULT_INVALID_DATA;
     }
     
     pack_plant_v1_t plant;
-    if (pack_storage_get_plant(plant_id, &plant) != PACK_RESULT_SUCCESS) {
-        LOG_WRN("Cannot read plant %u, using default Kc", plant_id);
-        return 100;  // 1.00 fallback
+    pack_result_t res = pack_storage_get_plant(plant_id, &plant);
+    if (res != PACK_RESULT_SUCCESS) {
+        LOG_WRN("Cannot read plant %u: %d", plant_id, res);
+        return res;
     }
     
-    switch (stage) {
-        case GROWTH_STAGE_INITIAL: return plant.kc_ini;
-        case GROWTH_STAGE_MID:     return plant.kc_mid;
-        case GROWTH_STAGE_END:     return plant.kc_end;
-        default:                   return plant.kc_mid;
-    }
+    // Interpolate Kc based on days_after_planting
+    *out_kc = interpolate_kc(&plant, days_after_planting);
+    return PACK_RESULT_SUCCESS;
 }
 ```
 
@@ -376,30 +414,29 @@ uint16_t pack_storage_get_kc(uint16_t plant_id, growth_stage_t stage)
 
 ## Performance Considerations
 
-### Caching
+### Built-in Caching
 
-For frequently accessed plants, consider caching:
+The `fao56_get_channel_plant()` function provides per-channel caching:
 
 ```c
-// Cache for active channel plants
-static struct {
-    uint16_t plant_id;
-    pack_plant_v1_t plant;
-    bool valid;
-} plant_cache[MAX_CHANNELS];
+// Cache for active channel plants (internal to fao56_calc.c)
+static plant_full_data_t s_custom_plant_cache[WATERING_CHANNELS_COUNT];
+static uint16_t s_custom_plant_cache_id[WATERING_CHANNELS_COUNT];
 
-const pack_plant_v1_t *get_cached_plant(uint8_t channel, uint16_t plant_id)
+const plant_full_data_t *fao56_get_channel_plant(const watering_channel_t *channel,
+                                                  uint8_t channel_id)
 {
-    if (plant_cache[channel].valid && 
-        plant_cache[channel].plant_id == plant_id) {
-        return &plant_cache[channel].plant;
+    // Check cache first
+    if (s_custom_plant_cache_id[channel_id] == channel->plant_id) {
+        return &s_custom_plant_cache[channel_id];
     }
     
-    if (pack_storage_get_plant(plant_id, &plant_cache[channel].plant) 
-        == PACK_RESULT_SUCCESS) {
-        plant_cache[channel].plant_id = plant_id;
-        plant_cache[channel].valid = true;
-        return &plant_cache[channel].plant;
+    // Load from pack storage and cache
+    pack_plant_v1_t pack_plant;
+    if (pack_storage_get_plant(channel->plant_id, &pack_plant) == PACK_RESULT_SUCCESS) {
+        // Convert and cache...
+        s_custom_plant_cache_id[channel_id] = channel->plant_id;
+        return &s_custom_plant_cache[channel_id];
     }
     
     return NULL;
@@ -410,11 +447,11 @@ const pack_plant_v1_t *get_cached_plant(uint8_t channel, uint16_t plant_id)
 
 | Operation | Typical Time |
 |-----------|--------------|
-| ROM plant lookup | <1μs |
-| Custom plant read | 5-15ms |
 | Cached plant access | <1μs |
+| Pack storage read (flash) | 5-15ms |
+| ROM database access | <1μs (but no longer used at runtime) |
 
-Recommendation: Cache custom plant data at channel init and refresh on plant update.
+Recommendation: Use `fao56_get_channel_plant()` for automatic caching.
 
 ---
 
@@ -423,23 +460,30 @@ Recommendation: Cache custom plant data at channel init and refresh on plant upd
 ### Unit Test Example
 
 ```c
-void test_custom_plant_kc(void)
+void test_unified_plant_access(void)
 {
-    // Install test plant
+    // Test default plant access (plant_id 1-223)
+    float kc;
+    pack_result_t res = pack_storage_get_kc(15, 30, &kc);
+    assert(res == PACK_RESULT_SUCCESS);
+    assert(kc > 0.0f && kc < 2.0f);
+    
+    // Install test custom plant
     pack_plant_v1_t test = {
         .plant_id = 9999,
-        .kc_ini = 40,
-        .kc_mid = 120,
-        .kc_end = 80,
+        .kc_ini_x1000 = 400,
+        .kc_mid_x1000 = 1200,
+        .kc_end_x1000 = 800,
+        .stage_days_ini = 20,
+        .stage_days_dev = 30,
+        .stage_days_mid = 40,
+        .stage_days_end = 10,
     };
     pack_storage_install_plant(&test);
     
-    // Verify Kc retrieval
-    uint16_t kc_ini = pack_storage_get_kc(9999, GROWTH_STAGE_INITIAL);
-    assert(kc_ini == 40);
-    
-    uint16_t kc_mid = pack_storage_get_kc(9999, GROWTH_STAGE_MID);
-    assert(kc_mid == 120);
+    // Verify custom plant Kc retrieval
+    res = pack_storage_get_kc(9999, 25, &kc);  // Development stage
+    assert(res == PACK_RESULT_SUCCESS);
     
     // Cleanup
     pack_storage_delete_plant(9999);

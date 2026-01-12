@@ -108,125 +108,119 @@ static float s_wetting_fraction_last[WATERING_CHANNELS_COUNT] = {0.0f};
 static uint32_t s_wetting_fraction_last_time_s[WATERING_CHANNELS_COUNT] = {0U};
 static float s_rain_applied_raw_mm[WATERING_CHANNELS_COUNT] = {0.0f};
 
-/* Custom plant cache for pack storage plants converted to plant_full_data_t format */
-static plant_full_data_t s_custom_plant_cache[WATERING_CHANNELS_COUNT];
-static uint16_t s_custom_plant_cache_id[WATERING_CHANNELS_COUNT] = {0};
+/* Plant cache for pack storage plants converted to plant_full_data_t format */
+static plant_full_data_t s_plant_cache[WATERING_CHANNELS_COUNT];
+static uint16_t s_plant_cache_id[WATERING_CHANNELS_COUNT] = {0};
 
 /**
- * @brief Get plant data for a channel, handling both ROM and custom pack sources
+ * @brief Get plant data for a channel from pack storage (unified system)
  * 
- * This function provides a unified interface to get plant parameters regardless
- * of whether the channel uses a built-in ROM plant or a custom pack plant.
+ * All plants are stored in pack storage (provisioned from ROM at first boot).
+ * This function loads plant data and caches it for efficient access.
  * 
  * @param channel Pointer to watering channel
  * @param channel_id Channel ID (for caching)
- * @return Pointer to plant_full_data_t (ROM or converted custom), NULL on error
+ * @return Pointer to plant_full_data_t (cached), NULL on error
  */
-static const plant_full_data_t *fao56_get_channel_plant(const watering_channel_t *channel, 
-                                                         uint8_t channel_id)
+const plant_full_data_t *fao56_get_channel_plant(const watering_channel_t *channel, 
+                                                  uint8_t channel_id)
 {
     if (!channel || channel_id >= WATERING_CHANNELS_COUNT) {
         return NULL;
     }
     
-    /* Check if using custom plant from pack storage */
-    if (channel->custom_plant_id > 0) {
-        /* Check cache first */
-        if (s_custom_plant_cache_id[channel_id] == channel->custom_plant_id) {
-            return &s_custom_plant_cache[channel_id];
-        }
-        
-        /* Load from pack storage */
-        pack_plant_v1_t pack_plant;
-        pack_result_t res = pack_storage_get_plant(channel->custom_plant_id, &pack_plant);
-        if (res != PACK_RESULT_SUCCESS) {
-            LOG_ERR("Failed to load custom plant %u for channel %u: %d", 
-                    channel->custom_plant_id, channel_id, res);
-            /* Fall through to try ROM plant */
-        } else {
-            /* Convert pack_plant_v1_t to plant_full_data_t */
-            plant_full_data_t *cached = &s_custom_plant_cache[channel_id];
-            memset(cached, 0, sizeof(*cached));
-            
-            /* Note: ROM uses common_name_en (const char*), cache can't store string directly.
-             * For FAO-56 calculations the name isn't used, so we leave it NULL.
-             * If name is needed, we'd need a separate string buffer.
-             */
-            
-            /* Crop coefficients (both use x1000) */
-            cached->kc_ini_x1000 = pack_plant.kc_ini_x1000;
-            cached->kc_dev_x1000 = pack_plant.kc_dev_x1000;
-            cached->kc_mid_x1000 = pack_plant.kc_mid_x1000;
-            cached->kc_end_x1000 = pack_plant.kc_end_x1000;
-            
-            /* Growth stages */
-            cached->stage_days_ini = pack_plant.stage_days_ini;
-            cached->stage_days_dev = pack_plant.stage_days_dev;
-            cached->stage_days_mid = pack_plant.stage_days_mid;
-            cached->stage_days_end = pack_plant.stage_days_end;
-            cached->growth_cycle = pack_plant.growth_cycle;
-            
-            /* Root depth (pack uses mm, ROM uses m×1000 - same numeric value!) */
-            cached->root_depth_min_m_x1000 = pack_plant.root_depth_min_mm;
-            cached->root_depth_max_m_x1000 = pack_plant.root_depth_max_mm;
-            
-            /* Depletion fraction */
-            cached->depletion_fraction_p_x1000 = pack_plant.depletion_fraction_p_x1000;
-            
-            /* Canopy cover (pack: canopy_max_x1000, ROM: canopy_cover_max_frac_x1000) */
-            cached->canopy_cover_max_frac_x1000 = pack_plant.canopy_max_x1000;
-            if (cached->canopy_cover_max_frac_x1000 == 0) {
-                cached->canopy_cover_max_frac_x1000 = 800; /* Default 80% */
-            }
-            
-            /* Temperature limits */
-            cached->frost_tolerance_c = pack_plant.frost_tolerance_c;
-            cached->temp_opt_min_c = pack_plant.temp_opt_min_c;
-            cached->temp_opt_max_c = pack_plant.temp_opt_max_c;
-            if (cached->temp_opt_max_c == 0) {
-                cached->temp_opt_max_c = 30; /* Default */
-            }
-            
-            /* Spacing (pack uses mm, ROM uses m×1000 - same numeric value!) */
-            cached->spacing_row_m_x1000 = pack_plant.spacing_row_mm;
-            cached->spacing_plant_m_x1000 = pack_plant.spacing_plant_mm;
-            if (cached->spacing_row_m_x1000 == 0) {
-                cached->spacing_row_m_x1000 = 500; /* 0.5m default */
-            }
-            if (cached->spacing_plant_m_x1000 == 0) {
-                cached->spacing_plant_m_x1000 = 300; /* 0.3m default */
-            }
-            
-            /* Default density (pack: density_x100, ROM: default_density_plants_m2_x100) */
-            cached->default_density_plants_m2_x100 = pack_plant.density_x100;
-            if (cached->default_density_plants_m2_x100 == 0) {
-                cached->default_density_plants_m2_x100 = 400; /* 4 plants/m² default */
-            }
-            
-            /* Irrigation method */
-            cached->typ_irrig_method_id = pack_plant.typ_irrig_method_id;
-            
-            /* Update cache ID */
-            s_custom_plant_cache_id[channel_id] = channel->custom_plant_id;
-            
-            LOG_DBG("Loaded custom plant %u for channel %u: Kc=%.2f/%.2f/%.2f",
-                    channel->custom_plant_id, channel_id,
-                    (double)(cached->kc_ini_x1000 / 1000.0f),
-                    (double)(cached->kc_mid_x1000 / 1000.0f),
-                    (double)(cached->kc_end_x1000 / 1000.0f));
-            
-            return cached;
-        }
+    /* plant_id: 0 = not set, 1+ = plant in pack storage */
+    if (channel->plant_id == 0) {
+        LOG_ERR("No plant configured for channel %u (plant_id=0)", channel_id);
+        return NULL;
     }
     
-    /* Use ROM database */
-    if (channel->plant_db_index < PLANT_FULL_SPECIES_COUNT) {
-        return &plant_full_database[channel->plant_db_index];
+    /* Check cache first */
+    if (s_plant_cache_id[channel_id] == channel->plant_id) {
+        return &s_plant_cache[channel_id];
     }
     
-    LOG_ERR("No valid plant for channel %u (custom=%u, rom=%u)", 
-            channel_id, channel->custom_plant_id, channel->plant_db_index);
-    return NULL;
+    /* Load from pack storage (all plants are there after provisioning) */
+    pack_plant_v1_t pack_plant;
+    pack_result_t res = pack_storage_get_plant(channel->plant_id, &pack_plant);
+    if (res != PACK_RESULT_SUCCESS) {
+        LOG_ERR("Failed to load plant %u for channel %u: %d", 
+                channel->plant_id, channel_id, res);
+        return NULL;
+    }
+    
+    /* Convert pack_plant_v1_t to plant_full_data_t */
+    plant_full_data_t *cached = &s_plant_cache[channel_id];
+    memset(cached, 0, sizeof(*cached));
+    
+    /* Note: ROM uses common_name_en (const char*), cache can't store string directly.
+     * For FAO-56 calculations the name isn't used, so we leave it NULL.
+     * If name is needed, we'd need a separate string buffer.
+     */
+    
+    /* Crop coefficients (both use x1000) */
+    cached->kc_ini_x1000 = pack_plant.kc_ini_x1000;
+    cached->kc_dev_x1000 = pack_plant.kc_dev_x1000;
+    cached->kc_mid_x1000 = pack_plant.kc_mid_x1000;
+    cached->kc_end_x1000 = pack_plant.kc_end_x1000;
+    
+    /* Growth stages */
+    cached->stage_days_ini = pack_plant.stage_days_ini;
+    cached->stage_days_dev = pack_plant.stage_days_dev;
+    cached->stage_days_mid = pack_plant.stage_days_mid;
+    cached->stage_days_end = pack_plant.stage_days_end;
+    cached->growth_cycle = pack_plant.growth_cycle;
+    
+    /* Root depth (pack uses mm, ROM uses m×1000 - same numeric value!) */
+    cached->root_depth_min_m_x1000 = pack_plant.root_depth_min_mm;
+    cached->root_depth_max_m_x1000 = pack_plant.root_depth_max_mm;
+    
+    /* Depletion fraction */
+    cached->depletion_fraction_p_x1000 = pack_plant.depletion_fraction_p_x1000;
+    
+    /* Canopy cover (pack: canopy_max_x1000, ROM: canopy_cover_max_frac_x1000) */
+    cached->canopy_cover_max_frac_x1000 = pack_plant.canopy_max_x1000;
+    if (cached->canopy_cover_max_frac_x1000 == 0) {
+        cached->canopy_cover_max_frac_x1000 = 800; /* Default 80% */
+    }
+    
+    /* Temperature limits */
+    cached->frost_tolerance_c = pack_plant.frost_tolerance_c;
+    cached->temp_opt_min_c = pack_plant.temp_opt_min_c;
+    cached->temp_opt_max_c = pack_plant.temp_opt_max_c;
+    if (cached->temp_opt_max_c == 0) {
+        cached->temp_opt_max_c = 30; /* Default */
+    }
+    
+    /* Spacing (pack uses mm, ROM uses m×1000 - same numeric value!) */
+    cached->spacing_row_m_x1000 = pack_plant.spacing_row_mm;
+    cached->spacing_plant_m_x1000 = pack_plant.spacing_plant_mm;
+    if (cached->spacing_row_m_x1000 == 0) {
+        cached->spacing_row_m_x1000 = 500; /* 0.5m default */
+    }
+    if (cached->spacing_plant_m_x1000 == 0) {
+        cached->spacing_plant_m_x1000 = 300; /* 0.3m default */
+    }
+    
+    /* Default density (pack: density_x100, ROM: default_density_plants_m2_x100) */
+    cached->default_density_plants_m2_x100 = pack_plant.density_x100;
+    if (cached->default_density_plants_m2_x100 == 0) {
+        cached->default_density_plants_m2_x100 = 400; /* 4 plants/m² default */
+    }
+    
+    /* Irrigation method */
+    cached->typ_irrig_method_id = pack_plant.typ_irrig_method_id;
+    
+    /* Update cache ID */
+    s_plant_cache_id[channel_id] = channel->plant_id;
+    
+    LOG_DBG("Loaded plant %u for channel %u: Kc=%.2f/%.2f/%.2f",
+            channel->plant_id, channel_id,
+            (double)(cached->kc_ini_x1000 / 1000.0f),
+            (double)(cached->kc_mid_x1000 / 1000.0f),
+            (double)(cached->kc_end_x1000 / 1000.0f));
+    
+    return cached;
 }
 
 static float fao56_calc_plant_irrigated_area_m2(
@@ -1390,7 +1384,7 @@ void fao56_cache_store_et0(const environmental_data_t *env, float latitude_rad,
 /**
  * @brief Check if crop coefficient calculation result is cached and valid
  */
-bool fao56_cache_get_crop_coeff(uint16_t plant_db_index, uint16_t days_after_planting,
+bool fao56_cache_get_crop_coeff(uint16_t plant_id, uint16_t days_after_planting,
                                uint8_t channel_id, phenological_stage_t *cached_stage,
                                float *cached_coefficient) {
     if (!calculation_cache.cache_enabled || channel_id >= WATERING_CHANNELS_COUNT || 
@@ -1414,7 +1408,7 @@ bool fao56_cache_get_crop_coeff(uint16_t plant_db_index, uint16_t days_after_pla
     }
     
     // Check if parameters match
-    if (entry->plant_db_index != plant_db_index || 
+    if (entry->plant_id != plant_id || 
         entry->days_after_planting != days_after_planting) {
         calculation_cache.cache_miss_count++;
         return false;
@@ -1432,7 +1426,7 @@ bool fao56_cache_get_crop_coeff(uint16_t plant_db_index, uint16_t days_after_pla
 /**
  * @brief Store crop coefficient calculation result in cache
  */
-void fao56_cache_store_crop_coeff(uint16_t plant_db_index, uint16_t days_after_planting,
+void fao56_cache_store_crop_coeff(uint16_t plant_id, uint16_t days_after_planting,
                                  uint8_t channel_id, phenological_stage_t stage,
                                  float coefficient) {
     if (!calculation_cache.cache_enabled || channel_id >= WATERING_CHANNELS_COUNT) {
@@ -1441,7 +1435,7 @@ void fao56_cache_store_crop_coeff(uint16_t plant_db_index, uint16_t days_after_p
     
     crop_coeff_cache_entry_t *entry = &calculation_cache.crop_coeff_cache[channel_id];
     
-    entry->plant_db_index = plant_db_index;
+    entry->plant_id = plant_id;
     entry->days_after_planting = days_after_planting;
     entry->stage = stage;
     entry->crop_coefficient = coefficient;
@@ -1455,7 +1449,7 @@ void fao56_cache_store_crop_coeff(uint16_t plant_db_index, uint16_t days_after_p
 /**
  * @brief Check if water balance calculation result is cached and valid
  */
-bool fao56_cache_get_water_balance(uint8_t channel_id, uint16_t plant_db_index,
+bool fao56_cache_get_water_balance(uint8_t channel_id, uint16_t plant_id,
                                   uint8_t soil_db_index, uint8_t irrigation_method_index,
                                   float root_depth_m, water_balance_t *cached_balance) {
     if (!calculation_cache.cache_enabled || channel_id >= WATERING_CHANNELS_COUNT || 
@@ -1480,7 +1474,7 @@ bool fao56_cache_get_water_balance(uint8_t channel_id, uint16_t plant_db_index,
     
     // Check if parameters match
     if (entry->channel_id != channel_id ||
-        entry->plant_db_index != plant_db_index ||
+        entry->plant_id != plant_id ||
         entry->soil_db_index != soil_db_index ||
         entry->irrigation_method_index != irrigation_method_index ||
         fabsf(entry->root_depth_m - root_depth_m) > 0.01f) {
@@ -1499,7 +1493,7 @@ bool fao56_cache_get_water_balance(uint8_t channel_id, uint16_t plant_db_index,
 /**
  * @brief Store water balance calculation result in cache
  */
-void fao56_cache_store_water_balance(uint8_t channel_id, uint16_t plant_db_index,
+void fao56_cache_store_water_balance(uint8_t channel_id, uint16_t plant_id,
                                     uint8_t soil_db_index, uint8_t irrigation_method_index,
                                     float root_depth_m, const water_balance_t *balance) {
     if (!calculation_cache.cache_enabled || channel_id >= WATERING_CHANNELS_COUNT || !balance) {
@@ -1509,7 +1503,7 @@ void fao56_cache_store_water_balance(uint8_t channel_id, uint16_t plant_db_index
     water_balance_cache_entry_t *entry = &calculation_cache.water_balance_cache[channel_id];
     
     entry->channel_id = channel_id;
-    entry->plant_db_index = plant_db_index;
+    entry->plant_id = plant_id;
     entry->soil_db_index = soil_db_index;
     entry->irrigation_method_index = irrigation_method_index;
     entry->root_depth_m = root_depth_m;
@@ -4445,8 +4439,8 @@ watering_error_t fao56_daily_update_deficit(uint8_t channel_id,
     // Get plant, soil, and irrigation method from database
     const plant_full_data_t *plant = fao56_get_channel_plant(channel, channel_id);
     if (!plant) {
-        LOG_ERR("AUTO mode: No valid plant for channel %u (custom=%u, rom=%u)", 
-                channel_id, channel->custom_plant_id, channel->plant_db_index);
+        LOG_ERR("AUTO mode: No valid plant for channel %u (plant_id=%u)", 
+                channel_id, channel->plant_id);
         return WATERING_ERROR_INVALID_DATA;
     }
     

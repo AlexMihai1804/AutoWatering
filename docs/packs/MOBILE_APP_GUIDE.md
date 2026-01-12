@@ -58,43 +58,58 @@ func peripheral(_ peripheral: CBPeripheral,
 
 ## Data Structures
 
-### Plant Structure (120 bytes)
+### Plant Structure (156 bytes)
+
+Matches `pack_plant_v1_t` from `src/pack_schema.h`:
 
 ```swift
 struct PackPlant: Codable {
-    var plantId: UInt16
-    var packId: UInt16
-    var version: UInt16
-    var source: UInt8
-    var flags: UInt8
-    var reservedId: UInt32
-    var commonName: String      // 32 bytes, null-terminated
-    var scientificName: String  // 32 bytes, null-terminated
-    var kcIni: UInt16           // ×100
-    var kcMid: UInt16           // ×100
-    var kcEnd: UInt16           // ×100
-    var kcFlags: UInt16
-    var lIniDays: UInt16
-    var lDevDays: UInt16
-    var lMidDays: UInt16
-    var lEndDays: UInt16
-    var rootDepthMin: UInt16    // mm
-    var rootDepthMax: UInt16    // mm
-    var rootGrowthRate: UInt16  // ×10
-    var rootFlags: UInt16
-    var depletionFraction: UInt16  // ×100
-    var yieldResponse: UInt16      // ×100
-    var criticalDepletion: UInt16  // ×100
-    var waterFlags: UInt16
-    var tempMin: Int8           // °C
-    var tempMax: Int8
-    var tempOptimalLow: Int8
-    var tempOptimalHigh: Int8
-    var humidityMin: UInt8      // %
-    var humidityMax: UInt8
-    var lightMin: UInt8         // klux
-    var lightMax: UInt8
-    var reserved: UInt32
+    // Identification (8 bytes)
+    var plantId: UInt16         // Unique plant ID (1..65534)
+    var packId: UInt16          // Owning pack ID (0=standalone, 1+=from pack)
+    var version: UInt16         // Plant data version for updates
+    var reserved: UInt16        // Reserved for alignment
+    
+    // Names (112 bytes)
+    var commonName: String      // 48 bytes, null-terminated
+    var scientificName: String  // 64 bytes, null-terminated
+    
+    // Crop coefficients ×1000 (8 bytes)
+    var kcIniX1000: UInt16      // Kc initial stage
+    var kcDevX1000: UInt16      // Kc development stage
+    var kcMidX1000: UInt16      // Kc mid-season stage
+    var kcEndX1000: UInt16      // Kc end season stage
+    
+    // Root depth in mm (4 bytes)
+    var rootDepthMinMm: UInt16  // Minimum root depth
+    var rootDepthMaxMm: UInt16  // Maximum root depth
+    
+    // Growth stages in days (6 bytes)
+    var stageDaysIni: UInt8     // Initial stage duration
+    var stageDaysDev: UInt8     // Development stage duration
+    var stageDaysMid: UInt16    // Mid-season stage duration
+    var stageDaysEnd: UInt8     // End season stage duration
+    var growthCycle: UInt8      // Growth cycle type
+    
+    // Depletion and spacing (10 bytes)
+    var depletionFractionPX1000: UInt16  // Allowable depletion fraction ×1000
+    var spacingRowMm: UInt16    // Row spacing in mm
+    var spacingPlantMm: UInt16  // Plant spacing in mm
+    var densityX100: UInt16     // Default density plants/m² ×100
+    var canopyMaxX1000: UInt16  // Max canopy cover fraction ×1000
+    
+    // Temperature (3 bytes)
+    var frostToleranceC: Int8   // Frost tolerance temperature °C
+    var tempOptMinC: UInt8      // Optimal minimum temperature °C
+    var tempOptMaxC: UInt8      // Optimal maximum temperature °C
+    
+    // Irrigation (1 byte)
+    var typIrrigMethodId: UInt8 // Typical irrigation method ID
+    
+    // User-adjustable parameters (4 bytes)
+    var waterNeedFactorX100: UInt16  // Water need multiplier (10-500 = 0.1-5.0, default 100)
+    var irrigationFreqDays: UInt8    // Recommended irrigation frequency in days (1-30, default 3)
+    var preferAreaBased: UInt8       // 1 = area-based (m²), 0 = plant count based
 }
 ```
 
@@ -103,58 +118,56 @@ struct PackPlant: Codable {
 ```swift
 extension PackPlant {
     func serialize() -> Data {
-        var data = Data(capacity: 120)
+        var data = Data(capacity: 156)
         
-        // Identification (12 bytes)
+        // Identification (8 bytes)
         data.append(contentsOf: withUnsafeBytes(of: plantId.littleEndian) { Array($0) })
         data.append(contentsOf: withUnsafeBytes(of: packId.littleEndian) { Array($0) })
         data.append(contentsOf: withUnsafeBytes(of: version.littleEndian) { Array($0) })
-        data.append(source)
-        data.append(flags)
-        data.append(contentsOf: withUnsafeBytes(of: reservedId.littleEndian) { Array($0) })
-        
-        // Names (64 bytes)
-        data.append(contentsOf: commonName.paddedUTF8(to: 32))
-        data.append(contentsOf: scientificName.paddedUTF8(to: 32))
-        
-        // Kc values (8 bytes)
-        data.append(contentsOf: withUnsafeBytes(of: kcIni.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: kcMid.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: kcEnd.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: kcFlags.littleEndian) { Array($0) })
-        
-        // Growth stages (8 bytes)
-        data.append(contentsOf: withUnsafeBytes(of: lIniDays.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: lDevDays.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: lMidDays.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: lEndDays.littleEndian) { Array($0) })
-        
-        // Root (8 bytes)
-        data.append(contentsOf: withUnsafeBytes(of: rootDepthMin.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: rootDepthMax.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: rootGrowthRate.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: rootFlags.littleEndian) { Array($0) })
-        
-        // Water (8 bytes)
-        data.append(contentsOf: withUnsafeBytes(of: depletionFraction.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: yieldResponse.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: criticalDepletion.littleEndian) { Array($0) })
-        data.append(contentsOf: withUnsafeBytes(of: waterFlags.littleEndian) { Array($0) })
-        
-        // Environment (8 bytes)
-        data.append(UInt8(bitPattern: tempMin))
-        data.append(UInt8(bitPattern: tempMax))
-        data.append(UInt8(bitPattern: tempOptimalLow))
-        data.append(UInt8(bitPattern: tempOptimalHigh))
-        data.append(humidityMin)
-        data.append(humidityMax)
-        data.append(lightMin)
-        data.append(lightMax)
-        
-        // Reserved (4 bytes)
         data.append(contentsOf: withUnsafeBytes(of: reserved.littleEndian) { Array($0) })
         
-        assert(data.count == 120)
+        // Names (112 bytes)
+        data.append(contentsOf: commonName.paddedUTF8(to: 48))
+        data.append(contentsOf: scientificName.paddedUTF8(to: 64))
+        
+        // Kc values ×1000 (8 bytes)
+        data.append(contentsOf: withUnsafeBytes(of: kcIniX1000.littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: kcDevX1000.littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: kcMidX1000.littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: kcEndX1000.littleEndian) { Array($0) })
+        
+        // Root depth (4 bytes)
+        data.append(contentsOf: withUnsafeBytes(of: rootDepthMinMm.littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: rootDepthMaxMm.littleEndian) { Array($0) })
+        
+        // Growth stages (6 bytes)
+        data.append(stageDaysIni)
+        data.append(stageDaysDev)
+        data.append(contentsOf: withUnsafeBytes(of: stageDaysMid.littleEndian) { Array($0) })
+        data.append(stageDaysEnd)
+        data.append(growthCycle)
+        
+        // Depletion and spacing (10 bytes)
+        data.append(contentsOf: withUnsafeBytes(of: depletionFractionPX1000.littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: spacingRowMm.littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: spacingPlantMm.littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: densityX100.littleEndian) { Array($0) })
+        data.append(contentsOf: withUnsafeBytes(of: canopyMaxX1000.littleEndian) { Array($0) })
+        
+        // Temperature (3 bytes)
+        data.append(UInt8(bitPattern: frostToleranceC))
+        data.append(tempOptMinC)
+        data.append(tempOptMaxC)
+        
+        // Irrigation (1 byte)
+        data.append(typIrrigMethodId)
+        
+        // User-adjustable (4 bytes)
+        data.append(contentsOf: withUnsafeBytes(of: waterNeedFactorX100.littleEndian) { Array($0) })
+        data.append(irrigationFreqDays)
+        data.append(preferAreaBased)
+        
+        assert(data.count == 156)
         return data
     }
 }
@@ -175,76 +188,102 @@ extension String {
 
 ```kotlin
 data class PackPlant(
+    // Identification (8 bytes)
     val plantId: UShort,
     val packId: UShort,
     val version: UShort,
-    val source: UByte,
-    val flags: UByte,
-    val reservedId: UInt,
-    val commonName: String,
-    val scientificName: String,
-    val kcIni: UShort,
-    val kcMid: UShort,
-    val kcEnd: UShort,
-    val kcFlags: UShort,
-    val lIniDays: UShort,
-    val lDevDays: UShort,
-    val lMidDays: UShort,
-    val lEndDays: UShort,
-    val rootDepthMin: UShort,
-    val rootDepthMax: UShort,
-    val rootGrowthRate: UShort,
-    val rootFlags: UShort,
-    val depletionFraction: UShort,
-    val yieldResponse: UShort,
-    val criticalDepletion: UShort,
-    val waterFlags: UShort,
-    val tempMin: Byte,
-    val tempMax: Byte,
-    val tempOptimalLow: Byte,
-    val tempOptimalHigh: Byte,
-    val humidityMin: UByte,
-    val humidityMax: UByte,
-    val lightMin: UByte,
-    val lightMax: UByte,
-    val reserved: UInt
+    val reserved: UShort,
+    
+    // Names (112 bytes)
+    val commonName: String,      // 48 bytes
+    val scientificName: String,  // 64 bytes
+    
+    // Kc coefficients ×1000 (8 bytes)
+    val kcIniX1000: UShort,
+    val kcDevX1000: UShort,
+    val kcMidX1000: UShort,
+    val kcEndX1000: UShort,
+    
+    // Root depth mm (4 bytes)
+    val rootDepthMinMm: UShort,
+    val rootDepthMaxMm: UShort,
+    
+    // Growth stages days (6 bytes)
+    val stageDaysIni: UByte,
+    val stageDaysDev: UByte,
+    val stageDaysMid: UShort,
+    val stageDaysEnd: UByte,
+    val growthCycle: UByte,
+    
+    // Depletion and spacing (10 bytes)
+    val depletionFractionPX1000: UShort,
+    val spacingRowMm: UShort,
+    val spacingPlantMm: UShort,
+    val densityX100: UShort,
+    val canopyMaxX1000: UShort,
+    
+    // Temperature (3 bytes)
+    val frostToleranceC: Byte,
+    val tempOptMinC: UByte,
+    val tempOptMaxC: UByte,
+    
+    // Irrigation (1 byte)
+    val typIrrigMethodId: UByte,
+    
+    // User-adjustable (4 bytes)
+    val waterNeedFactorX100: UShort,
+    val irrigationFreqDays: UByte,
+    val preferAreaBased: UByte
 ) {
     fun serialize(): ByteArray {
-        val buffer = ByteBuffer.allocate(120).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.allocate(156).order(ByteOrder.LITTLE_ENDIAN)
         
+        // Identification (8 bytes)
         buffer.putShort(plantId.toShort())
         buffer.putShort(packId.toShort())
         buffer.putShort(version.toShort())
-        buffer.put(source.toByte())
-        buffer.put(flags.toByte())
-        buffer.putInt(reservedId.toInt())
-        buffer.put(commonName.toFixedBytes(32))
-        buffer.put(scientificName.toFixedBytes(32))
-        buffer.putShort(kcIni.toShort())
-        buffer.putShort(kcMid.toShort())
-        buffer.putShort(kcEnd.toShort())
-        buffer.putShort(kcFlags.toShort())
-        buffer.putShort(lIniDays.toShort())
-        buffer.putShort(lDevDays.toShort())
-        buffer.putShort(lMidDays.toShort())
-        buffer.putShort(lEndDays.toShort())
-        buffer.putShort(rootDepthMin.toShort())
-        buffer.putShort(rootDepthMax.toShort())
-        buffer.putShort(rootGrowthRate.toShort())
-        buffer.putShort(rootFlags.toShort())
-        buffer.putShort(depletionFraction.toShort())
-        buffer.putShort(yieldResponse.toShort())
-        buffer.putShort(criticalDepletion.toShort())
-        buffer.putShort(waterFlags.toShort())
-        buffer.put(tempMin)
-        buffer.put(tempMax)
-        buffer.put(tempOptimalLow)
-        buffer.put(tempOptimalHigh)
-        buffer.put(humidityMin.toByte())
-        buffer.put(humidityMax.toByte())
-        buffer.put(lightMin.toByte())
-        buffer.put(lightMax.toByte())
-        buffer.putInt(reserved.toInt())
+        buffer.putShort(reserved.toShort())
+        
+        // Names (112 bytes)
+        buffer.put(commonName.toFixedBytes(48))
+        buffer.put(scientificName.toFixedBytes(64))
+        
+        // Kc values ×1000 (8 bytes)
+        buffer.putShort(kcIniX1000.toShort())
+        buffer.putShort(kcDevX1000.toShort())
+        buffer.putShort(kcMidX1000.toShort())
+        buffer.putShort(kcEndX1000.toShort())
+        
+        // Root depth (4 bytes)
+        buffer.putShort(rootDepthMinMm.toShort())
+        buffer.putShort(rootDepthMaxMm.toShort())
+        
+        // Growth stages (6 bytes)
+        buffer.put(stageDaysIni.toByte())
+        buffer.put(stageDaysDev.toByte())
+        buffer.putShort(stageDaysMid.toShort())
+        buffer.put(stageDaysEnd.toByte())
+        buffer.put(growthCycle.toByte())
+        
+        // Depletion and spacing (10 bytes)
+        buffer.putShort(depletionFractionPX1000.toShort())
+        buffer.putShort(spacingRowMm.toShort())
+        buffer.putShort(spacingPlantMm.toShort())
+        buffer.putShort(densityX100.toShort())
+        buffer.putShort(canopyMaxX1000.toShort())
+        
+        // Temperature (3 bytes)
+        buffer.put(frostToleranceC)
+        buffer.put(tempOptMinC.toByte())
+        buffer.put(tempOptMaxC.toByte())
+        
+        // Irrigation (1 byte)
+        buffer.put(typIrrigMethodId.toByte())
+        
+        // User-adjustable (4 bytes)
+        buffer.putShort(waterNeedFactorX100.toShort())
+        buffer.put(irrigationFreqDays.toByte())
+        buffer.put(preferAreaBased.toByte())
         
         return buffer.array()
     }
@@ -274,7 +313,7 @@ class PackManager {
         // Enable notifications first
         peripheral.setNotifyValue(true, for: char)
         
-        // Write plant data (120 bytes)
+        // Write plant data (156 bytes)
         let data = plant.serialize()
         peripheral.writeValue(data, for: char, type: .withResponse)
     }
@@ -386,9 +425,10 @@ struct PackStats {
     let packCount: UInt16
     let builtinCount: UInt16
     let status: UInt8
+    let changeCounter: UInt32  // For cache invalidation
     
     init?(data: Data) {
-        guard data.count >= 20 else { return nil }
+        guard data.count >= 24 else { return nil }
         
         totalBytes = data.subdata(in: 0..<4).withUnsafeBytes { $0.load(as: UInt32.self) }
         usedBytes = data.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self) }
@@ -397,6 +437,8 @@ struct PackStats {
         packCount = data.subdata(in: 14..<16).withUnsafeBytes { $0.load(as: UInt16.self) }
         builtinCount = data.subdata(in: 16..<18).withUnsafeBytes { $0.load(as: UInt16.self) }
         status = data[18]
+        // data[19] is reserved
+        changeCounter = data.subdata(in: 20..<24).withUnsafeBytes { $0.load(as: UInt32.self) }
     }
     
     var usagePercent: Float {
@@ -404,6 +446,118 @@ struct PackStats {
     }
 }
 ```
+
+---
+
+## Caching Strategy
+
+The device provides efficient cache invalidation via the `changeCounter` field in Pack Stats.
+
+### How It Works
+
+1. **changeCounter** is **persisted to flash** - survives device reboot
+2. Increments every time a plant/pack is installed or deleted
+3. App caches plant list along with the changeCounter value
+4. On reconnect, compare changeCounter - if same, skip re-listing
+
+### Persistence Details
+
+The counter is stored at `/lfs_ext/packs/counter.bin` on the device's external flash:
+- Loaded at pack storage initialization
+- Saved after each modification
+- Survives power cycles and reboots
+
+### Implementation
+
+```swift
+class PlantCache {
+    // Built-in plants (bundled with app - never change)
+    static let builtInPlants: [Plant] = loadFromBundle("plants.json")  // 223 plants
+    
+    // Custom plants from device (cached)
+    private var customPlants: [PlantListEntry] = []
+    private var cachedChangeCounter: UInt32 = 0
+    
+    func loadPlants(from stats: PackStats, 
+                    fetchCustom: (@escaping ([PlantListEntry]) -> Void) -> Void,
+                    completion: @escaping ([Plant]) -> Void) {
+        
+        // Check if cache is valid
+        if stats.changeCounter == cachedChangeCounter && !customPlants.isEmpty {
+            print("✅ Cache valid (changeCounter=\(cachedChangeCounter))")
+            completion(Self.builtInPlants + customPlantsAsPlants())
+            return
+        }
+        
+        // Cache invalid or empty - fetch from device
+        print("🔄 Cache miss (cached=\(cachedChangeCounter), device=\(stats.changeCounter))")
+        
+        // Only fetch custom plants (built-in are in app bundle)
+        fetchCustom { [weak self] entries in
+            self?.customPlants = entries
+            self?.cachedChangeCounter = stats.changeCounter
+            self?.saveToStorage()
+            completion(Self.builtInPlants + (self?.customPlantsAsPlants() ?? []))
+        }
+    }
+    
+    private func customPlantsAsPlants() -> [Plant] {
+        return customPlants.map { entry in
+            Plant(id: entry.plantId, name: entry.name, packId: entry.packId)
+        }
+    }
+    
+    private func saveToStorage() {
+        // Persist to UserDefaults or Core Data
+        UserDefaults.standard.set(cachedChangeCounter, forKey: "plantCacheCounter")
+        // ... save customPlants
+    }
+    
+    private func loadFromStorage() {
+        cachedChangeCounter = UInt32(UserDefaults.standard.integer(forKey: "plantCacheCounter"))
+        // ... load customPlants
+    }
+}
+```
+
+### Connection Flow
+
+```swift
+func onDeviceConnected() {
+    // 1. Read stats (1 BLE request, ~50ms)
+    readStats { stats in
+        // 2. Check cache
+        self.plantCache.loadPlants(from: stats, fetchCustom: { completion in
+            // Only called if cache invalid
+            self.listCustomPlants { entries in
+                completion(entries)
+            }
+        }) { allPlants in
+            // 3. Update UI
+            self.updatePlantPicker(allPlants)
+        }
+    }
+}
+
+func listCustomPlants(completion: @escaping ([PlantListEntry]) -> Void) {
+    // List only custom plants (plant_count from stats, usually 0-20)
+    // This is FAST: typically 0-3 BLE requests
+    listPlants(offset: 0, maxResults: 8) { entries in
+        completion(entries.filter { $0.packId != 0 })  // Exclude built-in
+    }
+}
+```
+
+### Timing Summary
+
+| Scenario | BLE Requests | Time |
+|----------|--------------|------|
+| Cache valid | 1 (stats only) | ~50ms |
+| Cache invalid, 5 custom plants | 2 (stats + list) | ~100ms |
+| Cache invalid, 50 custom plants | 8 | ~400ms |
+| First connect ever | 2+ | ~100-400ms |
+
+**Note:** Built-in 223 plants are NEVER fetched from device - they're bundled with the app.
 
 ---
 

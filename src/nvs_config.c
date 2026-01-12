@@ -323,16 +323,16 @@ int nvs_save_enhanced_channel_config(uint8_t ch, const enhanced_channel_config_t
     int ret = nvs_config_write(ID_ENHANCED_CHANNEL_CFG_BASE + ch, config, sizeof(*config));
     if (ret >= 0) {
         /* Update onboarding flags based on configuration */
-        /* Use UINT16_MAX/UINT8_MAX as "not set" sentinel values (0 is a valid index!) */
-        bool plant_set = (config->plant_db_index != UINT16_MAX);
+        /* plant_id: 0 = not set, 1-223 = default, >=1000 = custom */
+        bool plant_set = (config->plant_id != 0);
         bool soil_set = (config->soil_db_index != UINT8_MAX);
         bool method_set = (config->irrigation_method_index != UINT8_MAX);
         bool sun_set = (config->sun_exposure_pct != 75);
         
         /* Debug: log what values trigger flag updates */
-        printk("nvs_save_enhanced_ch%d: plant_idx=%u->%s, soil_idx=%u->%s, method_idx=%u->%s, sun=%u->%s\n",
+        printk("nvs_save_enhanced_ch%d: plant_id=%u->%s, soil_idx=%u->%s, method_idx=%u->%s, sun=%u->%s\n",
                ch,
-               config->plant_db_index, plant_set ? "SET" : "clr",
+               config->plant_id, plant_set ? "SET" : "clr",
                config->soil_db_index, soil_set ? "SET" : "clr",
                config->irrigation_method_index, method_set ? "SET" : "clr",
                config->sun_exposure_pct, sun_set ? "SET" : "clr");
@@ -489,10 +489,9 @@ int nvs_save_complete_channel_config(uint8_t ch, const watering_channel_t *chann
     
     /* Extract and save enhanced configuration */
     enhanced_channel_config_t enhanced_config = {
-        .plant_db_index = channel->plant_db_index,
+        .plant_id = channel->plant_id,
         .soil_db_index = channel->soil_db_index,
         .irrigation_method_index = channel->irrigation_method_index,
-        .custom_plant_id = channel->custom_plant_id,
         .use_area_based = channel->use_area_based,
         .auto_mode = (uint8_t)channel->auto_mode,
         .max_volume_limit_l = channel->max_volume_limit_l,
@@ -573,10 +572,9 @@ int nvs_load_complete_channel_config(uint8_t ch, watering_channel_t *channel)
     ret = nvs_load_enhanced_channel_config(ch, &enhanced_config);
     if (ret >= 0) {
         /* Update channel with enhanced configuration */
-        channel->plant_db_index = enhanced_config.plant_db_index;
+        channel->plant_id = enhanced_config.plant_id;
         channel->soil_db_index = enhanced_config.soil_db_index;
         channel->irrigation_method_index = enhanced_config.irrigation_method_index;
-        channel->custom_plant_id = enhanced_config.custom_plant_id;
         channel->use_area_based = enhanced_config.use_area_based;
         /* Handle union assignment separately */
         if (enhanced_config.use_area_based) {

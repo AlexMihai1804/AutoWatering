@@ -596,8 +596,8 @@ void example_pack_workflow(void) {
 
 ## Limitations
 
-1. **Maximum plants**: Limited by flash size (~14MB / 136B ≈ 100,000)
+1. **Maximum plants**: Limited by flash size (~14MB / 172B ≈ 81,000)
 2. **Plant ID range**: Custom plants must use ID ≥ 1000
 3. **Pack ID 0**: Reserved for virtual built-in pack
-4. **Name length**: 32 characters max (including null)
+4. **Name length**: Common name 48, scientific name 64 characters max (including null)
 5. **Concurrent access**: Single-threaded via mutex

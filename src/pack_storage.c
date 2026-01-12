@@ -43,6 +43,57 @@ static struct fs_mount_t pack_lfs_mount = {
 
 static bool pack_storage_initialized = false;
 static struct k_mutex pack_storage_mutex;
+static uint32_t pack_change_counter = 0;  /* Increments on each install/delete */
+
+#define PACK_COUNTER_PATH PACK_BASE_PATH "/counter.bin"
+
+/* ============================================================================
+ * Change Counter Persistence
+ * ============================================================================ */
+
+static void load_change_counter(void)
+{
+    struct fs_file_t file;
+    fs_file_t_init(&file);
+    
+    int rc = fs_open(&file, PACK_COUNTER_PATH, FS_O_READ);
+    if (rc < 0) {
+        pack_change_counter = 0;
+        return;
+    }
+    
+    ssize_t bytes = fs_read(&file, &pack_change_counter, sizeof(pack_change_counter));
+    fs_close(&file);
+    
+    if (bytes != sizeof(pack_change_counter)) {
+        pack_change_counter = 0;
+    }
+    
+    LOG_INF("Loaded change_counter = %u", pack_change_counter);
+}
+
+static void save_change_counter(void)
+{
+    struct fs_file_t file;
+    fs_file_t_init(&file);
+    
+    int rc = fs_open(&file, PACK_COUNTER_PATH, FS_O_CREATE | FS_O_WRITE | FS_O_TRUNC);
+    if (rc < 0) {
+        LOG_ERR("Failed to save change_counter: %d", rc);
+        return;
+    }
+    
+    fs_write(&file, &pack_change_counter, sizeof(pack_change_counter));
+    fs_sync(&file);
+    fs_close(&file);
+}
+
+static void increment_change_counter(void)
+{
+    pack_change_counter++;
+    save_change_counter();
+    LOG_DBG("change_counter = %u", pack_change_counter);
+}
 
 /* ============================================================================
  * CRC32 Calculation
@@ -163,6 +214,10 @@ pack_result_t pack_storage_init(void)
     }
     
     pack_storage_initialized = true;
+    
+    /* Load persisted change counter */
+    load_change_counter();
+    
     LOG_INF("Pack storage initialized successfully");
     
     return PACK_RESULT_SUCCESS;
@@ -387,6 +442,7 @@ pack_result_t pack_storage_install_plant(const pack_plant_v1_t *plant)
     
     k_mutex_unlock(&pack_storage_mutex);
     
+    increment_change_counter();  /* Persist for cache invalidation */
     LOG_INF("Installed plant %04X (version %u)", plant->plant_id, plant->version);
     return PACK_RESULT_UPDATED;
 }
@@ -416,6 +472,7 @@ pack_result_t pack_storage_delete_plant(uint16_t plant_id)
         return PACK_RESULT_IO_ERROR;
     }
     
+    increment_change_counter();  /* Persist for cache invalidation */
     LOG_INF("Deleted plant %04X", plant_id);
     return PACK_RESULT_SUCCESS;
 }
@@ -621,6 +678,8 @@ pack_result_t pack_storage_install_pack(const pack_pack_v1_t *pack,
     }
     
     /* TODO: Write pack manifest file */
+    
+    increment_change_counter();  /* Pack installed */
     LOG_INF("Installed pack %04X with %u plants", pack->pack_id, plant_count);
     
     return PACK_RESULT_SUCCESS;
@@ -628,8 +687,6 @@ pack_result_t pack_storage_install_pack(const pack_pack_v1_t *pack,
 
 pack_result_t pack_storage_delete_pack(uint16_t pack_id, bool delete_plants)
 {
-    (void)delete_plants;
-    
     if (!pack_storage_initialized) {
         return PACK_RESULT_IO_ERROR;
     }
@@ -638,8 +695,72 @@ pack_result_t pack_storage_delete_pack(uint16_t pack_id, bool delete_plants)
         return PACK_RESULT_INVALID_DATA;
     }
     
-    /* TODO: Implement pack deletion */
-    return PACK_RESULT_NOT_FOUND;
+    uint16_t deleted_count = 0;
+    
+    /* Delete all plants belonging to this pack if requested */
+    if (delete_plants) {
+        struct fs_dir_t dir;
+        struct fs_dirent dirent;
+        pack_plant_v1_t plant;
+        char path[64];
+        int rc;
+        
+        fs_dir_t_init(&dir);
+        
+        k_mutex_lock(&pack_storage_mutex, K_FOREVER);
+        
+        rc = fs_opendir(&dir, PACK_PLANTS_DIR);
+        if (rc == 0) {
+            while (true) {
+                rc = fs_readdir(&dir, &dirent);
+                if (rc < 0 || dirent.name[0] == 0) {
+                    break;
+                }
+                
+                if (dirent.type == FS_DIR_ENTRY_FILE &&
+                    dirent.name[0] == 'p' && dirent.name[1] == '_' &&
+                    strstr(dirent.name, ".bin") != NULL &&
+                    strlen(dirent.name) < 32) {  /* Sanity check filename length */
+                    
+                    snprintf(path, sizeof(path), "%s/%.31s", PACK_PLANTS_DIR, dirent.name);
+                    
+                    /* Read plant to check pack_id */
+                    pack_result_t result = read_plant_file(path, &plant);
+                    if (result == PACK_RESULT_SUCCESS && plant.pack_id == pack_id) {
+                        /* Delete this plant */
+                        fs_unlink(path);
+                        deleted_count++;
+                        LOG_INF("Deleted plant %04X from pack %04X", plant.plant_id, pack_id);
+                    }
+                }
+            }
+            fs_closedir(&dir);
+        }
+        
+        k_mutex_unlock(&pack_storage_mutex);
+    }
+    
+    /* Delete pack manifest file */
+    char pack_path[64];
+    make_pack_path(pack_id, pack_path, sizeof(pack_path));
+    
+    k_mutex_lock(&pack_storage_mutex, K_FOREVER);
+    int rc = fs_unlink(pack_path);
+    k_mutex_unlock(&pack_storage_mutex);
+    
+    /* If we deleted plants or the manifest existed, count as success */
+    if (deleted_count > 0 || rc == 0) {
+        increment_change_counter();  /* Pack deleted */
+        LOG_INF("Deleted pack %04X (%u plants removed)", pack_id, deleted_count);
+        return PACK_RESULT_SUCCESS;
+    }
+    
+    if (rc == -ENOENT) {
+        return PACK_RESULT_NOT_FOUND;
+    }
+    
+    LOG_ERR("Failed to delete pack %04X: %d", pack_id, rc);
+    return PACK_RESULT_IO_ERROR;
 }
 
 pack_result_t pack_storage_list_packs(pack_pack_list_entry_t *entries,
@@ -727,6 +848,7 @@ pack_result_t pack_storage_get_stats(pack_storage_stats_t *stats)
     stats->used_bytes = stats->total_bytes - stats->free_bytes;
     stats->plant_count = pack_storage_get_plant_count();
     stats->pack_count = pack_storage_get_pack_count();
+    stats->change_counter = pack_change_counter;
     
     return PACK_RESULT_SUCCESS;
 }
@@ -794,8 +916,7 @@ static float interpolate_kc(float kc_start, float kc_end,
     return kc_start + (kc_end - kc_start) * t;
 }
 
-pack_result_t pack_storage_get_kc(uint16_t custom_plant_id,
-                                   uint16_t plant_db_index,
+pack_result_t pack_storage_get_kc(uint16_t plant_id,
                                    uint16_t days_after_planting,
                                    float *out_kc)
 {
@@ -806,85 +927,55 @@ pack_result_t pack_storage_get_kc(uint16_t custom_plant_id,
     /* Default Kc if nothing found */
     *out_kc = 1.0f;
     
-    if (custom_plant_id > 0) {
-        /* Load from pack storage */
-        pack_plant_v1_t plant;
-        pack_result_t res = pack_storage_get_plant(custom_plant_id, &plant);
-        if (res != PACK_RESULT_SUCCESS) {
-            LOG_ERR("Failed to load custom plant %u for Kc: %d", custom_plant_id, res);
-            return res;
-        }
-        
-        /* Convert x1000 values to float */
-        float kc_ini = (float)plant.kc_ini_x1000 / 1000.0f;
-        float kc_dev = (float)plant.kc_dev_x1000 / 1000.0f;
-        float kc_mid = (float)plant.kc_mid_x1000 / 1000.0f;
-        float kc_end = (float)plant.kc_end_x1000 / 1000.0f;
-        
-        /* Calculate Kc based on growth stage */
-        uint16_t l_ini = plant.stage_days_ini;
-        uint16_t l_dev = plant.stage_days_dev;
-        uint16_t l_mid = plant.stage_days_mid;
-        uint16_t l_late = plant.stage_days_end;
-        
-        if (days_after_planting < l_ini) {
-            /* Initial stage */
-            *out_kc = kc_ini;
-        } else if (days_after_planting < l_ini + l_dev) {
-            /* Development stage - interpolate from kc_dev to kc_mid */
-            uint16_t day_in_stage = days_after_planting - l_ini;
-            *out_kc = interpolate_kc(kc_dev, kc_mid, day_in_stage, l_dev);
-        } else if (days_after_planting < l_ini + l_dev + l_mid) {
-            /* Mid-season stage */
-            *out_kc = kc_mid;
-        } else if (days_after_planting < l_ini + l_dev + l_mid + l_late) {
-            /* Late season stage - interpolate from kc_mid to kc_end */
-            uint16_t day_in_stage = days_after_planting - (l_ini + l_dev + l_mid);
-            *out_kc = interpolate_kc(kc_mid, kc_end, day_in_stage, l_late);
-        } else {
-            /* Post-season */
-            *out_kc = kc_end;
-        }
-        
-        LOG_DBG("Custom plant %u DAP=%u -> Kc=%.2f", custom_plant_id, days_after_planting, (double)*out_kc);
-        return PACK_RESULT_SUCCESS;
+    if (plant_id == 0) {
+        LOG_WRN("No plant configured (plant_id=0)");
+        return PACK_RESULT_INVALID_DATA;
     }
     
-    /* Use built-in database */
-    if (plant_db_index < PLANT_FULL_SPECIES_COUNT) {
-        const plant_full_data_t *rom_plant = &plant_full_database[plant_db_index];
-        
-        /* Similar Kc interpolation for ROM plants */
-        uint16_t l_ini = rom_plant->stage_days_ini;
-        uint16_t l_dev = rom_plant->stage_days_dev;
-        uint16_t l_mid = rom_plant->stage_days_mid;
-        uint16_t l_late = rom_plant->stage_days_end;
-        
-        if (days_after_planting < l_ini) {
-            *out_kc = PLANT_KC_INI(rom_plant);
-        } else if (days_after_planting < l_ini + l_dev) {
-            uint16_t day_in_stage = days_after_planting - l_ini;
-            /* Assume kc_dev same as kc_ini for ROM plants */
-            *out_kc = interpolate_kc(PLANT_KC_INI(rom_plant), PLANT_KC_MID(rom_plant), day_in_stage, l_dev);
-        } else if (days_after_planting < l_ini + l_dev + l_mid) {
-            *out_kc = PLANT_KC_MID(rom_plant);
-        } else if (days_after_planting < l_ini + l_dev + l_mid + l_late) {
-            uint16_t day_in_stage = days_after_planting - (l_ini + l_dev + l_mid);
-            *out_kc = interpolate_kc(PLANT_KC_MID(rom_plant), PLANT_KC_END(rom_plant), day_in_stage, l_late);
-        } else {
-            *out_kc = PLANT_KC_END(rom_plant);
-        }
-        
-        LOG_DBG("ROM plant %u DAP=%u -> Kc=%.2f", plant_db_index, days_after_planting, (double)*out_kc);
-        return PACK_RESULT_SUCCESS;
+    /* Load from pack storage (all plants are there after provisioning) */
+    pack_plant_v1_t plant;
+    pack_result_t res = pack_storage_get_plant(plant_id, &plant);
+    if (res != PACK_RESULT_SUCCESS) {
+        LOG_ERR("Failed to load plant %u for Kc: %d", plant_id, res);
+        return res;
     }
     
-    LOG_WRN("No valid plant found: custom=%u, rom_idx=%u", custom_plant_id, plant_db_index);
-    return PACK_RESULT_INVALID_DATA;
+    /* Convert x1000 values to float */
+    float kc_ini = (float)plant.kc_ini_x1000 / 1000.0f;
+    float kc_dev = (float)plant.kc_dev_x1000 / 1000.0f;
+    float kc_mid = (float)plant.kc_mid_x1000 / 1000.0f;
+    float kc_end = (float)plant.kc_end_x1000 / 1000.0f;
+    
+    /* Calculate Kc based on growth stage */
+    uint16_t l_ini = plant.stage_days_ini;
+    uint16_t l_dev = plant.stage_days_dev;
+    uint16_t l_mid = plant.stage_days_mid;
+    uint16_t l_late = plant.stage_days_end;
+    
+    if (days_after_planting < l_ini) {
+        /* Initial stage */
+        *out_kc = kc_ini;
+    } else if (days_after_planting < l_ini + l_dev) {
+        /* Development stage - interpolate from kc_dev to kc_mid */
+        uint16_t day_in_stage = days_after_planting - l_ini;
+        *out_kc = interpolate_kc(kc_dev, kc_mid, day_in_stage, l_dev);
+    } else if (days_after_planting < l_ini + l_dev + l_mid) {
+        /* Mid-season stage */
+        *out_kc = kc_mid;
+    } else if (days_after_planting < l_ini + l_dev + l_mid + l_late) {
+        /* Late season stage - interpolate from kc_mid to kc_end */
+        uint16_t day_in_stage = days_after_planting - (l_ini + l_dev + l_mid);
+        *out_kc = interpolate_kc(kc_mid, kc_end, day_in_stage, l_late);
+    } else {
+        /* Post-season */
+        *out_kc = kc_end;
+    }
+    
+    LOG_DBG("Plant %u DAP=%u -> Kc=%.2f", plant_id, days_after_planting, (double)*out_kc);
+    return PACK_RESULT_SUCCESS;
 }
 
-pack_result_t pack_storage_get_root_depth(uint16_t custom_plant_id,
-                                           uint16_t plant_db_index,
+pack_result_t pack_storage_get_root_depth(uint16_t plant_id,
                                            uint16_t days_after_planting,
                                            float *out_root_depth_mm)
 {
@@ -895,59 +986,171 @@ pack_result_t pack_storage_get_root_depth(uint16_t custom_plant_id,
     /* Default root depth */
     *out_root_depth_mm = 300.0f;
     
-    if (custom_plant_id > 0) {
-        /* Load from pack storage */
-        pack_plant_v1_t plant;
-        pack_result_t res = pack_storage_get_plant(custom_plant_id, &plant);
-        if (res != PACK_RESULT_SUCCESS) {
-            LOG_ERR("Failed to load custom plant %u for root depth: %d", custom_plant_id, res);
-            return res;
-        }
-        
-        /* Calculate root depth based on growth stage */
-        uint16_t total_season = plant.stage_days_ini + plant.stage_days_dev + 
-                                plant.stage_days_mid + plant.stage_days_end;
-        
-        if (total_season == 0 || days_after_planting >= total_season) {
-            *out_root_depth_mm = (float)plant.root_depth_max_mm;
-        } else {
-            /* Linear interpolation from min to max */
-            float t = (float)days_after_planting / (float)total_season;
-            *out_root_depth_mm = (float)plant.root_depth_min_mm + 
-                                 t * ((float)plant.root_depth_max_mm - (float)plant.root_depth_min_mm);
-        }
-        
-        return PACK_RESULT_SUCCESS;
-    }
-    
-    /* Use built-in database */
-    if (plant_db_index < PLANT_FULL_SPECIES_COUNT) {
-        const plant_full_data_t *rom_plant = &plant_full_database[plant_db_index];
-        
-        uint16_t total_season = rom_plant->stage_days_ini + rom_plant->stage_days_dev + 
-                                rom_plant->stage_days_mid + rom_plant->stage_days_end;
-        
-        if (total_season == 0 || days_after_planting >= total_season) {
-            *out_root_depth_mm = PLANT_ROOT_MAX_M(rom_plant) * 1000.0f;
-        } else {
-            float t = (float)days_after_planting / (float)total_season;
-            float min_depth = PLANT_ROOT_MIN_M(rom_plant) * 1000.0f;
-            float max_depth = PLANT_ROOT_MAX_M(rom_plant) * 1000.0f;
-            *out_root_depth_mm = min_depth + t * (max_depth - min_depth);
-        }
-        
-        return PACK_RESULT_SUCCESS;
-    }
-    
-    return PACK_RESULT_INVALID_DATA;
-}
-
-pack_result_t pack_storage_get_fao56_plant(uint16_t custom_plant_id,
-                                            pack_plant_v1_t *plant)
-{
-    if (!plant || custom_plant_id == 0) {
+    if (plant_id == 0) {
+        LOG_WRN("No plant configured (plant_id=0)");
         return PACK_RESULT_INVALID_DATA;
     }
     
-    return pack_storage_get_plant(custom_plant_id, plant);
+    /* Load from pack storage */
+    pack_plant_v1_t plant;
+    pack_result_t res = pack_storage_get_plant(plant_id, &plant);
+    if (res != PACK_RESULT_SUCCESS) {
+        LOG_ERR("Failed to load plant %u for root depth: %d", plant_id, res);
+        return res;
+    }
+    
+    /* Calculate root depth based on growth stage */
+    uint16_t total_season = plant.stage_days_ini + plant.stage_days_dev + 
+                            plant.stage_days_mid + plant.stage_days_end;
+    
+    if (total_season == 0 || days_after_planting >= total_season) {
+        *out_root_depth_mm = (float)plant.root_depth_max_mm;
+    } else {
+        /* Linear interpolation from min to max */
+        float t = (float)days_after_planting / (float)total_season;
+        *out_root_depth_mm = (float)plant.root_depth_min_mm + 
+                             t * ((float)plant.root_depth_max_mm - (float)plant.root_depth_min_mm);
+    }
+    
+    return PACK_RESULT_SUCCESS;
+}
+
+pack_result_t pack_storage_get_fao56_plant(uint16_t plant_id,
+                                            pack_plant_v1_t *plant)
+{
+    if (!plant || plant_id == 0) {
+        return PACK_RESULT_INVALID_DATA;
+    }
+    
+    return pack_storage_get_plant(plant_id, plant);
+}
+
+/* ============================================================================
+ * Default Plant Provisioning
+ * ============================================================================ */
+
+/**
+ * @brief Convert ROM plant_full_data_t to pack_plant_v1_t
+ */
+static void rom_to_pack_plant(uint16_t plant_id, const plant_full_data_t *rom, pack_plant_v1_t *pack)
+{
+    memset(pack, 0, sizeof(*pack));
+    
+    /* Identification - use sequential IDs starting from 1 */
+    pack->plant_id = plant_id;
+    pack->pack_id = 0;      /* Built-in plants have no pack */
+    pack->version = 1;
+    
+    /* Names - copy from ROM (truncate if needed) */
+    if (rom->common_name_en) {
+        strncpy(pack->common_name, rom->common_name_en, PACK_COMMON_NAME_MAX_LEN - 1);
+    }
+    if (rom->scientific_name) {
+        strncpy(pack->scientific_name, rom->scientific_name, PACK_SCIENTIFIC_NAME_MAX_LEN - 1);
+    }
+    
+    /* Crop coefficients (same x1000 format) */
+    pack->kc_ini_x1000 = rom->kc_ini_x1000;
+    pack->kc_dev_x1000 = rom->kc_dev_x1000;
+    pack->kc_mid_x1000 = rom->kc_mid_x1000;
+    pack->kc_end_x1000 = rom->kc_end_x1000;
+    
+    /* Root depth: ROM uses m×1000, pack uses mm (same numeric value) */
+    pack->root_depth_min_mm = rom->root_depth_min_m_x1000;
+    pack->root_depth_max_mm = rom->root_depth_max_m_x1000;
+    
+    /* Growth stages */
+    pack->stage_days_ini = rom->stage_days_ini;
+    pack->stage_days_dev = rom->stage_days_dev;
+    pack->stage_days_mid = rom->stage_days_mid;
+    pack->stage_days_end = rom->stage_days_end;
+    pack->growth_cycle = rom->growth_cycle;
+    
+    /* Depletion and spacing */
+    pack->depletion_fraction_p_x1000 = rom->depletion_fraction_p_x1000;
+    pack->spacing_row_mm = rom->spacing_row_m_x1000;      /* m×1000 = mm */
+    pack->spacing_plant_mm = rom->spacing_plant_m_x1000;  /* m×1000 = mm */
+    pack->density_x100 = rom->default_density_plants_m2_x100;
+    pack->canopy_max_x1000 = rom->canopy_cover_max_frac_x1000;
+    
+    /* Temperature */
+    pack->frost_tolerance_c = rom->frost_tolerance_c;
+    pack->temp_opt_min_c = rom->temp_opt_min_c;
+    pack->temp_opt_max_c = rom->temp_opt_max_c;
+    
+    /* Irrigation */
+    pack->typ_irrig_method_id = rom->typ_irrig_method_id;
+    
+    /* User-adjustable defaults (unified system - no separate custom_plant struct) */
+    pack->water_need_factor_x100 = 100;  /* Default 1.0x */
+    pack->irrigation_freq_days = 3;       /* Default 3 days */
+    pack->prefer_area_based = 1;          /* Default to area-based */
+}
+
+pack_result_t pack_storage_provision_defaults(void)
+{
+    if (!pack_storage_initialized) {
+        LOG_ERR("Pack storage not mounted for provisioning");
+        return PACK_RESULT_IO_ERROR;
+    }
+    
+    LOG_INF("Provisioning %u default plants from ROM to flash...", PLANT_FULL_SPECIES_COUNT);
+    
+    uint16_t provisioned = 0;
+    uint16_t skipped = 0;
+    uint16_t failed = 0;
+    
+    for (uint16_t i = 0; i < PLANT_FULL_SPECIES_COUNT; i++) {
+        uint16_t plant_id = i + 1;  /* Plant IDs start at 1 */
+        
+        /* Check if already exists */
+        pack_plant_v1_t existing;
+        pack_result_t check = pack_storage_get_plant(plant_id, &existing);
+        if (check == PACK_RESULT_SUCCESS) {
+            skipped++;
+            continue;  /* Already provisioned */
+        }
+        
+        /* Convert ROM to pack format */
+        pack_plant_v1_t pack_plant;
+        rom_to_pack_plant(plant_id, &plant_full_database[i], &pack_plant);
+        
+        /* Save to flash using install function */
+        pack_result_t res = pack_storage_install_plant(&pack_plant);
+        if (res != PACK_RESULT_SUCCESS && res != PACK_RESULT_ALREADY_CURRENT) {
+            LOG_ERR("Failed to provision plant %u (%s): %d", 
+                    plant_id, pack_plant.common_name, res);
+            failed++;
+        } else {
+            provisioned++;
+        }
+        
+        /* Yield periodically to avoid watchdog issues */
+        if ((i % 20) == 19) {
+            k_yield();
+        }
+    }
+    
+    LOG_INF("Provisioning complete: %u new, %u existing, %u failed", 
+            provisioned, skipped, failed);
+    
+    return (failed > 0) ? PACK_RESULT_IO_ERROR : PACK_RESULT_SUCCESS;
+}
+
+bool pack_storage_defaults_provisioned(void)
+{
+    if (!pack_storage_initialized) {
+        return false;
+    }
+    
+    /* Check if plant ID 1 and last plant exist */
+    pack_plant_v1_t plant;
+    if (pack_storage_get_plant(1, &plant) != PACK_RESULT_SUCCESS) {
+        return false;
+    }
+    if (pack_storage_get_plant(PLANT_FULL_SPECIES_COUNT, &plant) != PACK_RESULT_SUCCESS) {
+        return false;
+    }
+    
+    return true;
 }

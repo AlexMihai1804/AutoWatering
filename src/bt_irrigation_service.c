@@ -58,6 +58,7 @@ struct bt_conn;
 #include "environmental_data.h"     // Environmental data helpers for validation/quality
 #include "env_sensors.h"            // Sensor health and status
 #include "bt_environmental_history_handlers.h" // Environmental history BLE handlers
+#include "pack_storage.h"           // Pack storage for unified plant_id access
 #include "bme280_driver.h"          // BME280 config API prototypes
 
 /* Forward declaration for the service structure */
@@ -6949,7 +6950,7 @@ static ssize_t read_growing_env(struct bt_conn *conn, const struct bt_gatt_attr 
         read_value.channel_id = channel_id;
         
         /* Enhanced database defaults */
-        read_value.plant_db_index = UINT16_MAX; /* Not set */
+        read_value.plant_id = 0; /* Not set */
         read_value.soil_db_index = UINT8_MAX; /* Not set */
         read_value.irrigation_method_index = UINT8_MAX; /* Not set */
         
@@ -6974,8 +6975,8 @@ static ssize_t read_growing_env(struct bt_conn *conn, const struct bt_gatt_attr 
         memset(&read_value, 0, sizeof(read_value));
         read_value.channel_id = channel_id;
         
-        /* Enhanced database indices */
-        read_value.plant_db_index = channel->plant_db_index;
+        /* Enhanced database indices - unified plant_id system */
+        read_value.plant_id = channel->plant_id;
         read_value.soil_db_index = channel->soil_db_index;
         read_value.irrigation_method_index = channel->irrigation_method_index;
         
@@ -7000,27 +7001,34 @@ static ssize_t read_growing_env(struct bt_conn *conn, const struct bt_gatt_attr 
         read_value.latitude_deg = channel->latitude_deg;
         read_value.sun_exposure_pct = channel->sun_exposure_pct;
         
-        /* Custom plant fields (only if plant_type == PLANT_TYPE_OTHER) */
-        if (channel->plant_type == PLANT_TYPE_OTHER) {
-            size_t name_len = strnlen(channel->custom_plant.custom_name, sizeof(channel->custom_plant.custom_name));
-            if (name_len >= sizeof(read_value.custom_name)) {
-                name_len = sizeof(read_value.custom_name) - 1;
+        /* Plant fields from pack storage (unified system) */
+        if (channel->plant_id > 0) {
+            pack_plant_v1_t plant;
+            if (pack_storage_get_plant(channel->plant_id, &plant) == PACK_RESULT_SUCCESS) {
+                size_t name_len = strnlen(plant.common_name, sizeof(plant.common_name));
+                if (name_len >= sizeof(read_value.custom_name)) {
+                    name_len = sizeof(read_value.custom_name) - 1;
+                }
+                memcpy(read_value.custom_name, plant.common_name, name_len);
+                read_value.custom_name[name_len] = '\0';
+                
+                read_value.water_need_factor = PACK_PLANT_WATER_FACTOR(&plant);
+                read_value.irrigation_freq_days = plant.irrigation_freq_days;
+                read_value.prefer_area_based = plant.prefer_area_based;
+            } else {
+                strcpy(read_value.custom_name, "");
+                read_value.water_need_factor = 1.0f;
+                read_value.irrigation_freq_days = 3;
+                read_value.prefer_area_based = read_value.use_area_based;
             }
-            memcpy(read_value.custom_name, channel->custom_plant.custom_name, name_len);
-            read_value.custom_name[name_len] = '\0';
-            
-            read_value.water_need_factor = channel->custom_plant.water_need_factor;
-            read_value.irrigation_freq_days = channel->custom_plant.irrigation_freq;
-            read_value.prefer_area_based = channel->custom_plant.prefer_area_based ? 1 : 0;
         } else {
             strcpy(read_value.custom_name, "");
             read_value.water_need_factor = 1.0f;
-            read_value.irrigation_freq_days = 1;
+            read_value.irrigation_freq_days = 3;
             read_value.prefer_area_based = read_value.use_area_based;
         }
         
-        /* Pack storage custom plant ID */
-        read_value.custom_plant_id = channel->custom_plant_id;
+        /* plant_id is already set above - unified system */
     }
     
     LOG_DBG("Growing Env read: ch=%u, plant=%u.%u, soil=%u, method=%u, area=%s %.2f, sun=%u%%",
@@ -7091,8 +7099,8 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         
         env_data->channel_id = channel_id;
         
-        /* Enhanced database indices */
-        env_data->plant_db_index = channel->plant_db_index;
+        /* Enhanced database indices - unified plant_id system */
+        env_data->plant_id = channel->plant_id;
         env_data->soil_db_index = channel->soil_db_index;
         env_data->irrigation_method_index = channel->irrigation_method_index;
         
@@ -7117,21 +7125,23 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
         env_data->latitude_deg = channel->latitude_deg;
         env_data->sun_exposure_pct = channel->sun_exposure_pct;
         
-        /* Custom plant fields */
-        if (channel->plant_type == PLANT_TYPE_OTHER) {
-            strncpy(env_data->custom_name, channel->custom_plant.custom_name, 
-                   sizeof(env_data->custom_name) - 1);
-            env_data->custom_name[sizeof(env_data->custom_name) - 1] = '\0';
-            env_data->water_need_factor = channel->custom_plant.water_need_factor;
-            env_data->irrigation_freq_days = channel->custom_plant.irrigation_freq;
-            env_data->prefer_area_based = channel->custom_plant.prefer_area_based ? 1 : 0;
+        /* Plant fields from pack storage (unified system) */
+        if (channel->plant_id > 0) {
+            pack_plant_v1_t plant;
+            if (pack_storage_get_plant(channel->plant_id, &plant) == PACK_RESULT_SUCCESS) {
+                strncpy(env_data->custom_name, plant.common_name, 
+                       sizeof(env_data->custom_name) - 1);
+                env_data->custom_name[sizeof(env_data->custom_name) - 1] = '\0';
+                env_data->water_need_factor = PACK_PLANT_WATER_FACTOR(&plant);
+                env_data->irrigation_freq_days = plant.irrigation_freq_days;
+                env_data->prefer_area_based = plant.prefer_area_based;
+            }
         }
         
-        /* Pack storage custom plant ID */
-        env_data->custom_plant_id = channel->custom_plant_id;
+        /* plant_id is already set above - unified system */
         
-        printk("✅ BLE: Growing env channel %u selected (plant_db=%u, soil_db=%u, method_db=%u, auto=%u, custom_plant=%u)\n", 
-                channel_id, env_data->plant_db_index, env_data->soil_db_index, env_data->irrigation_method_index, env_data->auto_mode, env_data->custom_plant_id);
+        printk("✅ BLE: Growing env channel %u selected (plant_id=%u, soil_db=%u, method_db=%u, auto=%u)\n", 
+                channel_id, env_data->plant_id, env_data->soil_db_index, env_data->irrigation_method_index, env_data->auto_mode);
         
         return len;
     }
@@ -7237,12 +7247,9 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
                 return -EINVAL;
             }
 
-            /* Validate database indices (allow sentinel values) */
-            if (env_data->plant_db_index != UINT16_MAX && env_data->plant_db_index >= PLANT_FULL_SPECIES_COUNT) {
-                printk("❌ Invalid plant_db_index %u\n", env_data->plant_db_index);
-                growing_env_frag.in_progress = false;
-                return -EINVAL;
-            }
+            /* Validate database indices (allow 0 = not set) */
+            /* plant_id: 0 = not set, 1-223 = default, >=1000 = custom */
+            /* Validation is lenient - let the FAO-56 system handle invalid plant IDs */
             if (env_data->soil_db_index != UINT8_MAX && env_data->soil_db_index >= SOIL_ENHANCED_TYPES_COUNT) {
                 printk("❌ Invalid soil_db_index %u\n", env_data->soil_db_index);
                 growing_env_frag.in_progress = false;
@@ -7296,8 +7303,8 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
             /* Build updated config locally so we can fail the write if persistence fails */
             watering_channel_t updated = *channel;
 
-            /* Update channel data with enhanced database indices */
-            updated.plant_db_index = env_data->plant_db_index;
+            /* Update channel data with unified plant_id system */
+            updated.plant_id = env_data->plant_id;
             updated.soil_db_index = env_data->soil_db_index;
             updated.irrigation_method_index = env_data->irrigation_method_index;
 
@@ -7322,26 +7329,25 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
             updated.latitude_deg = env_data->latitude_deg;
             updated.sun_exposure_pct = env_data->sun_exposure_pct;
 
-            /* Custom plant fields */
-            if (env_data->plant_type == PLANT_TYPE_OTHER) {
-                /* Copy custom name with null termination */
-                size_t name_len = strnlen(env_data->custom_name, sizeof(env_data->custom_name));
-                if (name_len >= sizeof(updated.custom_plant.custom_name)) {
-                    name_len = sizeof(updated.custom_plant.custom_name) - 1;
+            /* Plant adjustment fields - update in pack storage if plant exists */
+            if (env_data->plant_id > 0) {
+                pack_plant_v1_t plant;
+                if (pack_storage_get_plant(env_data->plant_id, &plant) == PACK_RESULT_SUCCESS) {
+                    /* Update adjustable fields in plant */
+                    plant.water_need_factor_x100 = (uint16_t)(env_data->water_need_factor * 100.0f);
+                    plant.irrigation_freq_days = env_data->irrigation_freq_days;
+                    plant.prefer_area_based = env_data->prefer_area_based;
+                    
+                    /* Save updated plant back to pack storage */
+                    pack_storage_install_plant(&plant);
+                    
+                    onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
                 }
-                memcpy(updated.custom_plant.custom_name, env_data->custom_name, name_len);
-                updated.custom_plant.custom_name[name_len] = '\0';
-
-                updated.custom_plant.water_need_factor = env_data->water_need_factor;
-                updated.custom_plant.irrigation_freq = env_data->irrigation_freq_days;
-                updated.custom_plant.prefer_area_based = (env_data->prefer_area_based != 0);
-
-                /* Update onboarding flag - water need factor has been set for custom plant */
-                onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
             }
             
             /* Update basic channel config flags based on what was set */
-            if (env_data->plant_db_index != UINT16_MAX) {
+            /* plant_id: 0 = not set, 1+ = plant in pack storage */
+            if (env_data->plant_id != 0) {
                 onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_PLANT_TYPE_SET, true);
             }
             if (env_data->soil_db_index != UINT8_MAX) {
@@ -7437,10 +7443,8 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
                 env_data->channel_id, env_data->auto_mode, env_data->sun_exposure_pct);
         return -EINVAL;
     }
-    if (env_data->plant_db_index != UINT16_MAX && env_data->plant_db_index >= PLANT_FULL_SPECIES_COUNT) {
-        printk("❌ Invalid plant_db_index %u\n", env_data->plant_db_index);
-        return -EINVAL;
-    }
+    /* plant_id validation: 0 = not set, 1-223 = default, >=1000 = custom */
+    /* Let the FAO-56 system handle invalid plant IDs at runtime */
     if (env_data->soil_db_index != UINT8_MAX && env_data->soil_db_index >= SOIL_ENHANCED_TYPES_COUNT) {
         printk("❌ Invalid soil_db_index %u\n", env_data->soil_db_index);
         return -EINVAL;
@@ -7481,8 +7485,8 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
     /* Build updated config locally so we can fail the write if persistence fails */
     watering_channel_t updated = *channel;
 
-    /* Update channel data with enhanced database indices */
-    updated.plant_db_index = env_data->plant_db_index;
+    /* Update channel data with unified plant_id system */
+    updated.plant_id = env_data->plant_id;
     updated.soil_db_index = env_data->soil_db_index;
     updated.irrigation_method_index = env_data->irrigation_method_index;
 
@@ -7507,29 +7511,25 @@ static ssize_t write_growing_env(struct bt_conn *conn, const struct bt_gatt_attr
     updated.latitude_deg = env_data->latitude_deg;
     updated.sun_exposure_pct = env_data->sun_exposure_pct;
 
-    /* Custom plant fields */
-    if (env_data->plant_type == PLANT_TYPE_OTHER) {
-        /* Copy custom name with null termination */
-        size_t name_len = strnlen(env_data->custom_name, sizeof(env_data->custom_name));
-        if (name_len >= sizeof(updated.custom_plant.custom_name)) {
-            name_len = sizeof(updated.custom_plant.custom_name) - 1;
+    /* Plant adjustment fields - update in pack storage if plant exists */
+    if (env_data->plant_id > 0) {
+        pack_plant_v1_t plant;
+        if (pack_storage_get_plant(env_data->plant_id, &plant) == PACK_RESULT_SUCCESS) {
+            /* Update adjustable fields in plant */
+            plant.water_need_factor_x100 = (uint16_t)(env_data->water_need_factor * 100.0f);
+            plant.irrigation_freq_days = env_data->irrigation_freq_days;
+            plant.prefer_area_based = env_data->prefer_area_based;
+            
+            /* Save updated plant back to pack storage */
+            pack_storage_install_plant(&plant);
+            
+            onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
         }
-        memcpy(updated.custom_plant.custom_name, env_data->custom_name, name_len);
-        updated.custom_plant.custom_name[name_len] = '\0';
-
-        updated.custom_plant.water_need_factor = env_data->water_need_factor;
-        updated.custom_plant.irrigation_freq = env_data->irrigation_freq_days;
-        updated.custom_plant.prefer_area_based = (env_data->prefer_area_based != 0);
-
-        /* Update onboarding flag - water need factor has been set for custom plant */
-        onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_WATER_FACTOR_SET, true);
     }
     
-    /* Pack storage custom plant ID (0 = use plant_db_index, >=1000 = custom plant from pack) */
-    updated.custom_plant_id = env_data->custom_plant_id;
-    
     /* Update basic channel config flags based on what was set */
-    if (env_data->plant_db_index != UINT16_MAX) {
+    /* plant_id: 0 = not set, 1+ = plant in pack storage */
+    if (env_data->plant_id != 0) {
         onboarding_update_channel_flag(env_data->channel_id, CHANNEL_FLAG_PLANT_TYPE_SET, true);
     }
     if (env_data->soil_db_index != UINT8_MAX) {
@@ -7601,8 +7601,8 @@ static void growing_env_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
         if (err == WATERING_SUCCESS) {
             env_data->channel_id = 0;
             
-            /* Enhanced database indices */
-            env_data->plant_db_index = channel->plant_db_index;
+            /* Enhanced database indices - unified plant_id system */
+            env_data->plant_id = channel->plant_id;
             env_data->soil_db_index = channel->soil_db_index;
             env_data->irrigation_method_index = channel->irrigation_method_index;
             
@@ -7627,21 +7627,18 @@ static void growing_env_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
             env_data->latitude_deg = channel->latitude_deg;
             env_data->sun_exposure_pct = channel->sun_exposure_pct;
             
-            /* Pack storage custom plant ID */
-            env_data->custom_plant_id = channel->custom_plant_id;
-            
-    LOG_INF("Initialized with channel 0: plant_db=%u, soil_db=%u, method_db=%u, %s=%.2f, auto=%u, custom_plant=%u",
-                    env_data->plant_db_index, env_data->soil_db_index, env_data->irrigation_method_index,
+    LOG_INF("Initialized with channel 0: plant_id=%u, soil_db=%u, method_db=%u, %s=%.2f, auto=%u",
+                    env_data->plant_id, env_data->soil_db_index, env_data->irrigation_method_index,
                     env_data->use_area_based ? "area" : "count",
             env_data->use_area_based ? (double)env_data->coverage.area_m2 : (double)((float)env_data->coverage.plant_count),
-                    env_data->auto_mode, env_data->custom_plant_id);
+                    env_data->auto_mode);
         } else {
             /* Default values if channel not available */
             memset(env_data, 0, sizeof(struct growing_env_data));
             env_data->channel_id = 0;
             
             /* Enhanced database defaults */
-            env_data->plant_db_index = UINT16_MAX; /* Not set */
+            env_data->plant_id = 0; /* Not set */
             env_data->soil_db_index = UINT8_MAX; /* Not set */
             env_data->irrigation_method_index = UINT8_MAX; /* Not set */
             
@@ -7800,17 +7797,40 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
     if (!d || !channel) return;
     uint8_t channel_id = d->channel_id;
     uint32_t now_ms = k_uptime_get_32();
-    bool missing_plant = (channel->plant_db_index >= PLANT_FULL_SPECIES_COUNT);
+    /* plant_id: 0 = not set, 1-223 = default, >=1000 = custom */
+    bool missing_plant = (channel->plant_id == 0);
     bool missing_method = (channel->irrigation_method_index >= IRRIGATION_METHODS_COUNT);
     bool missing_balance = (channel->water_balance == NULL);
-    const plant_full_data_t *plant = NULL;
-    /* Plant & phenological stage */
+    
+    /* Plant & phenological stage - use pack storage */
     if (!missing_plant) {
-        plant = &plant_full_database[channel->plant_db_index];
         uint16_t dap = channel->days_after_planting;
-        phenological_stage_t stage = calc_phenological_stage(plant, dap);
-        d->phenological_stage = (uint8_t)stage;
-        d->crop_coefficient = calc_crop_coefficient(plant, stage, dap);
+        float kc = 1.0f;
+        pack_result_t res = pack_storage_get_kc(channel->plant_id, dap, &kc);
+        if (res == PACK_RESULT_SUCCESS) {
+            d->crop_coefficient = kc;
+            /* Estimate phenological stage from DAP and Kc value */
+            pack_plant_v1_t plant_data;
+            if (pack_storage_get_plant(channel->plant_id, &plant_data) == PACK_RESULT_SUCCESS) {
+                uint16_t l_ini = plant_data.stage_days_ini;
+                uint16_t l_dev = plant_data.stage_days_dev;
+                uint16_t l_mid = plant_data.stage_days_mid;
+                if (dap < l_ini) {
+                    d->phenological_stage = 0; /* Initial */
+                } else if (dap < l_ini + l_dev) {
+                    d->phenological_stage = 1; /* Development */
+                } else if (dap < l_ini + l_dev + l_mid) {
+                    d->phenological_stage = 2; /* Mid */
+                } else {
+                    d->phenological_stage = 3; /* Late */
+                }
+            } else {
+                d->phenological_stage = 0;
+            }
+        } else {
+            d->phenological_stage = 0;
+            if (d->crop_coefficient < 0.01f) d->crop_coefficient = 1.0f;
+        }
     } else {
         d->phenological_stage = 0;
         if (d->crop_coefficient < 0.01f) d->crop_coefficient = 1.0f;
@@ -7862,14 +7882,14 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
         channel_id < WATERING_CHANNELS_COUNT) {
         static uint32_t last_missing_log_ms[WATERING_CHANNELS_COUNT];
         if (now_ms - last_missing_log_ms[channel_id] > 60000U) {
-            LOG_WRN("Auto calc data missing ch=%u: env=%u(rc=%d valid=%u) balance=%u plant=%u(idx=%u) method=%u(idx=%u)",
+            LOG_WRN("Auto calc data missing ch=%u: env=%u(rc=%d valid=%u) balance=%u plant=%u(id=%u) method=%u(idx=%u)",
                     channel_id,
                     env_valid ? 0U : 1U,
                     env_rc,
                     env_bme280.current.valid ? 1U : 0U,
                     missing_balance ? 1U : 0U,
                     missing_plant ? 1U : 0U,
-                    channel->plant_db_index,
+                    channel->plant_id,
                     missing_method ? 1U : 0U,
                     channel->irrigation_method_index);
             last_missing_log_ms[channel_id] = now_ms;
@@ -7885,6 +7905,13 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
         d->current_deficit_mm = balance->current_deficit_mm;
         const irrigation_method_data_t *method = NULL;
         const soil_enhanced_data_t *soil = NULL;
+        const plant_full_data_t *plant = NULL;
+        
+        /* Load plant data from pack storage */
+        if (!missing_plant) {
+            plant = fao56_get_channel_plant(channel, channel_id);
+        }
+        
         if (channel->irrigation_method_index < IRRIGATION_METHODS_COUNT) {
             method = &irrigation_methods_database[channel->irrigation_method_index];
         }
@@ -8295,26 +8322,33 @@ static ssize_t read_auto_calc_status(struct bt_conn *conn, const struct bt_gatt_
             channel->water_balance != NULL &&
             read_value.etc_mm_day > 0.01f) {
             water_balance_t *balance = (water_balance_t *)channel->water_balance;
-            const plant_full_data_t *plant = NULL;
-            if (channel->plant_db_index < PLANT_FULL_SPECIES_COUNT) {
-                plant = &plant_full_database[channel->plant_db_index];
-            }
-            if (plant) {
-                float hours_until = 0.0f;
-                if (calc_irrigation_timing(balance, read_value.etc_mm_day, plant, &hours_until) == WATERING_SUCCESS &&
-                    hours_until > 0.0f) {
-                    uint32_t now_sec = timezone_get_unix_utc();
-                    if (now_sec != 0U) {
-                        double delta_sec = (double)hours_until * 3600.0;
-                        if (delta_sec < 0.0) {
-                            delta_sec = 0.0;
+            
+            /* Load plant from pack storage for irrigation timing calculation */
+            if (channel->plant_id != 0) {
+                pack_plant_v1_t pack_plant;
+                if (pack_storage_get_plant(channel->plant_id, &pack_plant) == PACK_RESULT_SUCCESS) {
+                    /* For now, estimate next irrigation based on deficit and ETc */
+                    /* This is simplified - full timing calc would need plant MAD values */
+                    float hours_until = 0.0f;
+                    if (balance->current_deficit_mm < balance->raw_mm) {
+                        /* Estimate hours until deficit reaches RAW threshold */
+                        float remaining_mm = balance->raw_mm - balance->current_deficit_mm;
+                        if (read_value.etc_mm_day > 0.01f) {
+                            hours_until = (remaining_mm / read_value.etc_mm_day) * 24.0f;
                         }
-                        if (delta_sec > (double)(UINT32_MAX - now_sec)) {
-                            delta_sec = (double)(UINT32_MAX - now_sec);
+                    }
+                    if (hours_until > 0.0f) {
+                        uint32_t now_sec = timezone_get_unix_utc();
+                        if (now_sec != 0U) {
+                            double delta_sec = (double)hours_until * 3600.0;
+                            if (delta_sec < 0.0) {
+                                delta_sec = 0.0;
+                            }
+                            if (delta_sec > (double)(UINT32_MAX - now_sec)) {
+                                delta_sec = (double)(UINT32_MAX - now_sec);
+                            }
+                            read_value.next_irrigation_time = now_sec + (uint32_t)delta_sec;
                         }
-                        read_value.next_irrigation_time = now_sec + (uint32_t)delta_sec;
-                    } else {
-                        read_value.next_irrigation_time = 0;
                     }
                 }
             }
@@ -9923,35 +9957,43 @@ int bt_irrigation_growing_env_update(uint8_t channel_id) {
     
     env_data->sun_percentage = channel->sun_percentage;
     
-    /* Custom plant fields */
-    if (channel->plant_type == PLANT_TYPE_OTHER) {
-        size_t name_len = strnlen(channel->custom_plant.custom_name, sizeof(channel->custom_plant.custom_name));
-        if (name_len >= sizeof(env_data->custom_name)) {
-            name_len = sizeof(env_data->custom_name) - 1;
+    /* Plant fields from pack storage (unified system) */
+    if (channel->plant_id > 0) {
+        pack_plant_v1_t plant;
+        if (pack_storage_get_plant(channel->plant_id, &plant) == PACK_RESULT_SUCCESS) {
+            size_t name_len = strnlen(plant.common_name, sizeof(plant.common_name));
+            if (name_len >= sizeof(env_data->custom_name)) {
+                name_len = sizeof(env_data->custom_name) - 1;
+            }
+            memcpy(env_data->custom_name, plant.common_name, name_len);
+            env_data->custom_name[name_len] = '\0';
+            
+            env_data->water_need_factor = PACK_PLANT_WATER_FACTOR(&plant);
+            env_data->irrigation_freq_days = plant.irrigation_freq_days;
+            env_data->prefer_area_based = plant.prefer_area_based;
+        } else {
+            strcpy(env_data->custom_name, "");
+            env_data->water_need_factor = 1.0f;
+            env_data->irrigation_freq_days = 3;
+            env_data->prefer_area_based = env_data->use_area_based;
         }
-        memcpy(env_data->custom_name, channel->custom_plant.custom_name, name_len);
-        env_data->custom_name[name_len] = '\0';
-        
-        env_data->water_need_factor = channel->custom_plant.water_need_factor;
-        env_data->irrigation_freq_days = channel->custom_plant.irrigation_freq;
-        env_data->prefer_area_based = channel->custom_plant.prefer_area_based ? 1 : 0;
     } else {
         strcpy(env_data->custom_name, "");
         env_data->water_need_factor = 1.0f;
-        env_data->irrigation_freq_days = 1;
+        env_data->irrigation_freq_days = 3;
         env_data->prefer_area_based = env_data->use_area_based;
     }
     
-    LOG_INF("Growing Environment update: ch=%u, plant=%u.%u, soil=%u, method=%u, %s=%.2f, sun=%u%%",
-            env_data->channel_id, env_data->plant_type, env_data->specific_plant,
+    LOG_INF("Growing Environment update: ch=%u, plant_id=%u, soil=%u, method=%u, %s=%.2f, sun=%u%%",
+            env_data->channel_id, env_data->plant_id, 
             env_data->soil_type, env_data->irrigation_method,
             env_data->use_area_based ? "area" : "count",
             env_data->use_area_based ? (double)env_data->coverage.area_m2 : (double)((float)env_data->coverage.plant_count),
             env_data->sun_percentage);
     
-    /* Log custom plant info if applicable */
-    if (env_data->plant_type == 7) {
-    LOG_INF("Custom plant: '%s', water_factor=%.2f, freq=%u days, prefer_area=%u",
+    /* Log plant info if applicable */
+    if (channel->plant_id > 0) {
+    LOG_INF("Plant: '%s', water_factor=%.2f, freq=%u days, prefer_area=%u",
         env_data->custom_name, (double)env_data->water_need_factor, 
                 env_data->irrigation_freq_days, env_data->prefer_area_based);
     }

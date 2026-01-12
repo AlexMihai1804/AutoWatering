@@ -32,7 +32,7 @@ Little-endian pentru câmpurile multi-byte.
 - `channel_id` < 8, `operation` ∈ {0,1,2,3}.
 - For `operation` 1/2: `name` non-empty; percentages in 0–100; density/infiltration >0.
 - For `operation` 3: numeric fields ignored; deletes entry if present.
-- Offset != 0 or `len` != 76 ⇒ `BT_ATT_ERR_INVALID_ATTRIBUTE_LEN`.
+- Offset != 0 or `len` != 70 ⇒ `BT_ATT_ERR_INVALID_ATTRIBUTE_LEN`.
 - Timestamp/CRC fields may be 0 from client; FW overwrites them.
 
 ## Operation semantics
@@ -74,7 +74,7 @@ If CCC is set to Notify, after each write the FW sends the final struct (with `s
 ## Example (pseudo JS Web Bluetooth)
 ```js
 // Write create/update
-const buf = new ArrayBuffer(76);
+const buf = new ArrayBuffer(70);
 const dv = new DataView(buf);
 dv.setUint8(0, 0);   // channel_id
 dv.setUint8(1, 1);   // operation = create

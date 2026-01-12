@@ -23,10 +23,10 @@ extern "C" {
  * Configuration
  * ============================================================================ */
 
-/** Maximum plants per pack transfer (256 plants * 120 bytes = 30KB) */
+/** Maximum plants per pack transfer (64 plants * 156 bytes = 9984 bytes) */
 #define PACK_TRANSFER_MAX_PLANTS    64
 
-/** Transfer buffer size (64 plants * 120 bytes = 7680 bytes) */
+/** Transfer buffer size (64 plants * 156 bytes = 9984 bytes) */
 #define PACK_TRANSFER_BUFFER_SIZE   (PACK_TRANSFER_MAX_PLANTS * sizeof(pack_plant_v1_t))
 
 /** Maximum chunk size per BLE write (MTU dependent, typical 244 bytes) */
@@ -122,7 +122,7 @@ typedef struct __attribute__((packed)) {
 /**
  * @brief Plant install request (write to Pack Plant characteristic)
  * 
- * Write the full pack_plant_v1_t structure (120 bytes) to install a plant.
+ * Write the full pack_plant_v1_t structure (156 bytes) to install a plant.
  */
 typedef struct __attribute__((packed)) {
     pack_plant_v1_t plant;  /**< Plant data to install */
@@ -178,6 +178,7 @@ typedef struct __attribute__((packed)) {
     uint16_t builtin_count; /**< Built-in plant count (223) */
     uint8_t status;         /**< 0=OK, 1=not mounted, 2=error */
     uint8_t reserved;
+    uint32_t change_counter;/**< Increments on install/delete (cache invalidation) */
 } bt_pack_stats_resp_t;
 
 /**

@@ -45,7 +45,7 @@ The write operation is polymorphic based on payload size:
 |------|-----------|---------|
 | 4 bytes | List request | `bt_pack_plant_list_req_t` |
 | 2 bytes | Delete request | `bt_pack_plant_delete_t` |
-| 120 bytes | Install request | `pack_plant_v1_t` |
+| 156 bytes | Install request | `pack_plant_v1_t` |
 
 #### List Request (4 bytes)
 
@@ -75,7 +75,7 @@ typedef struct __attribute__((packed)) {
 E9 03          // Delete plant 1001 (0x03E9)
 ```
 
-#### Install Request (120 bytes)
+#### Install Request (156 bytes)
 
 Write a full `pack_plant_v1_t` structure. See [PACK_SCHEMA.md](PACK_SCHEMA.md) for structure details.
 
@@ -127,7 +127,7 @@ typedef struct __attribute__((packed)) {
 ```
 1. Connect to device
 2. Enable notifications on Pack Plant (write 0x0100 to CCC)
-3. Write 120-byte pack_plant_v1_t
+3. Write 156-byte pack_plant_v1_t
 4. Receive notification with result
 ```
 
@@ -172,10 +172,22 @@ typedef struct __attribute__((packed)) {
     uint16_t builtin_count;     // ROM plants (223)
     uint8_t status;             // 0=ok, 1=not mounted, 2=error
     uint8_t reserved;
+    uint32_t change_counter;    // Increments on each install/delete (for cache invalidation)
 } bt_pack_stats_resp_t;
 ```
 
-**Size:** 20 bytes
+**Size:** 24 bytes
+
+### Cache Invalidation
+
+The `change_counter` field enables efficient caching in mobile apps:
+
+1. **On first connect**: Read Pack Stats, cache `change_counter` value
+2. **On reconnect**: Read Pack Stats, compare `change_counter`
+   - If same: Skip plant list refresh, use cached data
+   - If different: Re-fetch plant list, update cache
+
+**Important:** The counter is **persisted to flash** (`/lfs_ext/packs/counter.bin`), so it survives device reboots. This ensures the cache invalidation remains reliable across power cycles.
 
 ### Example Response (hex)
 
@@ -188,6 +200,7 @@ typedef struct __attribute__((packed)) {
 DF 00          // builtin_count = 223
 00             // status = OK
 00             // reserved
+07 00 00 00    // change_counter = 7 (persisted, survives reboot)
 ```
 
 ---
@@ -360,7 +373,7 @@ This requires pairing/bonding before access.
 
 **Recommendations:**
 - Request MTU of 247+ for pack transfers
-- Single-plant install (120 bytes) requires MTU ≥ 123
+- Single-plant install (156 bytes) requires MTU ≥ 159
 - Transfer protocol works with any MTU via chunking
 
 ---
@@ -401,10 +414,11 @@ Example output:
 ```
 [bt_pack] Pack plant install: id=1001, pack=1, name=Tomato
 [bt_pack] Plant 1001 installed (version 1)
-[bt_pack] Pack transfer started: pack_id=1 v1, plants=5, size=600
-[bt_pack] Received chunk offset=0, len=240, total=240/600
-[bt_pack] Received chunk offset=240, len=240, total=480/600
-[bt_pack] Received chunk offset=480, len=120, total=600/600
+[bt_pack] Pack transfer started: pack_id=1 v1, plants=5, size=780
+[bt_pack] Received chunk offset=0, len=240, total=240/780
+[bt_pack] Received chunk offset=240, len=240, total=480/780
+[bt_pack] Received chunk offset=480, len=240, total=720/780
+[bt_pack] Received chunk offset=720, len=60, total=780/780
 [bt_pack] CRC32 verified, installing 5 plants...
 [bt_pack] Pack transfer complete: installed=5, updated=0, errors=0
 ```
@@ -451,42 +465,61 @@ void bt_pack_abort_transfer(void);
 ### Install Tomato Plant (Write to Pack Plant)
 
 ```hex
-E9 03           // plant_id = 1001
+E9 03           // plant_id = 1001 (0x03E9)
 01 00           // pack_id = 1
 01 00           // version = 1
-02              // source = PLANT_SOURCE_PACK
-00              // flags = 0
-00 00 00 00     // reserved_id
-54 6F 6D 61 74 6F 00 ... (32 bytes) // "Tomato"
-53 6F 6C 61 6E 75 6D ... (32 bytes) // "Solanum lycopersicum"
-3C 00           // kc_ini = 60 (0.60)
-73 00           // kc_mid = 115 (1.15)
-50 00           // kc_end = 80 (0.80)
-00 00           // kc_flags
-23 00           // l_ini_days = 35
-28 00           // l_dev_days = 40
-28 00           // l_mid_days = 40
-14 00           // l_end_days = 20
-2C 01           // root_depth_min = 300
-DC 05           // root_depth_max = 1500
-19 00           // root_growth_rate = 25
-00 00           // root_flags
-28 00           // depletion_fraction = 40
-6E 00           // yield_response = 110
-3C 00           // critical_depletion = 60
-00 00           // water_flags
-0A              // temp_min = 10
-23              // temp_max = 35
-14              // temp_optimal_low = 20
-1B              // temp_optimal_high = 27
-32              // humidity_min = 50
-50              // humidity_max = 80
-1E              // light_min = 30
-50              // light_max = 80
-00 00 00 00     // reserved
+00 00           // reserved
+
+// common_name[48] - "Tomato" padded with zeros
+54 6F 6D 61 74 6F 00 00 00 00 00 00 00 00 00 00  // "Tomato\0..."
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  // padding
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  // padding
+
+// scientific_name[64] - "Solanum lycopersicum" padded with zeros  
+53 6F 6C 61 6E 75 6D 20 6C 79 63 6F 70 65 72 73  // "Solanum lycoper"
+69 63 75 6D 00 00 00 00 00 00 00 00 00 00 00 00  // "sicum\0..."
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  // padding
+00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  // padding
+
+// Kc coefficients (×1000)
+5E 01           // kc_ini_x1000 = 350 (0.35)
+BC 02           // kc_dev_x1000 = 700 (0.70)
+7B 04           // kc_mid_x1000 = 1147 (1.147)
+BC 02           // kc_end_x1000 = 700 (0.70)
+
+// Root depth (mm)
+2C 01           // root_depth_min_mm = 300
+DC 05           // root_depth_max_mm = 1500
+
+// Growth stages (days)
+23              // stage_days_ini = 35
+28              // stage_days_dev = 40
+50 00           // stage_days_mid = 80
+14              // stage_days_end = 20
+00              // growth_cycle = 0 (annual)
+
+// Depletion and spacing
+90 01           // depletion_fraction_p_x1000 = 400 (0.40)
+20 03           // spacing_row_mm = 800
+F4 01           // spacing_plant_mm = 500
+10 27           // density_x100 = 10000 (100 plants/m²)
+E8 03           // canopy_max_x1000 = 1000 (1.0)
+
+// Temperature
+F6              // frost_tolerance_c = -10 (signed)
+12              // temp_opt_min_c = 18
+1C              // temp_opt_max_c = 28
+
+// Irrigation
+03              // typ_irrig_method_id = 3 (drip)
+
+// User-adjustable
+64 00           // water_need_factor_x100 = 100 (1.0×)
+03              // irrigation_freq_days = 3
+00              // prefer_area_based = 0 (plant count)
 ```
 
-**Total: 120 bytes**
+**Total: 156 bytes**
 
 ### Notification Response
 
@@ -508,7 +541,7 @@ E9 03           // plant_id = 1001
 2. Bond with device (required for encrypted characteristics)
 3. Find service `...def123456800`
 4. Enable notifications on Pack Plant
-5. Write 120-byte plant data
+5. Write 156-byte plant data
 6. Verify notification received
 
 ### Automated Testing
@@ -516,16 +549,30 @@ E9 03           // plant_id = 1001
 ```python
 import struct
 
-# Create plant payload
-plant = struct.pack('<HHHBB4x',
+# Create plant payload (156 bytes total)
+plant = struct.pack('<HHHH',
     1001,  # plant_id
-    1,     # pack_id
+    1,     # pack_id  
     1,     # version
-    2,     # source
-    0      # flags
+    0      # reserved
 )
-plant += b'Tomato\x00' + b'\x00' * 25  # common_name (32)
-plant += b'Solanum\x00' + b'\x00' * 24  # scientific_name (32)
-plant += struct.pack('<HHHH', 60, 115, 80, 0)  # kc values
-# ... continue with remaining fields
+# Names
+plant += b'Tomato\x00' + b'\x00' * 41        # common_name[48]
+plant += b'Solanum lycopersicum\x00' + b'\x00' * 43  # scientific_name[64]
+# Kc coefficients ×1000
+plant += struct.pack('<HHHH', 350, 700, 1147, 700)
+# Root depth mm
+plant += struct.pack('<HH', 300, 1500)
+# Growth stages
+plant += struct.pack('<BBHBB', 35, 40, 80, 20, 0)
+# Depletion and spacing
+plant += struct.pack('<HHHHH', 400, 800, 500, 10000, 1000)
+# Temperature
+plant += struct.pack('<bBB', -10, 18, 28)
+# Irrigation method
+plant += struct.pack('<B', 3)
+# User-adjustable
+plant += struct.pack('<HBB', 100, 3, 0)
+
+assert len(plant) == 156
 ```

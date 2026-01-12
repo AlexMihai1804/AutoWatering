@@ -62,7 +62,7 @@ typedef struct {
  * @brief Crop coefficient calculation cache entry
  */
 typedef struct {
-    uint16_t plant_db_index;           /**< Plant database index used */
+    uint16_t plant_id;                 /**< Plant ID (0=not set, 1+=valid) */
     uint16_t days_after_planting;      /**< Days after planting used */
     phenological_stage_t stage;        /**< Calculated phenological stage */
     float crop_coefficient;            /**< Cached crop coefficient result */
@@ -75,7 +75,7 @@ typedef struct {
  */
 typedef struct {
     uint8_t channel_id;                /**< Channel this cache is for */
-    uint16_t plant_db_index;           /**< Plant database index */
+    uint16_t plant_id;                 /**< Plant ID (0=not set, 1+=valid) */
     uint8_t soil_db_index;             /**< Soil database index */
     uint8_t irrigation_method_index;   /**< Irrigation method index */
     float root_depth_m;                /**< Root depth used */
@@ -235,6 +235,18 @@ float calc_current_root_depth(
  * @return Pointer to resolved soil data, or NULL if unavailable
  */
 const soil_enhanced_data_t *fao56_get_channel_soil(uint8_t channel_id, const watering_channel_t *channel);
+
+/**
+ * @brief Resolve plant parameters for a channel from pack storage
+ *
+ * Uses the unified plant_id field to load plant data from pack storage.
+ * Result is cached per-channel for efficiency.
+ *
+ * @param channel Channel configuration
+ * @param channel_id Channel ID (for caching)
+ * @return Pointer to cached plant data, or NULL if unavailable
+ */
+const plant_full_data_t *fao56_get_channel_plant(const watering_channel_t *channel, uint8_t channel_id);
 
 /**
  * @brief Calculate effective precipitation based on soil infiltration
@@ -649,27 +661,27 @@ void fao56_cache_store_et0(const environmental_data_t *env, float latitude_rad,
 /**
  * @brief Check if crop coefficient calculation result is cached and valid
  * 
- * @param plant_db_index Plant database index
+ * @param plant_id Plant ID (unified pack storage ID)
  * @param days_after_planting Days after planting
  * @param channel_id Channel ID for cache lookup
  * @param cached_stage Pointer to store cached phenological stage if found
  * @param cached_coefficient Pointer to store cached crop coefficient if found
  * @return True if cached result is valid, false otherwise
  */
-bool fao56_cache_get_crop_coeff(uint16_t plant_db_index, uint16_t days_after_planting,
+bool fao56_cache_get_crop_coeff(uint16_t plant_id, uint16_t days_after_planting,
                                uint8_t channel_id, phenological_stage_t *cached_stage,
                                float *cached_coefficient);
 
 /**
  * @brief Store crop coefficient calculation result in cache
  * 
- * @param plant_db_index Plant database index used
+ * @param plant_id Plant ID (unified pack storage ID)
  * @param days_after_planting Days after planting used
  * @param channel_id Channel ID for cache storage
  * @param stage Calculated phenological stage
  * @param coefficient Calculated crop coefficient
  */
-void fao56_cache_store_crop_coeff(uint16_t plant_db_index, uint16_t days_after_planting,
+void fao56_cache_store_crop_coeff(uint16_t plant_id, uint16_t days_after_planting,
                                  uint8_t channel_id, phenological_stage_t stage,
                                  float coefficient);
 
@@ -677,14 +689,14 @@ void fao56_cache_store_crop_coeff(uint16_t plant_db_index, uint16_t days_after_p
  * @brief Check if water balance calculation result is cached and valid
  * 
  * @param channel_id Channel ID
- * @param plant_db_index Plant database index
+ * @param plant_id Plant ID (unified pack storage ID)
  * @param soil_db_index Soil database index
  * @param irrigation_method_index Irrigation method index
  * @param root_depth_m Current root depth
  * @param cached_balance Pointer to store cached water balance if found
  * @return True if cached result is valid, false otherwise
  */
-bool fao56_cache_get_water_balance(uint8_t channel_id, uint16_t plant_db_index,
+bool fao56_cache_get_water_balance(uint8_t channel_id, uint16_t plant_id,
                                   uint8_t soil_db_index, uint8_t irrigation_method_index,
                                   float root_depth_m, water_balance_t *cached_balance);
 
@@ -692,13 +704,13 @@ bool fao56_cache_get_water_balance(uint8_t channel_id, uint16_t plant_db_index,
  * @brief Store water balance calculation result in cache
  * 
  * @param channel_id Channel ID
- * @param plant_db_index Plant database index used
+ * @param plant_id Plant ID (unified pack storage ID)
  * @param soil_db_index Soil database index used
  * @param irrigation_method_index Irrigation method index used
  * @param root_depth_m Root depth used
  * @param balance Calculated water balance result
  */
-void fao56_cache_store_water_balance(uint8_t channel_id, uint16_t plant_db_index,
+void fao56_cache_store_water_balance(uint8_t channel_id, uint16_t plant_id,
                                     uint8_t soil_db_index, uint8_t irrigation_method_index,
                                     float root_depth_m, const water_balance_t *balance);
 

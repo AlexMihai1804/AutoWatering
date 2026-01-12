@@ -917,12 +917,9 @@ watering_error_t bt_convert_from_enhanced_ble_config(const struct enhanced_chann
         return result != WATERING_SUCCESS ? result : WATERING_ERROR_INVALID_PARAM;
     }
 
-    /* Update plant information */
+    /* Update plant information - plant_id is set via growing_env characteristic */
     plant_info_t plant_info = {0};
     plant_info.main_type = (plant_type_t)ble_config->plant_type;
-    if (plant_info.main_type == PLANT_TYPE_OTHER) {
-        plant_info.specific.custom = channel->custom_plant;
-    }
 
     result = watering_set_plant_info(channel_id, &plant_info);
     if (result != WATERING_SUCCESS) {
@@ -940,20 +937,14 @@ watering_error_t bt_convert_from_enhanced_ble_config(const struct enhanced_chann
         coverage.plants.count = ble_config->coverage.plant_count;
     }
 
-    /* Use existing custom plant configuration if needed */
-    const custom_plant_config_t *custom_cfg = NULL;
-    if (plant_info.main_type == PLANT_TYPE_OTHER) {
-        custom_cfg = &channel->custom_plant;
-    }
-
+    /* Set channel environment - plant details come from pack storage via plant_id */
     result = watering_set_channel_environment(
         channel_id,
         plant_info.main_type,
         (soil_type_t)ble_config->soil_type,
         (irrigation_method_t)ble_config->irrigation_method,
         &coverage,
-        ble_config->sun_percentage,
-        custom_cfg);
+        ble_config->sun_percentage);
     if (result != WATERING_SUCCESS) {
         LOG_ERR("Failed to set channel environment from BLE config: %d", result);
         return result;

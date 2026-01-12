@@ -617,15 +617,7 @@ typedef enum {
     SUCCULENT_OTHER            /**< Other succulents */
 } succulent_type_t;
 
-/**
- * @brief Custom plant configuration for PLANT_TYPE_OTHER
- */
-typedef struct {
-    char custom_name[32];       /**< CUSTOM PLANT NAME: Specific plant species (e.g., "Hibiscus rosa-sinensis") - 32 bytes */
-    float water_need_factor;    /**< Water need multiplier (0.1-5.0, default 1.0) */
-    uint8_t irrigation_freq;    /**< Recommended irrigation frequency (days between watering) */
-    bool prefer_area_based;     /**< True if plant prefers m² measurement, false for plant count */
-} custom_plant_config_t;
+/* custom_plant_config_t removed - unified plant system uses pack storage only */
 
 /**
  * @brief Type of soil in the growing area
@@ -681,7 +673,6 @@ typedef struct {
         tree_type_t tree;              /**< Specific tree type */
         lawn_type_t lawn;              /**< Specific lawn type */
         succulent_type_t succulent;    /**< Specific succulent type */
-        custom_plant_config_t custom;  /**< Custom plant configuration */
     } specific;
 } plant_info_t;
 
@@ -751,11 +742,10 @@ typedef struct {
     struct gpio_dt_spec valve;        /**< GPIO specification for the valve control */
     bool is_active;                   /**< Whether this channel is currently active */
     
-    /* Enhanced growing environment configuration */
-    uint16_t plant_db_index;           /**< Index into plant_full_database (0-based, UINT16_MAX = not set) */
+    /* Growing environment configuration (unified pack storage) */
+    uint16_t plant_id;                 /**< Plant ID in pack storage (0 = not set, 1+ = valid plant) */
     uint8_t soil_db_index;             /**< Index into soil_enhanced_database (0-based, UINT8_MAX = not set) */
     uint8_t irrigation_method_index;   /**< Index into irrigation_methods_database (0-based, UINT8_MAX = not set) */
-    uint16_t custom_plant_id;          /**< Custom plant ID from pack storage (0 = use plant_db_index, >0 = custom plant) */
     
     /* Coverage specification */
     bool use_area_based;               /**< True = area-based calculation, false = plant count-based */
@@ -793,7 +783,7 @@ typedef struct {
     irrigation_method_t irrigation_method; /**< Method of irrigation used (legacy) */
     channel_coverage_t coverage_legacy; /**< Area or plant count information (legacy) */
     uint8_t sun_percentage;           /**< Percentage of direct sunlight (legacy) */
-    custom_plant_config_t custom_plant; /**< Custom plant settings (legacy) */
+    /* custom_plant removed - unified system uses pack storage (plant_id) */
     
     /* Extended fields for BLE service compatibility */
     struct {
@@ -1062,7 +1052,7 @@ watering_error_t watering_validate_event_config(const watering_event_t *event);
 /**
  * @brief Check if a channel has valid configuration for AUTO (FAO-56) scheduling mode
  * 
- * AUTO mode requires plant_db_index, soil_db_index, and planting_date_unix to be configured.
+ * AUTO mode requires plant_id, soil_db_index, and planting_date_unix to be configured.
  * This function validates that all prerequisites are met before enabling SCHEDULE_AUTO.
  * 
  * @param channel Pointer to the watering channel to validate
@@ -1467,23 +1457,7 @@ watering_error_t watering_set_sun_percentage(uint8_t channel_id, uint8_t sun_per
  */
 watering_error_t watering_get_sun_percentage(uint8_t channel_id, uint8_t *sun_percentage);
 
-/**
- * @brief Set custom plant configuration for a channel (when plant_type == PLANT_TYPE_OTHER)
- * 
- * @param channel_id Channel ID (0-based index)
- * @param custom_config Pointer to custom plant configuration
- * @return WATERING_SUCCESS on success, error code on failure
- */
-watering_error_t watering_set_custom_plant(uint8_t channel_id, const custom_plant_config_t *custom_config);
-
-/**
- * @brief Get custom plant configuration for a channel
- * 
- * @param channel_id Channel ID (0-based index)
- * @param custom_config Pointer to store the custom plant configuration
- * @return WATERING_SUCCESS on success, error code on failure
- */
-watering_error_t watering_get_custom_plant(uint8_t channel_id, custom_plant_config_t *custom_config);
+/* watering_set_custom_plant/watering_get_custom_plant removed - use pack storage directly */
 
 /**
  * @brief Get the recommended coverage measurement type based on irrigation method
@@ -1494,13 +1468,12 @@ watering_error_t watering_get_custom_plant(uint8_t channel_id, custom_plant_conf
 bool watering_recommend_area_based_measurement(irrigation_method_t irrigation_method);
 
 /**
- * @brief Get water need factor for a specific plant type
+ * @brief Get water need factor for a channel from pack storage
  * 
- * @param plant_type Type of plant
- * @param custom_config Custom plant config (used only if plant_type == PLANT_TYPE_OTHER)
- * @return Water need factor (multiplier for base water requirements)
+ * @param channel_id Channel ID (0-based index)
+ * @return Water need factor (multiplier for base water requirements), 1.0 on error
  */
-float watering_get_plant_water_factor(plant_type_t plant_type, const custom_plant_config_t *custom_config);
+float watering_get_plant_water_factor(uint8_t channel_id);
 
 /**
  * @brief Validate if coverage measurement type matches irrigation method recommendation
@@ -1520,7 +1493,6 @@ bool watering_validate_coverage_method_match(irrigation_method_t irrigation_meth
  * @param irrigation_method Pointer to store irrigation method (can be NULL)
  * @param coverage Pointer to store coverage information (can be NULL)
  * @param sun_percentage Pointer to store sun percentage (can be NULL)
- * @param custom_config Pointer to store custom plant configuration (can be NULL)
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_get_channel_environment(uint8_t channel_id, 
@@ -1528,8 +1500,7 @@ watering_error_t watering_get_channel_environment(uint8_t channel_id,
                                                  soil_type_t *soil_type,
                                                  irrigation_method_t *irrigation_method,
                                                  channel_coverage_t *coverage,
-                                                 uint8_t *sun_percentage,
-                                                 custom_plant_config_t *custom_config);
+                                                 uint8_t *sun_percentage);
 
 /**
  * @brief Set comprehensive channel environment configuration
@@ -1540,7 +1511,6 @@ watering_error_t watering_get_channel_environment(uint8_t channel_id,
  * @param irrigation_method Method of irrigation used
  * @param coverage Pointer to coverage information (area or plant count)
  * @param sun_percentage Percentage of direct sunlight (0-100%)
- * @param custom_config Pointer to custom plant configuration (required if plant_type == PLANT_TYPE_OTHER)
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t watering_set_channel_environment(uint8_t channel_id,
@@ -1548,8 +1518,7 @@ watering_error_t watering_set_channel_environment(uint8_t channel_id,
                                                  soil_type_t soil_type,
                                                  irrigation_method_t irrigation_method,
                                                  const channel_coverage_t *coverage,
-                                                 uint8_t sun_percentage,
-                                                 const custom_plant_config_t *custom_config);
+                                                 uint8_t sun_percentage);
 
 /**
  * @brief Get the number of pending tasks in the queue

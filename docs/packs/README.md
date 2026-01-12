@@ -93,7 +93,7 @@ uint16_t kc = PLANT_KC_MID(rom); // Already scaled x100
 ```
 1. Connect to device
 2. Enable notifications on Pack Plant characteristic
-3. Write 120-byte pack_plant_v1_t structure
+3. Write 156-byte pack_plant_v1_t structure
 4. Read notification for result
 ```
 
@@ -102,7 +102,7 @@ uint16_t kc = PLANT_KC_MID(rom); // Already scaled x100
 ```
 /lfs_ext/
 ├── plants/
-│   ├── 0001.bin     (16B header + 120B plant)
+│   ├── 0001.bin     (16B header + 156B plant)
 │   ├── 0002.bin
 │   └── ...
 └── packs/
@@ -122,8 +122,8 @@ uint16_t kc = PLANT_KC_MID(rom); // Already scaled x100
 
 | Resource | Size | Notes |
 |----------|------|-------|
-| Transfer buffer | 7,680 bytes | 64 plants max per transfer |
-| Plant structure | 120 bytes | pack_plant_v1_t |
+| Transfer buffer | 9,984 bytes | 64 plants max per transfer |
+| Plant structure | 156 bytes | pack_plant_v1_t |
 | Pack metadata | 40 bytes | pack_pack_v1_t |
 | File header | 16 bytes | Magic + version + CRC |
 | Flash partition | ~14.4 MB | ext_storage_partition |
