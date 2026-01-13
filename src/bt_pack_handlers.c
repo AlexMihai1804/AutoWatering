@@ -34,6 +34,10 @@ static bool pack_notifications_enabled = false;
 static uint16_t list_offset = 0;
 static uint8_t list_filter_pack = 0xFF;
 
+/* Notification attribute pointers - set in bt_pack_handlers_init() */
+static const struct bt_gatt_attr *pack_plant_attr = NULL;
+static const struct bt_gatt_attr *pack_xfer_attr = NULL;
+
 /* ============================================================================
  * Static Storage - Plant List Streaming
  * ============================================================================ */
@@ -169,8 +173,7 @@ static void xfer_notify_status(void)
  * Plant List Streaming
  * ============================================================================ */
 
-/* Forward declaration - pack_plant_attr is defined after service */
-static const struct bt_gatt_attr *pack_plant_attr;
+/* Note: pack_plant_attr is defined in Notification section below */
 
 /**
  * @brief Reset streaming state
@@ -708,9 +711,6 @@ ssize_t bt_pack_plant_write(struct bt_conn *conn,
  * Notification
  * ============================================================================ */
 
-/* Forward declaration - will be set after service registration */
-static const struct bt_gatt_attr *pack_plant_attr = NULL;
-
 void bt_pack_notify_result(const bt_pack_op_result_t *result)
 {
     if (!pack_notifications_enabled || !pack_plant_attr) {
@@ -1048,9 +1048,6 @@ BT_GATT_SERVICE_DEFINE(pack_svc,
 /* Attribute indices for notifications */
 #define PACK_ATTR_PLANT_VALUE 2
 #define PACK_ATTR_XFER_VALUE  10
-
-/* Transfer notification attribute pointer */
-static const struct bt_gatt_attr *pack_xfer_attr = NULL;
 
 /* ============================================================================
  * Initialization
