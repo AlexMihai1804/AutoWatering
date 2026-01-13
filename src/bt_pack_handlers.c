@@ -702,6 +702,13 @@ ssize_t bt_pack_plant_write(struct bt_conn *conn,
     /* Check for list request (4 bytes) */
     if (len == sizeof(bt_pack_plant_list_req_t)) {
         const bt_pack_plant_list_req_t *req = buf;
+
+        /* Helpful when app packs bytes incorrectly */
+        LOG_INF("Pack plant list raw: %02X %02X %02X %02X",
+                data[0], data[1], data[2], data[3]);
+        if (req->offset == 0 && req->filter_pack_id == 0x00 && req->max_count == 0xFF) {
+            LOG_WRN("Plant list request looks like swapped bytes (expected [00 00 FF 00] for CUSTOM streaming, got [00 00 00 FF])");
+        }
         
         /* Streaming mode: max_count == 0 means stream all via notifications */
         if (req->max_count == BT_PACK_STREAM_MODE) {

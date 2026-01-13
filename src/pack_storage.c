@@ -45,6 +45,13 @@ static bool pack_storage_initialized = false;
 static struct k_mutex pack_storage_mutex;
 static uint32_t pack_change_counter = 0;  /* Increments on each install/delete */
 
+/* Pack stats caching (avoid slow BLE reads due to FS scans/statvfs) */
+#define PACK_STATS_CACHE_TTL_MS  3000
+static struct k_mutex stats_cache_mutex;
+static pack_storage_stats_t stats_cache;
+static uint32_t stats_cache_time_ms;
+static bool stats_cache_valid;
+
 #define PACK_COUNTER_PATH PACK_BASE_PATH "/counter.bin"
 
 /* ============================================================================
@@ -173,6 +180,10 @@ static void increment_change_counter(void)
 {
     pack_change_counter++;
     save_change_counter();
+    /* Invalidate cached stats (counts/usage may change) */
+    k_mutex_lock(&stats_cache_mutex, K_FOREVER);
+    stats_cache_valid = false;
+    k_mutex_unlock(&stats_cache_mutex);
     LOG_DBG("change_counter = %u", pack_change_counter);
 }
 
@@ -261,6 +272,8 @@ pack_result_t pack_storage_init(void)
     }
     
     k_mutex_init(&pack_storage_mutex);
+    k_mutex_init(&stats_cache_mutex);
+    stats_cache_valid = false;
     
     /* Mount LittleFS on ext_storage_partition */
     rc = fs_mount(&pack_lfs_mount);
@@ -300,6 +313,13 @@ pack_result_t pack_storage_init(void)
     load_change_counter();
     
     LOG_INF("Pack storage initialized successfully");
+
+    /* Prime stats cache at boot so BLE reads are fast */
+    pack_storage_stats_t tmp;
+    if (pack_storage_get_stats(&tmp) == PACK_RESULT_SUCCESS) {
+        LOG_INF("Primed stats cache: plants=%u custom=%u packs=%u",
+                tmp.plant_count, tmp.custom_plant_count, tmp.pack_count);
+    }
     
     return PACK_RESULT_SUCCESS;
 }
@@ -1104,21 +1124,72 @@ pack_result_t pack_storage_get_stats(pack_storage_stats_t *stats)
     if (!pack_storage_initialized) {
         return PACK_RESULT_IO_ERROR;
     }
+
+    /* Fast path: serve cached stats */
+    uint32_t now = k_uptime_get_32();
+    k_mutex_lock(&stats_cache_mutex, K_FOREVER);
+    bool cache_ok = stats_cache_valid && ((now - stats_cache_time_ms) < PACK_STATS_CACHE_TTL_MS);
+    if (cache_ok) {
+        *stats = stats_cache;
+        k_mutex_unlock(&stats_cache_mutex);
+        return PACK_RESULT_SUCCESS;
+    }
+    /* Keep a copy of any stale cache as fallback */
+    pack_storage_stats_t stale = stats_cache;
+    bool have_stale = stats_cache_valid;
+    k_mutex_unlock(&stats_cache_mutex);
+
+    uint32_t t0 = now;
+    uint32_t t1;
     
     struct fs_statvfs stat;
     int rc = fs_statvfs(PACK_MOUNT_POINT, &stat);
     if (rc < 0) {
-        LOG_ERR("Failed to get storage stats: %d", rc);
+        LOG_ERR("Failed to get storage stats (statvfs): %d", rc);
+        if (have_stale) {
+            *stats = stale;
+            return PACK_RESULT_SUCCESS;
+        }
         return PACK_RESULT_IO_ERROR;
     }
-    
-    stats->total_bytes = stat.f_bsize * stat.f_blocks;
-    stats->free_bytes = stat.f_bsize * stat.f_bfree;
-    stats->used_bytes = stats->total_bytes - stats->free_bytes;
-    stats->plant_count = pack_storage_get_plant_count();
-    stats->custom_plant_count = pack_storage_get_custom_plant_count();
-    stats->pack_count = pack_storage_get_pack_count();
-    stats->change_counter = pack_change_counter;
+
+    pack_storage_stats_t computed;
+    memset(&computed, 0, sizeof(computed));
+
+    computed.total_bytes = stat.f_bsize * stat.f_blocks;
+    computed.free_bytes = stat.f_bsize * stat.f_bfree;
+    computed.used_bytes = computed.total_bytes - computed.free_bytes;
+    t1 = k_uptime_get_32();
+    uint32_t dt_statvfs = t1 - t0;
+
+    uint32_t t_plants0 = k_uptime_get_32();
+    computed.plant_count = pack_storage_get_plant_count();
+    uint32_t dt_plants = k_uptime_get_32() - t_plants0;
+
+    uint32_t t_custom0 = k_uptime_get_32();
+    computed.custom_plant_count = pack_storage_get_custom_plant_count();
+    uint32_t dt_custom = k_uptime_get_32() - t_custom0;
+
+    uint32_t t_packs0 = k_uptime_get_32();
+    computed.pack_count = pack_storage_get_pack_count();
+    uint32_t dt_packs = k_uptime_get_32() - t_packs0;
+
+    computed.change_counter = pack_change_counter;
+
+    uint32_t dt_total = k_uptime_get_32() - t0;
+    if (dt_total > 100) {
+        LOG_WRN("pack_storage_get_stats slow: total=%ums (statvfs=%u plants=%u custom=%u packs=%u)",
+                dt_total, dt_statvfs, dt_plants, dt_custom, dt_packs);
+    }
+
+    /* Update cache */
+    k_mutex_lock(&stats_cache_mutex, K_FOREVER);
+    stats_cache = computed;
+    stats_cache_time_ms = k_uptime_get_32();
+    stats_cache_valid = true;
+    k_mutex_unlock(&stats_cache_mutex);
+
+    *stats = computed;
     
     return PACK_RESULT_SUCCESS;
 }
