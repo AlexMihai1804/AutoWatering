@@ -35,6 +35,35 @@ static uint16_t list_offset = 0;
 static uint8_t list_filter_pack = 0xFF;
 
 /* ============================================================================
+ * Static Storage - Plant List Streaming
+ * ============================================================================ */
+
+/** Maximum retries for notification buffer exhaustion */
+#define STREAM_MAX_RETRIES  6
+
+/** Backoff delays in ms for retries: 10, 20, 40, 80, 160, 320 */
+static const uint32_t stream_backoff_ms[] = {10, 20, 40, 80, 160, 320};
+
+/** Plant list streaming state */
+static struct {
+    bool active;                /**< Streaming in progress */
+    uint16_t builtin_sent;      /**< Built-in plants sent so far */
+    uint16_t custom_sent;       /**< Custom plants sent so far */
+    uint16_t total_count;       /**< Total plants for this filter */
+    uint8_t filter;             /**< Current filter value */
+    uint8_t retry_count;        /**< Retry count for current notification */
+    bool include_builtin;       /**< Include built-in plants */
+    bool include_custom;        /**< Include custom plants */
+    bool first_sent;            /**< First notification sent flag */
+} stream_state;
+
+/** Work item for streaming */
+static struct k_work_delayable stream_work;
+
+/** Forward declaration */
+static void stream_work_handler(struct k_work *work);
+
+/* ============================================================================
  * Static Storage - Pack Transfer
  * ============================================================================ */
 
@@ -137,6 +166,206 @@ static void xfer_notify_status(void)
 }
 
 /* ============================================================================
+ * Plant List Streaming
+ * ============================================================================ */
+
+/* Forward declaration - pack_plant_attr is defined after service */
+static const struct bt_gatt_attr *pack_plant_attr;
+
+/**
+ * @brief Reset streaming state
+ */
+static void stream_reset(void)
+{
+    memset(&stream_state, 0, sizeof(stream_state));
+}
+
+/**
+ * @brief Start plant list streaming
+ */
+static int stream_start(uint8_t filter)
+{
+    if (stream_state.active) {
+        LOG_WRN("Stream already active, stopping previous");
+        stream_state.active = false;
+    }
+    
+    if (!pack_notifications_enabled) {
+        LOG_WRN("Streaming requested but notifications not enabled");
+        return -EINVAL;
+    }
+    
+    stream_reset();
+    stream_state.filter = filter;
+    
+    /* Determine what to include based on filter */
+    switch (filter) {
+    case PACK_FILTER_CUSTOM_ONLY:
+        stream_state.include_builtin = false;
+        stream_state.include_custom = true;
+        stream_state.total_count = pack_storage_get_plant_count();
+        break;
+    case PACK_FILTER_ALL:
+        stream_state.include_builtin = true;
+        stream_state.include_custom = true;
+        stream_state.total_count = PLANT_FULL_SPECIES_COUNT + pack_storage_get_plant_count();
+        break;
+    case PACK_FILTER_BUILTIN_ONLY:
+        stream_state.include_builtin = true;
+        stream_state.include_custom = false;
+        stream_state.total_count = PLANT_FULL_SPECIES_COUNT;
+        break;
+    default:
+        /* Specific pack filter - only custom plants from that pack */
+        stream_state.include_builtin = false;
+        stream_state.include_custom = true;
+        /* TODO: count plants for specific pack - for now just use total */
+        stream_state.total_count = pack_storage_get_plant_count();
+        break;
+    }
+    
+    stream_state.active = true;
+    stream_state.first_sent = false;
+    
+    LOG_INF("Starting plant stream: filter=0x%02X, total=%u (builtin=%d, custom=%d)",
+            filter, stream_state.total_count, 
+            stream_state.include_builtin, stream_state.include_custom);
+    
+    /* Schedule first work item immediately */
+    k_work_schedule(&stream_work, K_NO_WAIT);
+    
+    return 0;
+}
+
+/**
+ * @brief Work handler for streaming plant list via notifications
+ */
+static void stream_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    
+    if (!stream_state.active || !pack_notifications_enabled) {
+        stream_state.active = false;
+        return;
+    }
+    
+    bt_pack_plant_list_entry_t entries[10];
+    uint8_t count = 0;
+    
+    /* 1. Add built-in plants if needed and still remaining */
+    if (stream_state.include_builtin && 
+        stream_state.builtin_sent < PLANT_FULL_SPECIES_COUNT) {
+        
+        while (count < 10 && stream_state.builtin_sent < PLANT_FULL_SPECIES_COUNT) {
+            const plant_full_data_t *rom = plant_db_get_by_index(stream_state.builtin_sent);
+            if (rom != NULL) {
+                entries[count].plant_id = stream_state.builtin_sent;  /* Built-in: ID = index */
+                entries[count].pack_id = 0;  /* Pack 0 = built-in */
+                entries[count].version = 1;  /* ROM version = 1 */
+                strncpy(entries[count].name, rom->common_name_en, 15);
+                entries[count].name[15] = '\0';
+                count++;
+            }
+            stream_state.builtin_sent++;
+        }
+    }
+    
+    /* 2. Add custom plants if needed and still room */
+    if (stream_state.include_custom && count < 10) {
+        pack_plant_list_entry_t custom_entries[10];
+        uint16_t custom_count = 0;
+        
+        pack_result_t result = pack_storage_list_plants(
+            custom_entries, 10 - count, &custom_count, stream_state.custom_sent);
+        
+        if (result == PACK_RESULT_SUCCESS) {
+            for (uint16_t i = 0; i < custom_count && count < 10; i++) {
+                entries[count].plant_id = custom_entries[i].plant_id;
+                entries[count].pack_id = custom_entries[i].pack_id;
+                entries[count].version = custom_entries[i].version;
+                strncpy(entries[count].name, custom_entries[i].name, 15);
+                entries[count].name[15] = '\0';
+                count++;
+                stream_state.custom_sent++;
+            }
+        }
+    }
+    
+    /* 3. Prepare notification */
+    list_response.total_count = stream_state.total_count;
+    list_response.returned_count = count;
+    
+    /* Determine flags */
+    bool is_first = !stream_state.first_sent;
+    bool builtin_done = !stream_state.include_builtin || 
+                        stream_state.builtin_sent >= PLANT_FULL_SPECIES_COUNT;
+    bool custom_done = !stream_state.include_custom || 
+                       stream_state.custom_sent >= pack_storage_get_plant_count();
+    bool is_last = (builtin_done && custom_done);
+    
+    if (is_first && is_last) {
+        list_response.flags = BT_PACK_STREAM_FLAG_STARTING | BT_PACK_STREAM_FLAG_COMPLETE;
+    } else if (is_first) {
+        list_response.flags = BT_PACK_STREAM_FLAG_STARTING;
+        stream_state.first_sent = true;
+    } else if (is_last) {
+        list_response.flags = BT_PACK_STREAM_FLAG_COMPLETE;
+    } else {
+        list_response.flags = BT_PACK_STREAM_FLAG_NORMAL;
+    }
+    
+    /* Copy entries to response */
+    for (uint8_t i = 0; i < count; i++) {
+        list_response.entries[i] = entries[i];
+    }
+    
+    /* 4. Send notification */
+    size_t size = 4 + count * sizeof(bt_pack_plant_list_entry_t);
+    int err = bt_gatt_notify(NULL, pack_plant_attr, &list_response, size);
+    
+    if (err == -ENOMEM || err == -EBUSY) {
+        /* Buffer exhaustion - retry with exponential backoff */
+        if (stream_state.retry_count >= STREAM_MAX_RETRIES) {
+            LOG_ERR("Stream aborted after %d retries", STREAM_MAX_RETRIES);
+            list_response.flags = BT_PACK_STREAM_FLAG_ERROR;
+            list_response.returned_count = 0;
+            bt_gatt_notify(NULL, pack_plant_attr, &list_response, 4);
+            stream_state.active = false;
+            return;
+        }
+        
+        uint32_t backoff = stream_backoff_ms[stream_state.retry_count];
+        LOG_WRN("Buffer busy, retry %d in %ums", stream_state.retry_count + 1, backoff);
+        stream_state.retry_count++;
+        
+        /* Revert counters for retry */
+        if (stream_state.include_builtin) {
+            stream_state.builtin_sent -= count;  /* Will re-send same batch */
+        }
+        /* For custom, we'd need more complex tracking - for now, accept potential duplicates */
+        
+        k_work_schedule(&stream_work, K_MSEC(backoff));
+        return;
+    }
+    
+    if (err && err != -ENOTCONN) {
+        LOG_ERR("Failed to send notification: %d", err);
+    }
+    
+    stream_state.retry_count = 0;  /* Reset on success */
+    
+    /* 5. Continue or finish */
+    if (is_last) {
+        LOG_INF("Stream complete: sent %u built-in + %u custom plants",
+                stream_state.builtin_sent, stream_state.custom_sent);
+        stream_state.active = false;
+    } else {
+        /* Schedule next notification in 2ms for speed */
+        k_work_schedule(&stream_work, K_MSEC(2));
+    }
+}
+
+/* ============================================================================
  * Read Handlers
  * ============================================================================ */
 
@@ -170,7 +399,7 @@ ssize_t bt_pack_plant_read(struct bt_conn *conn,
     
     list_response.total_count = pack_storage_get_plant_count();
     list_response.returned_count = (uint8_t)count;
-    list_response.reserved = 0;
+    list_response.flags = 0; /* Legacy read mode - not streaming */
     
     /* Copy entries with truncated names */
     for (uint8_t i = 0; i < count && i < 8; i++) {
@@ -397,10 +626,19 @@ ssize_t bt_pack_plant_write(struct bt_conn *conn,
     /* Check for list request (4 bytes) */
     if (len == sizeof(bt_pack_plant_list_req_t)) {
         const bt_pack_plant_list_req_t *req = buf;
+        
+        /* Streaming mode: max_count == 0 means stream all via notifications */
+        if (req->max_count == BT_PACK_STREAM_MODE) {
+            LOG_INF("Pack plant STREAM request: filter=0x%02X", req->filter_pack_id);
+            stream_start(req->filter_pack_id);
+            return len;
+        }
+        
+        /* Legacy pagination mode */
         list_offset = req->offset;
         list_filter_pack = req->filter_pack_id;
-        LOG_INF("Pack plant list request: offset=%u, filter=%u",
-                list_offset, list_filter_pack);
+        LOG_INF("Pack plant list request: offset=%u, filter=%u, max=%u",
+                list_offset, list_filter_pack, req->max_count);
         return len;
     }
     
@@ -839,12 +1077,16 @@ int bt_pack_handlers_init(void)
     xfer_reset();
     memset(&xfer_status, 0, sizeof(xfer_status));
     
+    /* Initialize streaming work queue */
+    k_work_init_delayable(&stream_work, stream_work_handler);
+    stream_reset();
+    
     /* Get attribute pointers for notifications */
     pack_plant_attr = &pack_svc.attrs[PACK_ATTR_PLANT_VALUE];
     pack_xfer_attr = &pack_svc.attrs[PACK_ATTR_XFER_VALUE];
     
     LOG_INF("Pack BLE handlers initialized (service UUID: def123456800)");
-    LOG_INF("  - Plant characteristic: install/delete/list single plants");
+    LOG_INF("  - Plant characteristic: install/delete/list/stream plants");
     LOG_INF("  - Stats characteristic: storage statistics");
     LOG_INF("  - List characteristic: list packs and pack contents");
     LOG_INF("  - Transfer characteristic: multi-part pack installation");

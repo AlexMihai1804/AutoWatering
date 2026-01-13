@@ -130,12 +130,27 @@ typedef struct __attribute__((packed)) {
 
 /**
  * @brief Plant list request (write to trigger list)
+ * 
+ * Streaming mode: set max_count=0 to stream all matching plants via notifications.
+ * Filter values:
+ *   0xFF = CUSTOM_ONLY (default, app has CSV for built-in)
+ *   0xFE = ALL (custom + built-in, for API users without CSV)
+ *   0x00 = BUILTIN_ONLY (pack_id=0 plants only)
+ *   0x01-0xFD = specific pack filter
  */
 typedef struct __attribute__((packed)) {
-    uint16_t offset;        /**< Pagination offset */
-    uint8_t max_count;      /**< Max entries to return (1-16) */
-    uint8_t filter_pack_id; /**< Filter by pack_id (0xFF = all) */
+    uint16_t offset;        /**< Pagination offset (0 for streaming) */
+    uint8_t max_count;      /**< Max entries (1-10), or 0 = STREAM ALL via notifications */
+    uint8_t filter_pack_id; /**< Filter: 0xFF=custom, 0xFE=all, 0x00=builtin, other=pack */
 } bt_pack_plant_list_req_t;
+
+/** Streaming mode trigger - set max_count to this value */
+#define BT_PACK_STREAM_MODE         0
+
+/** Filter values for plant list streaming */
+#define PACK_FILTER_CUSTOM_ONLY     0xFF  /**< Only custom plants (default) */
+#define PACK_FILTER_ALL             0xFE  /**< Custom + built-in plants */
+#define PACK_FILTER_BUILTIN_ONLY    0x00  /**< Only built-in plants (pack 0) */
 
 /**
  * @brief Plant list response entry
@@ -148,16 +163,28 @@ typedef struct __attribute__((packed)) {
 } bt_pack_plant_list_entry_t;
 
 /**
- * @brief Plant list response (read after list request)
+ * @brief Plant list response (read after list request, or notification in stream mode)
+ * 
+ * In streaming mode, firmware sends multiple notifications:
+ *   - First notification has flags=0x80 (STARTING)
+ *   - Middle notifications have flags=0x00 (NORMAL)
+ *   - Last notification has flags=0x01 (COMPLETE)
+ *   - On error, flags=0x02 (ERROR)
  */
 typedef struct __attribute__((packed)) {
-    uint16_t total_count;   /**< Total plants available */
-    uint8_t returned_count; /**< Number of entries in this response */
-    uint8_t reserved;
-    bt_pack_plant_list_entry_t entries[8]; /**< Up to 8 entries per read */
+    uint16_t total_count;   /**< Total plants matching filter */
+    uint8_t returned_count; /**< Number of entries in this notification (0-10) */
+    uint8_t flags;          /**< Stream flags (see BT_PACK_STREAM_FLAG_*) */
+    bt_pack_plant_list_entry_t entries[10]; /**< Up to 10 entries per notification */
 } bt_pack_plant_list_resp_t;
 
-#define BT_PACK_PLANT_LIST_RESP_SIZE (4 + 8 * sizeof(bt_pack_plant_list_entry_t))
+/** Stream flag values */
+#define BT_PACK_STREAM_FLAG_NORMAL      0x00  /**< More notifications coming */
+#define BT_PACK_STREAM_FLAG_COMPLETE    0x01  /**< Stream finished successfully */
+#define BT_PACK_STREAM_FLAG_ERROR       0x02  /**< Stream error, aborted */
+#define BT_PACK_STREAM_FLAG_STARTING    0x80  /**< First notification of stream */
+
+#define BT_PACK_PLANT_LIST_RESP_SIZE (4 + 10 * sizeof(bt_pack_plant_list_entry_t))
 
 /**
  * @brief Plant delete request
