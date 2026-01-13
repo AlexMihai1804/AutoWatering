@@ -75,7 +75,7 @@ data class PackStats(
     val freeBytes: Long,
     val plantCount: Int,         // Total plants in flash storage
     val customPlantCount: Int,   // Custom plants only (pack_id != 0)
-    val packCount: Int,
+    val packCount: Int, // total packs (built-in + custom)
     val builtinCount: Int,       // ROM plants (223, constant)
     val status: Int,
     val changeCounter: Long
@@ -337,7 +337,7 @@ struct PackStats {
     let freeBytes: UInt32
     let plantCount: UInt16         // Total plants in flash storage
     let customPlantCount: UInt16   // Custom plants only (pack_id != 0)
-    let packCount: UInt16
+    let packCount: UInt16 // total packs (built-in + custom)
     let builtinCount: UInt16       // ROM plants (223, constant)
     let status: UInt8
     let changeCounter: UInt32

@@ -435,7 +435,7 @@ typedef struct {
     uint32_t used_bytes;        // Currently used
     uint32_t free_bytes;        // Available
     uint16_t plant_count;       // Installed plants
-    uint16_t pack_count;        // Installed packs
+    uint16_t pack_count;        // Installed custom packs (excludes built-in)
 } pack_storage_stats_t;
 ```
 

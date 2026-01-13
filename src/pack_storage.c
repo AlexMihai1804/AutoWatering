@@ -72,6 +72,87 @@ static void load_change_counter(void)
     LOG_INF("Loaded change_counter = %u", pack_change_counter);
 }
 
+/* Forward declarations (defined later) */
+static void make_pack_path(uint16_t pack_id, char *buf, size_t buf_size);
+static void make_pack_temp_path(uint16_t pack_id, char *buf, size_t buf_size);
+
+/* ============================================================================
+ * Pack File IO
+ * ============================================================================ */
+
+static pack_result_t read_pack_file(const char *path, pack_pack_v1_t *pack)
+{
+    if (!path || !pack) {
+        return PACK_RESULT_IO_ERROR;
+    }
+
+    struct fs_file_t file;
+    fs_file_t_init(&file);
+
+    int rc = fs_open(&file, path, FS_O_READ);
+    if (rc < 0) {
+        return (rc == -ENOENT) ? PACK_RESULT_NOT_FOUND : PACK_RESULT_IO_ERROR;
+    }
+
+    ssize_t bytes = fs_read(&file, pack, sizeof(*pack));
+    fs_close(&file);
+
+    if (bytes != sizeof(*pack)) {
+        return PACK_RESULT_IO_ERROR;
+    }
+
+    /* Basic sanity checks */
+    if (pack->pack_id == PACK_ID_INVALID || pack->pack_id == PACK_ID_BUILTIN) {
+        return PACK_RESULT_INVALID_DATA;
+    }
+    if (pack->plant_count > PACK_MAX_PLANTS_PER_PACK) {
+        return PACK_RESULT_INVALID_DATA;
+    }
+    if (pack->name[0] == '\0') {
+        return PACK_RESULT_INVALID_DATA;
+    }
+
+    return PACK_RESULT_SUCCESS;
+}
+
+static pack_result_t write_pack_file_atomic(uint16_t pack_id, const pack_pack_v1_t *pack)
+{
+    if (!pack) {
+        return PACK_RESULT_IO_ERROR;
+    }
+
+    char path[64];
+    char temp_path[64];
+    make_pack_path(pack_id, path, sizeof(path));
+    make_pack_temp_path(pack_id, temp_path, sizeof(temp_path));
+
+    struct fs_file_t file;
+    fs_file_t_init(&file);
+
+    int rc = fs_open(&file, temp_path, FS_O_CREATE | FS_O_TRUNC | FS_O_WRITE);
+    if (rc < 0) {
+        return PACK_RESULT_IO_ERROR;
+    }
+
+    ssize_t bytes = fs_write(&file, pack, sizeof(*pack));
+    fs_close(&file);
+
+    if (bytes != sizeof(*pack)) {
+        fs_unlink(temp_path);
+        return PACK_RESULT_IO_ERROR;
+    }
+
+    /* Atomic rename */
+    fs_unlink(path); /* Ignore error if doesn't exist */
+    rc = fs_rename(temp_path, path);
+    if (rc < 0) {
+        fs_unlink(temp_path);
+        return PACK_RESULT_IO_ERROR;
+    }
+
+    return PACK_RESULT_SUCCESS;
+}
+
 static void save_change_counter(void)
 {
     struct fs_file_t file;
@@ -688,18 +769,58 @@ pack_result_t pack_storage_get_pack(uint16_t pack_id,
         
         return PACK_RESULT_SUCCESS;
     }
-    
-    /* TODO: Read pack file from flash */
+
+    /* Read pack metadata from flash */
     char path[64];
     make_pack_path(pack_id, path, sizeof(path));
-    
-    struct fs_dirent entry;
-    if (fs_stat(path, &entry) < 0) {
-        return PACK_RESULT_NOT_FOUND;
+
+    k_mutex_lock(&pack_storage_mutex, K_FOREVER);
+    pack_result_t meta_res = read_pack_file(path, pack);
+    k_mutex_unlock(&pack_storage_mutex);
+
+    if (meta_res != PACK_RESULT_SUCCESS) {
+        return meta_res;
     }
-    
-    /* Pack file reading implementation needed */
-    return PACK_RESULT_NOT_FOUND;
+
+    /* Optionally enumerate plant IDs belonging to this pack by scanning plant files */
+    if (plant_ids && max_plant_ids > 0) {
+        struct fs_dir_t dir;
+        struct fs_dirent dirent;
+        char plant_path[64];
+        uint16_t filled = 0;
+        int rc;
+
+        fs_dir_t_init(&dir);
+
+        k_mutex_lock(&pack_storage_mutex, K_FOREVER);
+        rc = fs_opendir(&dir, PACK_PLANTS_DIR);
+        if (rc == 0) {
+            while (filled < max_plant_ids) {
+                rc = fs_readdir(&dir, &dirent);
+                if (rc < 0 || dirent.name[0] == 0) {
+                    break;
+                }
+
+                if (dirent.type == FS_DIR_ENTRY_FILE &&
+                    dirent.name[0] == 'p' && dirent.name[1] == '_' &&
+                    strstr(dirent.name, ".bin") != NULL &&
+                    strlen(dirent.name) < 32) {
+
+                    snprintf(plant_path, sizeof(plant_path), "%s/%.31s", PACK_PLANTS_DIR, dirent.name);
+
+                    pack_plant_v1_t plant;
+                    if (read_plant_file(plant_path, &plant) == PACK_RESULT_SUCCESS &&
+                        plant.pack_id == pack_id) {
+                        plant_ids[filled++] = plant.plant_id;
+                    }
+                }
+            }
+            fs_closedir(&dir);
+        }
+        k_mutex_unlock(&pack_storage_mutex);
+    }
+
+    return PACK_RESULT_SUCCESS;
 }
 
 pack_result_t pack_storage_install_pack(const pack_pack_v1_t *pack,
@@ -727,11 +848,20 @@ pack_result_t pack_storage_install_pack(const pack_pack_v1_t *pack,
         }
     }
     
-    /* TODO: Write pack manifest file */
-    
-    increment_change_counter();  /* Pack installed */
-    LOG_INF("Installed pack %04X with %u plants", pack->pack_id, plant_count);
-    
+    /* Write pack metadata file */
+    k_mutex_lock(&pack_storage_mutex, K_FOREVER);
+    pack_result_t wr = write_pack_file_atomic(pack->pack_id, pack);
+    k_mutex_unlock(&pack_storage_mutex);
+
+    if (wr != PACK_RESULT_SUCCESS) {
+        LOG_ERR("Failed to write pack metadata for %04X: %d", pack->pack_id, wr);
+        return wr;
+    }
+
+    increment_change_counter();  /* Pack metadata installed/updated */
+    LOG_INF("Installed pack %04X metadata (v%u, plants=%u)",
+            pack->pack_id, pack->version, pack->plant_count);
+
     return PACK_RESULT_SUCCESS;
 }
 
@@ -822,28 +952,117 @@ pack_result_t pack_storage_list_packs(pack_pack_list_entry_t *entries,
         return PACK_RESULT_IO_ERROR;
     }
     
-    uint16_t count = 0;
-    
-    /* First entry is always built-in pack (if room and offset allows) */
-    if (offset == 0 && max_entries > 0) {
-        entries[0].pack_id = PACK_ID_BUILTIN;
-        entries[0].version = 1;
-        entries[0].plant_count = PLANT_FULL_SPECIES_COUNT;
-        strncpy(entries[0].name, "Built-in Database", PACK_NAME_MAX_LEN - 1);
-        entries[0].name[PACK_NAME_MAX_LEN - 1] = '\0';
-        count = 1;
+    uint16_t written = 0;
+    uint16_t skipped = 0;
+
+    struct fs_dir_t dir;
+    struct fs_dirent dirent;
+    int rc;
+
+    fs_dir_t_init(&dir);
+
+    k_mutex_lock(&pack_storage_mutex, K_FOREVER);
+
+    rc = fs_opendir(&dir, PACK_PACKS_DIR);
+    if (rc < 0) {
+        k_mutex_unlock(&pack_storage_mutex);
+        *out_count = 0;
+        return PACK_RESULT_SUCCESS; /* No packs directory or empty */
     }
-    
-    /* TODO: List installed packs from flash */
-    
-    *out_count = count;
+
+    while (written < max_entries) {
+        rc = fs_readdir(&dir, &dirent);
+        if (rc < 0 || dirent.name[0] == 0) {
+            break;
+        }
+
+        /* Pack metadata file: k_XXXX.bin */
+        if (dirent.type == FS_DIR_ENTRY_FILE &&
+            dirent.name[0] == 'k' && dirent.name[1] == '_' &&
+            strstr(dirent.name, ".bin") != NULL &&
+            strlen(dirent.name) >= 10 && strlen(dirent.name) < 32) {
+
+            /* Parse pack_id from filename */
+            uint16_t pack_id = 0;
+            if (sscanf(dirent.name, "k_%4hx.bin", &pack_id) != 1) {
+                continue;
+            }
+            if (pack_id == PACK_ID_BUILTIN || pack_id == PACK_ID_INVALID) {
+                continue;
+            }
+
+            if (skipped < offset) {
+                skipped++;
+                continue;
+            }
+
+            char path[64];
+            snprintf(path, sizeof(path), "%s/%.31s", PACK_PACKS_DIR, dirent.name);
+
+            pack_pack_v1_t meta;
+            if (read_pack_file(path, &meta) != PACK_RESULT_SUCCESS) {
+                continue;
+            }
+
+            entries[written].pack_id = meta.pack_id;
+            entries[written].version = meta.version;
+            entries[written].plant_count = meta.plant_count;
+            strncpy(entries[written].name, meta.name, PACK_NAME_MAX_LEN - 1);
+            entries[written].name[PACK_NAME_MAX_LEN - 1] = '\0';
+            written++;
+        }
+    }
+
+    fs_closedir(&dir);
+    k_mutex_unlock(&pack_storage_mutex);
+
+    *out_count = written;
     return PACK_RESULT_SUCCESS;
 }
 
 uint16_t pack_storage_get_pack_count(void)
 {
-    /* TODO: Count pack files */
-    return 0; /* Excludes built-in */
+    if (!pack_storage_initialized) {
+        return 0;
+    }
+
+    struct fs_dir_t dir;
+    struct fs_dirent dirent;
+    uint16_t count = 0;
+    int rc;
+
+    fs_dir_t_init(&dir);
+
+    k_mutex_lock(&pack_storage_mutex, K_FOREVER);
+
+    rc = fs_opendir(&dir, PACK_PACKS_DIR);
+    if (rc < 0) {
+        k_mutex_unlock(&pack_storage_mutex);
+        return 0;
+    }
+
+    while (true) {
+        rc = fs_readdir(&dir, &dirent);
+        if (rc < 0 || dirent.name[0] == 0) {
+            break;
+        }
+
+        if (dirent.type == FS_DIR_ENTRY_FILE &&
+            dirent.name[0] == 'k' && dirent.name[1] == '_' &&
+            strstr(dirent.name, ".bin") != NULL) {
+
+            uint16_t pack_id = 0;
+            if (sscanf(dirent.name, "k_%4hx.bin", &pack_id) == 1 &&
+                pack_id != PACK_ID_BUILTIN && pack_id != PACK_ID_INVALID) {
+                count++;
+            }
+        }
+    }
+
+    fs_closedir(&dir);
+    k_mutex_unlock(&pack_storage_mutex);
+
+    return count; /* Custom packs only (built-in pack is virtual) */
 }
 
 /* ============================================================================
@@ -852,7 +1071,9 @@ uint16_t pack_storage_get_pack_count(void)
 
 bool pack_storage_is_builtin_plant(uint16_t plant_id, uint16_t pack_id)
 {
-    return (pack_id == PACK_ID_BUILTIN && plant_id < PLANT_FULL_SPECIES_COUNT);
+    /* Built-in plants: pack_id=0, plant_id 1 to 223 */
+    return (pack_id == PACK_ID_BUILTIN && 
+            plant_id >= 1 && plant_id <= PLANT_FULL_SPECIES_COUNT);
 }
 
 pack_result_t pack_storage_get_builtin_pack(pack_pack_list_entry_t *pack)
@@ -917,8 +1138,10 @@ pack_result_t pack_storage_validate_plant(const pack_plant_v1_t *plant)
     }
     
     /* Check pack_id is not claiming built-in */
-    if (plant->pack_id == PACK_ID_BUILTIN && plant->plant_id >= PLANT_FULL_SPECIES_COUNT) {
-        LOG_ERR("Plant claims built-in pack but ID out of range: %u", plant->plant_id);
+    /* Built-in plants have IDs 1 to PLANT_FULL_SPECIES_COUNT (1-223) */
+    if (plant->pack_id == PACK_ID_BUILTIN && plant->plant_id > PLANT_FULL_SPECIES_COUNT) {
+        LOG_ERR("Plant claims built-in pack but ID out of range: %u (max %u)", 
+                plant->plant_id, PLANT_FULL_SPECIES_COUNT);
         return PACK_RESULT_INVALID_DATA;
     }
     
@@ -1154,22 +1377,32 @@ pack_result_t pack_storage_provision_defaults(void)
     for (uint16_t i = 0; i < PLANT_FULL_SPECIES_COUNT; i++) {
         uint16_t plant_id = i + 1;  /* Plant IDs start at 1 */
         
-        /* Check if already exists */
+        /* Check if already exists with correct pack_id */
         pack_plant_v1_t existing;
         pack_result_t check = pack_storage_get_plant(plant_id, &existing);
-        if (check == PACK_RESULT_SUCCESS) {
+        if (check == PACK_RESULT_SUCCESS && existing.pack_id == PACK_ID_BUILTIN) {
             skipped++;
-            continue;  /* Already provisioned */
+            continue;  /* Already provisioned correctly */
         }
         
         /* Convert ROM to pack format */
         pack_plant_v1_t pack_plant;
         rom_to_pack_plant(plant_id, &plant_full_database[i], &pack_plant);
         
-        /* Save to flash using install function */
-        pack_result_t res = pack_storage_install_plant(&pack_plant);
-        if (res != PACK_RESULT_SUCCESS && res != PACK_RESULT_ALREADY_CURRENT) {
-            LOG_ERR("Failed to provision plant %u (%s): %d", 
+        /* Try up to 3 times */
+        pack_result_t res = PACK_RESULT_IO_ERROR;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            res = pack_storage_install_plant(&pack_plant);
+            if (res == PACK_RESULT_SUCCESS || res == PACK_RESULT_ALREADY_CURRENT || 
+                res == PACK_RESULT_UPDATED) {
+                break;
+            }
+            k_msleep(10);  /* Brief delay before retry */
+        }
+        
+        if (res != PACK_RESULT_SUCCESS && res != PACK_RESULT_ALREADY_CURRENT && 
+            res != PACK_RESULT_UPDATED) {
+            LOG_ERR("Failed to provision plant %u (%s) after 3 attempts: %d", 
                     plant_id, pack_plant.common_name, res);
             failed++;
         } else {
@@ -1185,7 +1418,17 @@ pack_result_t pack_storage_provision_defaults(void)
     LOG_INF("Provisioning complete: %u new, %u existing, %u failed", 
             provisioned, skipped, failed);
     
-    return (failed > 0) ? PACK_RESULT_IO_ERROR : PACK_RESULT_SUCCESS;
+    /* Verify all plants exist */
+    uint16_t verified = 0;
+    pack_plant_v1_t verify;
+    for (uint16_t i = 1; i <= PLANT_FULL_SPECIES_COUNT; i++) {
+        if (pack_storage_get_plant(i, &verify) == PACK_RESULT_SUCCESS) {
+            verified++;
+        }
+    }
+    LOG_INF("Verification: %u/%u plants in storage", verified, PLANT_FULL_SPECIES_COUNT);
+    
+    return (verified == PLANT_FULL_SPECIES_COUNT) ? PACK_RESULT_SUCCESS : PACK_RESULT_IO_ERROR;
 }
 
 bool pack_storage_defaults_provisioned(void)
@@ -1194,12 +1437,21 @@ bool pack_storage_defaults_provisioned(void)
         return false;
     }
     
-    /* Check if plant ID 1 and last plant exist */
+    /* Count how many built-in plants exist in storage */
+    uint16_t count = 0;
     pack_plant_v1_t plant;
-    if (pack_storage_get_plant(1, &plant) != PACK_RESULT_SUCCESS) {
-        return false;
+    
+    for (uint16_t i = 1; i <= PLANT_FULL_SPECIES_COUNT; i++) {
+        if (pack_storage_get_plant(i, &plant) == PACK_RESULT_SUCCESS &&
+            plant.pack_id == PACK_ID_BUILTIN) {
+            count++;
+        }
     }
-    if (pack_storage_get_plant(PLANT_FULL_SPECIES_COUNT, &plant) != PACK_RESULT_SUCCESS) {
+    
+    /* Must have ALL 223 plants */
+    if (count < PLANT_FULL_SPECIES_COUNT) {
+        LOG_WRN("Only %u/%u built-in plants provisioned, will repair", 
+                count, PLANT_FULL_SPECIES_COUNT);
         return false;
     }
     

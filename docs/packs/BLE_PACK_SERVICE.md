@@ -370,7 +370,7 @@ typedef struct __attribute__((packed)) {
     uint32_t free_bytes;        // Available
     uint16_t plant_count;       // Total plants in flash storage (provisioned + custom)
     uint16_t custom_plant_count;// Custom plants only (pack_id != 0) - for sync logic
-    uint16_t pack_count;        // Installed packs
+    uint16_t pack_count;        // Total packs (built-in + custom installed)
     uint16_t builtin_count;     // ROM plants (223, constant)
     uint8_t status;             // 0=ok, 1=not mounted, 2=error
     uint8_t reserved;

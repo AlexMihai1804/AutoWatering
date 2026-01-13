@@ -461,13 +461,14 @@ ssize_t bt_pack_stats_read(struct bt_conn *conn,
         stats_response.free_bytes = stats.free_bytes;
         stats_response.plant_count = stats.plant_count;
         stats_response.custom_plant_count = stats.custom_plant_count;
-        stats_response.pack_count = stats.pack_count;
+            /* storage pack_count excludes the built-in pack (virtual) */
+            stats_response.pack_count = stats.pack_count + 1;
         stats_response.change_counter = stats.change_counter;
         stats_response.status = 0;
         
-        LOG_INF("Stats: total_plants=%u, custom=%u, builtin=%u, packs=%u, change=%u",
-                stats.plant_count, stats.custom_plant_count, PLANT_FULL_SPECIES_COUNT, 
-                stats.pack_count, stats.change_counter);
+        LOG_INF("Stats: total_plants=%u, custom=%u, builtin=%u, packs(custom=%u,total=%u), change=%u",
+            stats.plant_count, stats.custom_plant_count, PLANT_FULL_SPECIES_COUNT,
+            stats.pack_count, stats.pack_count + 1, stats.change_counter);
     } else {
         stats_response.status = 2; /* Error */
     }
@@ -931,6 +932,22 @@ static int handle_xfer_commit(void)
     
     LOG_INF("Pack transfer complete: installed=%u, updated=%u, errors=%u",
             installed, updated, errors);
+
+    /* Persist pack metadata so it appears in Pack List */
+    if (errors == 0) {
+        pack_pack_v1_t pack_meta;
+        memset(&pack_meta, 0, sizeof(pack_meta));
+        pack_meta.pack_id = xfer_state.pack_id;
+        pack_meta.version = xfer_state.pack_version;
+        pack_meta.plant_count = xfer_state.plant_count;
+        strncpy(pack_meta.name, xfer_state.pack_name, sizeof(pack_meta.name) - 1);
+
+        pack_result_t meta_res = pack_storage_install_pack(&pack_meta, NULL, 0);
+        if (meta_res != PACK_RESULT_SUCCESS) {
+            LOG_ERR("Failed to persist pack metadata for %u: %d", xfer_state.pack_id, meta_res);
+            errors++;
+        }
+    }
     
     if (errors > 0) {
         xfer_state.state = PACK_XFER_STATE_ERROR;
