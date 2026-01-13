@@ -1738,19 +1738,6 @@ static ssize_t read_environmental_data(struct bt_conn *conn, const struct bt_gat
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &out, sizeof(out));
 }
 
-/* Environmental data CCC callback */
-static void environmental_data_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
-{
-    bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
-    notification_state.environmental_data_notifications_enabled = notif_enabled;
-    
-    if (notif_enabled) {
-        LOG_INF("Environmental data notifications enabled");
-    } else {
-        LOG_INF("Environmental data notifications disabled");
-    }
-}
-
 /* Environmental history read callback */
 static ssize_t read_environmental_history(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                                          void *buf, uint16_t len, uint16_t offset)
@@ -1860,6 +1847,19 @@ static ssize_t write_environmental_history(struct bt_conn *conn, const struct bt
     }
     last_cmd_ms = now_ms;
     return len;
+}
+
+/* Environmental data CCC callback */
+static void environmental_data_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+    bool notif_enabled = (value == BT_GATT_CCC_NOTIFY);
+    notification_state.environmental_data_notifications_enabled = notif_enabled;
+
+    if (notif_enabled) {
+        LOG_INF("Environmental data notifications enabled");
+    } else {
+        LOG_INF("Environmental data notifications disabled");
+    }
 }
 
 /* Environmental history CCC callback */
@@ -5113,8 +5113,10 @@ int bt_irrigation_rtc_notify(void) {
     struct rtc_data *rtc_data = (struct rtc_data *)rtc_value;
     rtc_datetime_t now_utc, local_time;
     if (rtc_datetime_get(&now_utc) == 0) {
-        /* TIMEZONE FIX: Send local time and include tz fields */
+        /* Per BLE API docs: notification should return LOCAL time, same as READ */
         uint32_t utc_timestamp = timezone_rtc_to_unix_utc(&now_utc);
+        int16_t total_offset = timezone_get_total_offset(utc_timestamp);
+
         if (timezone_unix_to_rtc_local(utc_timestamp, &local_time) == 0) {
             rtc_data->year = local_time.year - 2000;
             rtc_data->month = local_time.month;
@@ -5132,7 +5134,7 @@ int bt_irrigation_rtc_notify(void) {
             rtc_data->second = now_utc.second;
             rtc_data->day_of_week = now_utc.day_of_week;
         }
-        rtc_data->utc_offset_minutes = timezone_get_total_offset(utc_timestamp);
+        rtc_data->utc_offset_minutes = total_offset;
         rtc_data->dst_active = timezone_is_dst_active(utc_timestamp) ? 1 : 0;
     }
     
@@ -6238,22 +6240,22 @@ static ssize_t read_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
             /* Get current UTC timestamp */
             uint32_t utc_timestamp = timezone_rtc_to_unix_utc(&now_utc);
             
+            /* Get total offset (base + DST if active) */
+            int16_t total_offset = timezone_get_total_offset(utc_timestamp);
+            
             /* Convert to local time */
             if (timezone_unix_to_rtc_local(utc_timestamp, &now_local) == 0) {
-                value->year = now_local.year - 2000; // Convert to 2-digit format
+
+                /* Per BLE API docs: READ returns LOCAL time, not UTC */
+                value->year = now_local.year - 2000; /* Convert to 2-digit format */
                 value->month = now_local.month;
                 value->day = now_local.day;
                 value->hour = now_local.hour;
                 value->minute = now_local.minute;
                 value->second = now_local.second;
                 value->day_of_week = now_local.day_of_week;
-                value->utc_offset_minutes = timezone_get_total_offset(utc_timestamp);
+                value->utc_offset_minutes = total_offset;
                 value->dst_active = timezone_is_dst_active(utc_timestamp) ? 1 : 0;
-                
-                LOG_DBG("RTC read (local): %02u/%02u/%04u %02u:%02u:%02u (day %u) UTC%+d DST:%u", 
-                        value->day, value->month, 2000 + value->year,
-                        value->hour, value->minute, value->second, value->day_of_week,
-                        value->utc_offset_minutes / 60, value->dst_active);
             } else {
                 LOG_ERR("Failed to convert UTC to local time");
                 goto fallback;
@@ -6345,17 +6347,70 @@ static ssize_t write_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         new_time_local.day_of_week = (ts_local / 86400UL + 4) % 7;
     }
 
-    LOG_DBG("RTC write (local): %02u/%02u/%04u %02u:%02u:%02u",
-           new_time_local.day, new_time_local.month, new_time_local.year,
-           new_time_local.hour, new_time_local.minute, new_time_local.second);
+    LOG_INF("RTC write received: local=%02u:%02u:%02u %02u/%02u/%04u, "
+            "offset=%d min, dst_active=%u",
+            new_time_local.hour, new_time_local.minute, new_time_local.second,
+            new_time_local.day, new_time_local.month, new_time_local.year,
+            value->utc_offset_minutes, value->dst_active);
 
-    /* Convert local time to UTC if timezone is configured */
+    /* 
+     * Note on timezone handling from RTC writes:
+     * The utc_offset_minutes in RTC payload represents the TOTAL offset (base + DST if active).
+     * We store this as the base offset and DISABLE DST calculation to prevent double-application.
+     * For automatic DST switching, clients must use the Timezone characteristic to configure
+     * DST rules separately.
+     */
     if (timezone_get_config(&tz_config) == 0) {
-        /* Convert local datetime to Unix timestamp */
+        bool tz_changed = false;
+        
+        /* Store the total offset as base, disable DST auto-calculation */
+        if (tz_config.utc_offset_minutes != value->utc_offset_minutes) {
+            tz_config.utc_offset_minutes = value->utc_offset_minutes;
+            tz_changed = true;
+        }
+        
+        /* 
+         * IMPORTANT: Do NOT enable dst_enabled from RTC writes!
+         * The RTC payload's utc_offset_minutes is already the TOTAL offset.
+         * Enabling dst_enabled would cause timezone_get_total_offset() to add
+         * dst_offset_minutes again, resulting in double-application.
+         * 
+         * If client sends dst_active=1, it means the offset already includes DST.
+         * We record this as informational but don't activate DST calculation.
+         */
+        if (tz_config.dst_enabled) {
+            /* Disable DST auto-calculation when receiving full offset via RTC */
+            tz_config.dst_enabled = 0;
+            tz_config.dst_offset_minutes = 0;
+            tz_config.dst_start_month = 0;
+            tz_config.dst_end_month = 0;
+            tz_config.dst_start_week = 0;
+            tz_config.dst_end_week = 0;
+            tz_config.dst_start_dow = 0;
+            tz_config.dst_end_dow = 0;
+            tz_changed = true;
+            LOG_DBG("RTC write: disabling DST auto-calc (offset already includes DST)");
+        }
+        
+        if (tz_changed) {
+            if (timezone_set_config(&tz_config) == 0) {
+                LOG_INF("Timezone updated to UTC%+d:%02d (DST disabled for direct offset)", 
+                        tz_config.utc_offset_minutes / 60,
+                        abs(tz_config.utc_offset_minutes % 60));
+            }
+        }
+    }
+
+    /* Use offset from BLE packet DIRECTLY for conversion (most reliable) */
+    {
+        /* Convert local datetime to Unix timestamp (treating struct as UTC for math) */
         uint32_t local_timestamp = timezone_rtc_to_unix_utc(&new_time_local);
         
-        /* Convert local timestamp to UTC timestamp */
-        uint32_t utc_timestamp = timezone_local_to_utc(local_timestamp);
+        /* Subtract the offset from BLE packet to get UTC */
+        uint32_t utc_timestamp = local_timestamp - ((int32_t)value->utc_offset_minutes * 60);
+        
+        LOG_INF("Conversion using BLE offset: local_ts=%u - %d min = utc_ts=%u",
+                local_timestamp, value->utc_offset_minutes, utc_timestamp);
         
         /* Convert UTC timestamp back to datetime for RTC */
         if (timezone_unix_to_rtc_utc(utc_timestamp, &new_time_utc) != 0) {
@@ -6363,42 +6418,9 @@ static ssize_t write_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
             return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
         }
         
-        LOG_DBG("RTC write (UTC): %02u/%02u/%04u %02u:%02u:%02u",
-               new_time_utc.day, new_time_utc.month, new_time_utc.year,
-               new_time_utc.hour, new_time_utc.minute, new_time_utc.second);
-    } else {
-        /* No timezone config, treat as UTC */
-        new_time_utc = new_time_local;
-        LOG_WRN("No timezone config, treating time as UTC");
-    }
-
-    /* Update timezone configuration from payload: apply utc_offset (including 0) and dst_active */
-    if (timezone_get_config(&tz_config) == 0) {
-        bool tz_changed = false;
-        if (tz_config.utc_offset_minutes != value->utc_offset_minutes) {
-            tz_config.utc_offset_minutes = value->utc_offset_minutes;
-            tz_changed = true;
-        }
-        /* Interpret dst_active as enable/disable DST usage (current simple model) */
-        uint8_t desired_dst_enabled = value->dst_active ? 1 : 0;
-        if (tz_config.dst_enabled != desired_dst_enabled) {
-            tz_config.dst_enabled = desired_dst_enabled;
-            if (!tz_config.dst_enabled) {
-                /* When disabling DST, ensure offset is not double-counted */
-                tz_config.dst_offset_minutes = 0;
-            }
-            tz_changed = true;
-        }
-        if (tz_changed) {
-            if (timezone_set_config(&tz_config) != 0) {
-                LOG_WRN("Failed to update timezone config (offset/DST)");
-            } else {
-                LOG_INF("Timezone updated via RTC write: UTC%+d:%02d, DST=%s", 
-                        tz_config.utc_offset_minutes / 60,
-                        abs(tz_config.utc_offset_minutes % 60),
-                        tz_config.dst_enabled ? "ON" : "OFF");
-            }
-        }
+        LOG_INF("RTC will store UTC: %02u:%02u:%02u %02u/%02u/%04u",
+                new_time_utc.hour, new_time_utc.minute, new_time_utc.second,
+                new_time_utc.day, new_time_utc.month, new_time_utc.year);
     }
 
     ret = rtc_datetime_set(&new_time_utc);

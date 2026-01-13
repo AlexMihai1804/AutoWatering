@@ -57,6 +57,74 @@ static const struct {
         .capacity = HISTORY_RAIN_DAILY_CAPACITY,
         .entry_size = HISTORY_RAIN_DAILY_SIZE,
     },
+    /* Watering channel files (per-channel detailed events) */
+    [HISTORY_TYPE_WATERING_CH0] = {
+        .path = HISTORY_PATH_WATERING_CH0,
+        .magic = HISTORY_MAGIC_WATERING_CH,
+        .capacity = HISTORY_WATERING_CH_CAPACITY,
+        .entry_size = HISTORY_WATERING_EVENT_SIZE,
+    },
+    [HISTORY_TYPE_WATERING_CH1] = {
+        .path = HISTORY_PATH_WATERING_CH1,
+        .magic = HISTORY_MAGIC_WATERING_CH,
+        .capacity = HISTORY_WATERING_CH_CAPACITY,
+        .entry_size = HISTORY_WATERING_EVENT_SIZE,
+    },
+    [HISTORY_TYPE_WATERING_CH2] = {
+        .path = HISTORY_PATH_WATERING_CH2,
+        .magic = HISTORY_MAGIC_WATERING_CH,
+        .capacity = HISTORY_WATERING_CH_CAPACITY,
+        .entry_size = HISTORY_WATERING_EVENT_SIZE,
+    },
+    [HISTORY_TYPE_WATERING_CH3] = {
+        .path = HISTORY_PATH_WATERING_CH3,
+        .magic = HISTORY_MAGIC_WATERING_CH,
+        .capacity = HISTORY_WATERING_CH_CAPACITY,
+        .entry_size = HISTORY_WATERING_EVENT_SIZE,
+    },
+    [HISTORY_TYPE_WATERING_CH4] = {
+        .path = HISTORY_PATH_WATERING_CH4,
+        .magic = HISTORY_MAGIC_WATERING_CH,
+        .capacity = HISTORY_WATERING_CH_CAPACITY,
+        .entry_size = HISTORY_WATERING_EVENT_SIZE,
+    },
+    [HISTORY_TYPE_WATERING_CH5] = {
+        .path = HISTORY_PATH_WATERING_CH5,
+        .magic = HISTORY_MAGIC_WATERING_CH,
+        .capacity = HISTORY_WATERING_CH_CAPACITY,
+        .entry_size = HISTORY_WATERING_EVENT_SIZE,
+    },
+    [HISTORY_TYPE_WATERING_CH6] = {
+        .path = HISTORY_PATH_WATERING_CH6,
+        .magic = HISTORY_MAGIC_WATERING_CH,
+        .capacity = HISTORY_WATERING_CH_CAPACITY,
+        .entry_size = HISTORY_WATERING_EVENT_SIZE,
+    },
+    [HISTORY_TYPE_WATERING_CH7] = {
+        .path = HISTORY_PATH_WATERING_CH7,
+        .magic = HISTORY_MAGIC_WATERING_CH,
+        .capacity = HISTORY_WATERING_CH_CAPACITY,
+        .entry_size = HISTORY_WATERING_EVENT_SIZE,
+    },
+    /* Watering aggregate files */
+    [HISTORY_TYPE_WATERING_DAILY] = {
+        .path = HISTORY_PATH_WATERING_DAILY,
+        .magic = HISTORY_MAGIC_WATERING_DAY,
+        .capacity = HISTORY_WATERING_DAILY_CAPACITY,
+        .entry_size = HISTORY_WATERING_DAILY_SIZE,
+    },
+    [HISTORY_TYPE_WATERING_MONTHLY] = {
+        .path = HISTORY_PATH_WATERING_MONTH,
+        .magic = HISTORY_MAGIC_WATERING_MON,
+        .capacity = HISTORY_WATERING_MONTHLY_CAPACITY,
+        .entry_size = HISTORY_WATERING_MONTHLY_SIZE,
+    },
+    [HISTORY_TYPE_WATERING_ANNUAL] = {
+        .path = HISTORY_PATH_WATERING_YEAR,
+        .magic = HISTORY_MAGIC_WATERING_YR,
+        .capacity = HISTORY_WATERING_ANNUAL_CAPACITY,
+        .entry_size = HISTORY_WATERING_ANNUAL_SIZE,
+    },
 };
 
 /* Runtime state for each history file */
@@ -874,4 +942,140 @@ int history_flash_compact(void)
     
     LOG_DBG("History compact requested (no-op for LittleFS)");
     return 0;
+}
+
+/*******************************************************************************
+ * Public API - Watering History
+ ******************************************************************************/
+
+int history_flash_add_watering_event(uint8_t channel, const history_watering_event_t *entry)
+{
+    if (channel >= HISTORY_WATERING_CHANNELS || !entry) {
+        return -EINVAL;
+    }
+    
+    history_type_t type = HISTORY_TYPE_WATERING_CH(channel);
+    return add_entry(type, entry);
+}
+
+int history_flash_read_watering_channel(uint8_t channel,
+                                        history_watering_event_t *entries,
+                                        uint16_t max_entries,
+                                        uint16_t *count)
+{
+    if (channel >= HISTORY_WATERING_CHANNELS || !entries || !count) {
+        return -EINVAL;
+    }
+    
+    history_type_t type = HISTORY_TYPE_WATERING_CH(channel);
+    return read_entries(type, 0, entries, max_entries, count);
+}
+
+int history_flash_add_watering_daily(const history_watering_daily_t *entry)
+{
+    if (!entry) {
+        return -EINVAL;
+    }
+    return add_entry(HISTORY_TYPE_WATERING_DAILY, entry);
+}
+
+int history_flash_read_watering_daily(uint16_t start_index,
+                                      history_watering_daily_t *entries,
+                                      uint16_t max_entries,
+                                      uint16_t *count)
+{
+    if (!entries || !count) {
+        return -EINVAL;
+    }
+    return read_entries(HISTORY_TYPE_WATERING_DAILY, start_index, entries, max_entries, count);
+}
+
+int history_flash_add_watering_monthly(const history_watering_monthly_t *entry)
+{
+    if (!entry) {
+        return -EINVAL;
+    }
+    return add_entry(HISTORY_TYPE_WATERING_MONTHLY, entry);
+}
+
+int history_flash_read_watering_monthly(uint16_t start_index,
+                                        history_watering_monthly_t *entries,
+                                        uint16_t max_entries,
+                                        uint16_t *count)
+{
+    if (!entries || !count) {
+        return -EINVAL;
+    }
+    return read_entries(HISTORY_TYPE_WATERING_MONTHLY, start_index, entries, max_entries, count);
+}
+
+int history_flash_add_watering_annual(const history_watering_annual_t *entry)
+{
+    if (!entry) {
+        return -EINVAL;
+    }
+    return add_entry(HISTORY_TYPE_WATERING_ANNUAL, entry);
+}
+
+int history_flash_read_watering_annual(uint16_t start_index,
+                                       history_watering_annual_t *entries,
+                                       uint16_t max_entries,
+                                       uint16_t *count)
+{
+    if (!entries || !count) {
+        return -EINVAL;
+    }
+    return read_entries(HISTORY_TYPE_WATERING_ANNUAL, start_index, entries, max_entries, count);
+}
+
+int history_flash_get_watering_channel_count(uint8_t channel, uint16_t *count)
+{
+    if (channel >= HISTORY_WATERING_CHANNELS || !count) {
+        return -EINVAL;
+    }
+    
+    history_type_t type = HISTORY_TYPE_WATERING_CH(channel);
+    
+    if (!history_state[type].valid) {
+        *count = 0;
+        return 0;
+    }
+    
+    *count = history_state[type].header.entry_count;
+    return 0;
+}
+
+int history_flash_clear_watering_channel(uint8_t channel)
+{
+    if (channel >= HISTORY_WATERING_CHANNELS) {
+        return -EINVAL;
+    }
+    
+    return history_flash_clear(HISTORY_TYPE_WATERING_CH(channel));
+}
+
+int history_flash_clear_all_watering(void)
+{
+    int ret = 0;
+    
+    /* Clear all channel files */
+    for (uint8_t ch = 0; ch < HISTORY_WATERING_CHANNELS; ch++) {
+        int r = history_flash_clear(HISTORY_TYPE_WATERING_CH(ch));
+        if (r < 0 && r != -ENOENT) {
+            ret = r;
+        }
+    }
+    
+    /* Clear aggregate files */
+    int r = history_flash_clear(HISTORY_TYPE_WATERING_DAILY);
+    if (r < 0 && r != -ENOENT) ret = r;
+    
+    r = history_flash_clear(HISTORY_TYPE_WATERING_MONTHLY);
+    if (r < 0 && r != -ENOENT) ret = r;
+    
+    r = history_flash_clear(HISTORY_TYPE_WATERING_ANNUAL);
+    if (r < 0 && r != -ENOENT) ret = r;
+    
+    LOG_INF("Cleared all watering history data");
+    return ret;
 }

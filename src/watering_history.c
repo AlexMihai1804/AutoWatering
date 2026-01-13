@@ -2,6 +2,7 @@
 #include "watering_internal.h"
 #include "watering.h"
 #include "nvs_config.h"
+#include "history_flash.h"          /* External flash storage for history */
 #include "rtc.h"
 #include "timezone.h"               /* Add timezone support for local time */
 #include <zephyr/kernel.h>
@@ -81,6 +82,9 @@ struct timed_event {
 };
 /**
  * @brief Initialize History subsystem
+ * 
+ * Uses external flash (LittleFS) for fast boot - single file read per channel
+ * instead of 60+ individual NVS reads.
  */
 watering_error_t watering_history_init(void) {
     // Use timeout instead of K_FOREVER to prevent system freeze
@@ -97,58 +101,99 @@ watering_error_t watering_history_init(void) {
     memset(detailed_event_timestamps, 0, sizeof(detailed_event_timestamps));
     memset(last_event_timestamp, 0, sizeof(last_event_timestamp));
     
-    // Load settings
+    // Load settings (still from NVS - small, single read)
     if (nvs_config_read(NVS_KEY_HISTORY_SETTINGS, &current_settings, sizeof(current_settings)) < 0) {
         LOG_INF("Using default history settings");
     }
     
-    // Load rotation info from NVS
+    // Load rotation info from NVS (single read)
     watering_error_t err = load_rotation_info();
     if (err != WATERING_SUCCESS) {
         LOG_WRN("Failed to load rotation info, using defaults");
         memset(&rotation_info, 0, sizeof(rotation_info));
     }
     
-    // Load existing data from NVS
+    /*
+     * FAST BOOT: Load detailed events from external flash (LittleFS)
+     * Single file read per channel instead of 60 individual NVS reads.
+     * Expected time: ~50ms total vs ~2-4 minutes with NVS.
+     */
+    LOG_INF("Loading watering history from external flash...");
+    uint32_t start_time = k_uptime_get_32();
+    
     for (uint8_t ch = 0; ch < MAX_CHANNELS; ch++) {
-        for (uint8_t i = 0; i < current_settings.detailed_cnt; i++) {
-            uint16_t key = NVS_KEY_DETAILED_BASE + (ch * 100) + i;
-            if (nvs_config_read(key, &detailed_events[ch][i], sizeof(history_event_t)) < 0) {
-                // Not an error - might be empty
-            }
-
-            uint16_t ts_key = NVS_KEY_DETAILED_TS_BASE + (ch * 100) + i;
-            uint32_t stored_ts = 0;
-            int ts_ret = nvs_config_read(ts_key, &stored_ts, sizeof(stored_ts));
-            if (ts_ret == sizeof(stored_ts)) {
-                detailed_event_timestamps[ch][i] = stored_ts;
-                if (stored_ts > last_event_timestamp[ch]) {
-                    last_event_timestamp[ch] = stored_ts;
+        history_watering_event_t flash_events[DETAILED_EVENTS_PER_CHANNEL];
+        uint16_t count = 0;
+        
+        int ret = history_flash_read_watering_channel(ch, flash_events, 
+                                                       DETAILED_EVENTS_PER_CHANNEL, &count);
+        if (ret == 0 && count > 0) {
+            /* Convert from flash format to internal format */
+            for (uint16_t i = 0; i < count && i < current_settings.detailed_cnt; i++) {
+                detailed_events[ch][i].dt_delta = 1; /* Will be recalculated on add */
+                detailed_events[ch][i].flags.mode = (flash_events[i].flags >> 0) & 0x01;
+                detailed_events[ch][i].flags.trigger = (flash_events[i].flags >> 1) & 0x03;
+                detailed_events[ch][i].flags.success = (flash_events[i].flags >> 3) & 0x03;
+                detailed_events[ch][i].flags.err = (flash_events[i].flags >> 5) & 0x07;
+                detailed_events[ch][i].target_ml = flash_events[i].target_ml;
+                detailed_events[ch][i].actual_ml = flash_events[i].actual_ml;
+                detailed_events[ch][i].avg_flow_ml_s = flash_events[i].avg_flow_ml_s;
+                detailed_events[ch][i].reserved[0] = ch;
+                
+                detailed_event_timestamps[ch][i] = flash_events[i].timestamp;
+                if (flash_events[i].timestamp > last_event_timestamp[ch]) {
+                    last_event_timestamp[ch] = flash_events[i].timestamp;
                 }
             }
+            LOG_DBG("Loaded %u events for channel %u", count, ch);
         }
     }
     
-    for (uint8_t i = 0; i < current_settings.daily_days; i++) {
-        uint16_t key = NVS_KEY_DAILY_BASE + i;
-        if (nvs_config_read(key, &daily_stats[i], sizeof(daily_stats_t)) < 0) {
-            // Not an error - might be empty
+    /*
+     * Load aggregate stats from external flash
+     */
+    history_watering_daily_t flash_daily[DAILY_STATS_DAYS];
+    uint16_t daily_count = 0;
+    if (history_flash_read_watering_daily(0, flash_daily, DAILY_STATS_DAYS, &daily_count) == 0) {
+        for (uint16_t i = 0; i < daily_count && i < current_settings.daily_days; i++) {
+            daily_stats[i].day_epoch = flash_daily[i].day_epoch;
+            daily_stats[i].total_ml = flash_daily[i].total_ml;
+            daily_stats[i].sessions_ok = flash_daily[i].sessions_ok;
+            daily_stats[i].sessions_err = flash_daily[i].sessions_err;
+            daily_stats[i].max_channel = flash_daily[i].max_channel;
+            daily_stats[i].success_rate = flash_daily[i].success_rate;
         }
+        LOG_DBG("Loaded %u daily stats", daily_count);
     }
     
-    for (uint8_t i = 0; i < current_settings.monthly_months; i++) {
-        uint16_t key = NVS_KEY_MONTHLY_BASE + i;
-        if (nvs_config_read(key, &monthly_stats[i], sizeof(monthly_stats_raw_t)) < 0) {
-            // Not an error - might be empty
+    history_watering_monthly_t flash_monthly[MONTHLY_STATS_MONTHS];
+    uint16_t monthly_count = 0;
+    if (history_flash_read_watering_monthly(0, flash_monthly, MONTHLY_STATS_MONTHS, &monthly_count) == 0) {
+        for (uint16_t i = 0; i < monthly_count && i < current_settings.monthly_months; i++) {
+            monthly_stats[i].year = flash_monthly[i].year;
+            monthly_stats[i].month = flash_monthly[i].month;
+            monthly_stats[i].total_ml = flash_monthly[i].total_ml;
+            monthly_stats[i].active_days = flash_monthly[i].active_days;
+            monthly_stats[i].peak_channel = flash_monthly[i].peak_channel;
         }
+        LOG_DBG("Loaded %u monthly stats", monthly_count);
     }
     
-    for (uint8_t i = 0; i < current_settings.annual_years; i++) {
-        uint16_t key = NVS_KEY_ANNUAL_BASE + i;
-        if (nvs_config_read(key, &annual_stats[i], sizeof(annual_stats_t)) < 0) {
-            // Not an error - might be empty
+    history_watering_annual_t flash_annual[ANNUAL_STATS_YEARS];
+    uint16_t annual_count = 0;
+    if (history_flash_read_watering_annual(0, flash_annual, ANNUAL_STATS_YEARS, &annual_count) == 0) {
+        for (uint16_t i = 0; i < annual_count && i < current_settings.annual_years; i++) {
+            annual_stats[i].year = flash_annual[i].year;
+            annual_stats[i].total_ml = flash_annual[i].total_ml;
+            annual_stats[i].sessions = flash_annual[i].total_sessions;
+            annual_stats[i].errors = flash_annual[i].total_errors;
+            annual_stats[i].peak_channel = flash_annual[i].peak_channel;
         }
+        LOG_DBG("Loaded %u annual stats", annual_count);
     }
+    
+    uint32_t elapsed = k_uptime_get_32() - start_time;
+    LOG_INF("Watering history loaded in %u ms", elapsed);
     
     // Start GC thread
     if (!gc_thread_active) {
@@ -192,6 +237,8 @@ watering_error_t watering_history_deinit(void) {
 
 /**
  * @brief Add new event to history
+ * 
+ * Saves to external flash (LittleFS) for fast access and boot times.
  */
 watering_error_t watering_history_add_event(const history_event_t *event) {
     if (!event) {
@@ -223,7 +270,7 @@ watering_error_t watering_history_add_event(const history_event_t *event) {
         staged_event.dt_delta = 0;
     }
 
-    // Find next available slot in ring buffer
+    // Find next available slot in ring buffer (in RAM)
     uint8_t next_slot = 0;
     for (uint8_t i = 0; i < current_settings.detailed_cnt; i++) {
         if (detailed_events[channel][i].dt_delta == 0) {
@@ -233,39 +280,42 @@ watering_error_t watering_history_add_event(const history_event_t *event) {
         if (i == current_settings.detailed_cnt - 1) {
             // Ring buffer is full, overwrite oldest (slot 0)
             next_slot = 0;
-            // Shift all events down
+            // Shift all events down in RAM
             for (uint8_t j = 0; j < current_settings.detailed_cnt - 1; j++) {
                 detailed_events[channel][j] = detailed_events[channel][j + 1];
                 detailed_event_timestamps[channel][j] = detailed_event_timestamps[channel][j + 1];
-                uint16_t shift_key = NVS_KEY_DETAILED_BASE + (channel * 100) + j;
-                if (nvs_config_write(shift_key, &detailed_events[channel][j], sizeof(history_event_t)) < 0) {
-                    LOG_WRN("Failed to persist shifted history entry for channel %u slot %u", channel, j);
-                }
-                uint16_t shift_ts_key = NVS_KEY_DETAILED_TS_BASE + (channel * 100) + j;
-                (void)nvs_config_write(shift_ts_key, &detailed_event_timestamps[channel][j], sizeof(uint32_t));
             }
             next_slot = current_settings.detailed_cnt - 1;
         }
     }
     
-    // Add new event
+    // Add new event to RAM
     detailed_events[channel][next_slot] = staged_event;
+    detailed_event_timestamps[channel][next_slot] = now;
+    last_event_timestamp[channel] = now;
     
-    // Save to NVS
-    uint16_t key = NVS_KEY_DETAILED_BASE + (channel * 100) + next_slot;
-    if (nvs_config_write(key, &staged_event, sizeof(history_event_t)) < 0) {
-        LOG_ERR("Failed to save event to NVS");
+    /*
+     * Save to external flash (LittleFS) - single write operation
+     * The flash ring buffer handles rotation automatically.
+     */
+    history_watering_event_t flash_event = {
+        .timestamp = now,
+        .flags = (staged_event.flags.mode & 0x01) |
+                 ((staged_event.flags.trigger & 0x03) << 1) |
+                 ((staged_event.flags.success & 0x03) << 3) |
+                 ((staged_event.flags.err & 0x07) << 5),
+        .target_ml = staged_event.target_ml,
+        .actual_ml = staged_event.actual_ml,
+        .avg_flow_ml_s = staged_event.avg_flow_ml_s,
+        .channel_id = channel
+    };
+    
+    int ret = history_flash_add_watering_event(channel, &flash_event);
+    if (ret < 0) {
+        LOG_ERR("Failed to save event to flash: %d", ret);
         k_mutex_unlock(&history_mutex);
         return WATERING_ERROR_STORAGE;
     }
-
-    detailed_event_timestamps[channel][next_slot] = now;
-    uint16_t ts_key = NVS_KEY_DETAILED_TS_BASE + (channel * 100) + next_slot;
-    if (nvs_config_write(ts_key, &now, sizeof(now)) < 0) {
-        LOG_WRN("Failed to persist event timestamp for channel %u slot %u", channel, next_slot);
-    }
-
-    last_event_timestamp[channel] = now;
     
     // Check if GC is needed
     gc_check_trigger();
@@ -1734,6 +1784,8 @@ int heatshrink_decompress_monthly(const uint8_t *input, uint16_t input_len, mont
 
 /**
  * @brief Reset istoric pentru un canal specific
+ * 
+ * Clears both RAM and external flash storage for the channel.
  */
 watering_error_t watering_history_reset_channel_history(uint8_t channel_id) {
     if (channel_id >= MAX_CHANNELS) {
@@ -1747,7 +1799,7 @@ watering_error_t watering_history_reset_channel_history(uint8_t channel_id) {
         return WATERING_ERROR_TIMEOUT;
     }
     
-    // Clear detailed events for this channel
+    // Clear detailed events for this channel (RAM)
     memset(detailed_events[channel_id], 0, sizeof(detailed_events[channel_id]));
     memset(detailed_event_timestamps[channel_id], 0, sizeof(detailed_event_timestamps[channel_id]));
     last_event_timestamp[channel_id] = 0;
@@ -1755,8 +1807,6 @@ watering_error_t watering_history_reset_channel_history(uint8_t channel_id) {
     // Clear daily stats entries that contain this channel's data
     for (uint16_t i = 0; i < DAILY_STATS_DAYS; i++) {
         if (daily_stats[i].day_epoch != 0) {
-            // For simplicity, we clear the entire day if it contains this channel
-            // In a more sophisticated implementation, we could remove only this channel's data
             daily_stats[i].total_ml = 0;
             daily_stats[i].sessions_ok = 0;
             daily_stats[i].sessions_err = 0;
@@ -1765,7 +1815,7 @@ watering_error_t watering_history_reset_channel_history(uint8_t channel_id) {
         }
     }
     
-    // Clear monthly stats (similar approach)
+    // Clear monthly stats
     for (uint16_t i = 0; i < MONTHLY_STATS_MONTHS; i++) {
         if (monthly_stats[i].year != 0) {
             monthly_stats[i].total_ml = 0;
@@ -1784,28 +1834,10 @@ watering_error_t watering_history_reset_channel_history(uint8_t channel_id) {
         }
     }
     
-    // Clear NVS storage for this channel
-    for (uint16_t i = 0; i < current_settings.detailed_cnt; i++) {
-        uint16_t key = NVS_KEY_DETAILED_BASE + (channel_id * 100) + i;
-        nvs_config_delete(key);
-        uint16_t ts_key = NVS_KEY_DETAILED_TS_BASE + (channel_id * 100) + i;
-        nvs_config_delete(ts_key);
-    }
-    
-    // Save updated daily/monthly/annual stats to NVS
-    for (uint16_t i = 0; i < current_settings.daily_days; i++) {
-        uint16_t key = NVS_KEY_DAILY_BASE + i;
-        nvs_config_write(key, &daily_stats[i], sizeof(daily_stats_t));
-    }
-    
-    for (uint16_t i = 0; i < current_settings.monthly_months; i++) {
-        uint16_t key = NVS_KEY_MONTHLY_BASE + i;
-        nvs_config_write(key, &monthly_stats[i], sizeof(monthly_stats_raw_t));
-    }
-    
-    for (uint16_t i = 0; i < current_settings.annual_years; i++) {
-        uint16_t key = NVS_KEY_ANNUAL_BASE + i;
-        nvs_config_write(key, &annual_stats[i], sizeof(annual_stats_t));
+    // Clear external flash storage for this channel
+    int ret = history_flash_clear_watering_channel(channel_id);
+    if (ret < 0 && ret != -ENOENT) {
+        LOG_WRN("Failed to clear flash for channel %u: %d", channel_id, ret);
     }
     
     k_mutex_unlock(&history_mutex);
@@ -1816,6 +1848,8 @@ watering_error_t watering_history_reset_channel_history(uint8_t channel_id) {
 
 /**
  * @brief Reset istoric pentru toate canalele
+ * 
+ * Clears all RAM and external flash storage for watering history.
  */
 watering_error_t watering_history_reset_all_history(void) {
     LOG_INF("Resetting history for all channels");
@@ -1825,52 +1859,30 @@ watering_error_t watering_history_reset_all_history(void) {
         return WATERING_ERROR_TIMEOUT;
     }
     
-    // Clear all detailed events
+    // Clear all detailed events (RAM)
     memset(detailed_events, 0, sizeof(detailed_events));
     memset(detailed_event_timestamps, 0, sizeof(detailed_event_timestamps));
     memset(last_event_timestamp, 0, sizeof(last_event_timestamp));
     
-    // Clear all daily stats
+    // Clear all daily stats (RAM)
     memset(daily_stats, 0, sizeof(daily_stats));
     
-    // Clear all monthly stats
+    // Clear all monthly stats (RAM)
     memset(monthly_stats, 0, sizeof(monthly_stats));
     
-    // Clear all annual stats
+    // Clear all annual stats (RAM)
     memset(annual_stats, 0, sizeof(annual_stats));
     
-    // Clear all insights
+    // Clear all insights (RAM)
     memset(&current_insights, 0, sizeof(current_insights));
     
-    // Clear NVS storage for all history data
-    for (uint8_t ch = 0; ch < MAX_CHANNELS; ch++) {
-        for (uint16_t i = 0; i < current_settings.detailed_cnt; i++) {
-            uint16_t key = NVS_KEY_DETAILED_BASE + (ch * 100) + i;
-            nvs_config_delete(key);
-            uint16_t ts_key = NVS_KEY_DETAILED_TS_BASE + (ch * 100) + i;
-            nvs_config_delete(ts_key);
-        }
+    // Clear all watering history from external flash (single call)
+    int ret = history_flash_clear_all_watering();
+    if (ret < 0) {
+        LOG_WRN("Failed to clear all watering flash storage: %d", ret);
     }
     
-    // Clear daily stats from NVS
-    for (uint16_t i = 0; i < current_settings.daily_days; i++) {
-        uint16_t key = NVS_KEY_DAILY_BASE + i;
-        nvs_config_delete(key);
-    }
-    
-    // Clear monthly stats from NVS
-    for (uint16_t i = 0; i < current_settings.monthly_months; i++) {
-        uint16_t key = NVS_KEY_MONTHLY_BASE + i;
-        nvs_config_delete(key);
-    }
-    
-    // Clear annual stats from NVS
-    for (uint16_t i = 0; i < current_settings.annual_years; i++) {
-        uint16_t key = NVS_KEY_ANNUAL_BASE + i;
-        nvs_config_delete(key);
-    }
-    
-    // Clear insights cache
+    // Clear insights cache from NVS (small, single key)
     nvs_config_delete(NVS_KEY_INSIGHTS_CACHE);
     
     // Reset rotation info

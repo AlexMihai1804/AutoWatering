@@ -49,11 +49,25 @@ int timezone_init(void)
         int ret = nvs_load_timezone_config(&stored);
         if (ret < 0) {
             stored = default_config;
+            printk("TZ init: using defaults (NVS load failed)\n");
         }
     }
 
     current_config = stored;
     tz_initialized = true;
+    
+    printk("TZ init: offset=%d min, dst_enabled=%u, dst_offset=%d, "
+           "start=%u/%u/%u, end=%u/%u/%u\n",
+           current_config.utc_offset_minutes,
+           current_config.dst_enabled,
+           current_config.dst_offset_minutes,
+           current_config.dst_start_month,
+           current_config.dst_start_week,
+           current_config.dst_start_dow,
+           current_config.dst_end_month,
+           current_config.dst_end_week,
+           current_config.dst_end_dow);
+    
     return 0;
 }
 
@@ -231,6 +245,15 @@ int16_t timezone_get_total_offset(uint32_t utc_timestamp)
     if (!current_config.dst_enabled) {
         return base_offset;
     }
+    
+    /* Validate DST configuration - if months are not set, DST rules are invalid */
+    if (current_config.dst_start_month == 0 || current_config.dst_start_month > 12 ||
+        current_config.dst_end_month == 0 || current_config.dst_end_month > 12 ||
+        current_config.dst_start_week == 0 || current_config.dst_start_week > 5 ||
+        current_config.dst_end_week == 0 || current_config.dst_end_week > 5) {
+        /* DST enabled but rules not properly configured - return base offset only */
+        return base_offset;
+    }
 
     /* Convert UTC to local using base offset only to evaluate rules */
     uint32_t local_ts = utc_timestamp + (base_offset * 60);
@@ -278,18 +301,39 @@ uint32_t timezone_local_to_utc(uint32_t local_timestamp)
     }
 
     int16_t base_offset = current_config.utc_offset_minutes;
-    int16_t dst_offset = current_config.dst_enabled ? current_config.dst_offset_minutes : 0;
+    
+    /* Only consider DST if enabled AND properly configured */
+    bool dst_rules_valid = current_config.dst_enabled &&
+                           current_config.dst_start_month >= 1 && 
+                           current_config.dst_start_month <= 12 &&
+                           current_config.dst_end_month >= 1 && 
+                           current_config.dst_end_month <= 12 &&
+                           current_config.dst_start_week >= 1 && 
+                           current_config.dst_start_week <= 5 &&
+                           current_config.dst_end_week >= 1 && 
+                           current_config.dst_end_week <= 5;
+    
+    int16_t dst_offset = dst_rules_valid ? current_config.dst_offset_minutes : 0;
 
     /* Try with DST applied first (common case when clocks are advanced). */
     int16_t assumed_offset = base_offset + dst_offset;
     uint32_t utc_guess = local_timestamp - (assumed_offset * 60);
-    if (timezone_get_total_offset(utc_guess) == assumed_offset) {
+    
+    int16_t actual_offset = timezone_get_total_offset(utc_guess);
+    printk("timezone_local_to_utc: local_ts=%u, base=%d, dst_valid=%d, dst_off=%d, "
+           "assumed=%d, actual_for_guess=%d\n",
+           local_timestamp, base_offset, dst_rules_valid, 
+           dst_offset, assumed_offset, actual_offset);
+    
+    if (actual_offset == assumed_offset) {
         return utc_guess;
     }
 
     /* Fallback to base offset. */
     assumed_offset = base_offset;
     utc_guess = local_timestamp - (assumed_offset * 60);
+    printk("timezone_local_to_utc: fallback to base_offset=%d -> utc=%u\n",
+           assumed_offset, utc_guess);
     return utc_guess;
 }
 

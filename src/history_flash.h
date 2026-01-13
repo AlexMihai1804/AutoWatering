@@ -39,8 +39,25 @@ typedef enum {
     HISTORY_TYPE_ENV_MONTHLY,
     HISTORY_TYPE_RAIN_HOURLY,
     HISTORY_TYPE_RAIN_DAILY,
+    /* Watering history types - per channel files for fast loading */
+    HISTORY_TYPE_WATERING_CH0,
+    HISTORY_TYPE_WATERING_CH1,
+    HISTORY_TYPE_WATERING_CH2,
+    HISTORY_TYPE_WATERING_CH3,
+    HISTORY_TYPE_WATERING_CH4,
+    HISTORY_TYPE_WATERING_CH5,
+    HISTORY_TYPE_WATERING_CH6,
+    HISTORY_TYPE_WATERING_CH7,
+    /* Watering aggregated stats */
+    HISTORY_TYPE_WATERING_DAILY,
+    HISTORY_TYPE_WATERING_MONTHLY,
+    HISTORY_TYPE_WATERING_ANNUAL,
     HISTORY_TYPE_COUNT
 } history_type_t;
+
+/* Helper macro for channel history types */
+#define HISTORY_TYPE_WATERING_CH(ch) ((history_type_t)(HISTORY_TYPE_WATERING_CH0 + (ch)))
+#define HISTORY_WATERING_CHANNELS 8
 
 /*******************************************************************************
  * File Magic Numbers
@@ -50,6 +67,11 @@ typedef enum {
 #define HISTORY_MAGIC_ENV_MONTHLY   0x454E564DU  /* "ENVM" */
 #define HISTORY_MAGIC_RAIN_HOURLY   0x524E4948U  /* "RNIH" */
 #define HISTORY_MAGIC_RAIN_DAILY    0x524E4944U  /* "RNID" */
+/* Watering history magic numbers */
+#define HISTORY_MAGIC_WATERING_CH   0x57544348U  /* "WTCH" - per-channel detailed */
+#define HISTORY_MAGIC_WATERING_DAY  0x57544459U  /* "WTDY" - daily aggregates */
+#define HISTORY_MAGIC_WATERING_MON  0x57544D4EU  /* "WTMN" - monthly aggregates */
+#define HISTORY_MAGIC_WATERING_YR   0x57545952U  /* "WTYR" - annual aggregates */
 #define HISTORY_VERSION             1
 
 /*******************************************************************************
@@ -60,6 +82,11 @@ typedef enum {
 #define HISTORY_ENV_MONTHLY_CAPACITY     60   /* 5 years × 12 months */
 #define HISTORY_RAIN_HOURLY_CAPACITY    720   /* 30 days × 24 hours */
 #define HISTORY_RAIN_DAILY_CAPACITY    1825   /* 5 years × 365 days */
+/* Watering history capacities */
+#define HISTORY_WATERING_CH_CAPACITY     30   /* 30 detailed events per channel */
+#define HISTORY_WATERING_DAILY_CAPACITY  90   /* 90 days of daily stats */
+#define HISTORY_WATERING_MONTHLY_CAPACITY 36  /* 36 months (3 years) */
+#define HISTORY_WATERING_ANNUAL_CAPACITY  10  /* 10 years */
 
 /*******************************************************************************
  * File Header Structure (16 bytes)
@@ -185,6 +212,81 @@ _Static_assert(sizeof(history_rain_daily_t) == HISTORY_RAIN_DAILY_SIZE,
                "history_rain_daily_t must be 12 bytes");
 
 /*******************************************************************************
+ * Watering Detailed Event Entry (20 bytes) - per channel
+ * 
+ * Stores individual watering events with timestamp for fast retrieval.
+ * Compatible with existing history_event_t structure from watering_history.h
+ ******************************************************************************/
+typedef struct __attribute__((packed)) {
+    uint32_t timestamp;           /* 4: Event timestamp (Unix epoch) */
+    uint8_t  flags;               /* 1: mode:1, trigger:2, success:2, err:3 */
+    uint16_t target_ml;           /* 2: Target volume/duration */
+    uint16_t actual_ml;           /* 2: Actual volume/duration */
+    uint16_t avg_flow_ml_s;       /* 2: Average flow rate */
+    uint8_t  channel_id;          /* 1: Channel identifier */
+    uint8_t  reserved[8];         /* 8: Reserved for future use */
+} history_watering_event_t;
+
+#define HISTORY_WATERING_EVENT_SIZE 20
+_Static_assert(sizeof(history_watering_event_t) == HISTORY_WATERING_EVENT_SIZE,
+               "history_watering_event_t must be 20 bytes");
+
+/*******************************************************************************
+ * Watering Daily Stats Entry (20 bytes)
+ ******************************************************************************/
+typedef struct __attribute__((packed)) {
+    uint32_t day_epoch;           /* 4: Day timestamp (00:00 UTC) */
+    uint32_t total_ml;            /* 4: Total volume in mL */
+    uint16_t sessions_ok;         /* 2: Successful sessions */
+    uint16_t sessions_err;        /* 2: Failed sessions */
+    uint8_t  max_channel;         /* 1: Channel with max volume */
+    uint8_t  success_rate;        /* 1: Success rate 0-100% */
+    uint8_t  active_channels;     /* 1: Bitmap of active channels */
+    uint8_t  reserved[5];         /* 5: Reserved */
+} history_watering_daily_t;
+
+#define HISTORY_WATERING_DAILY_SIZE 20
+_Static_assert(sizeof(history_watering_daily_t) == HISTORY_WATERING_DAILY_SIZE,
+               "history_watering_daily_t must be 20 bytes");
+
+/*******************************************************************************
+ * Watering Monthly Stats Entry (16 bytes)
+ ******************************************************************************/
+typedef struct __attribute__((packed)) {
+    uint16_t year;                /* 2: Year (e.g., 2026) */
+    uint8_t  month;               /* 1: Month 1-12 */
+    uint8_t  active_days;         /* 1: Days with watering */
+    uint32_t total_ml;            /* 4: Total volume */
+    uint16_t total_sessions;      /* 2: Total sessions */
+    uint8_t  peak_channel;        /* 1: Most active channel */
+    uint8_t  avg_success_rate;    /* 1: Average success rate */
+    uint8_t  reserved[4];         /* 4: Reserved */
+} history_watering_monthly_t;
+
+#define HISTORY_WATERING_MONTHLY_SIZE 16
+_Static_assert(sizeof(history_watering_monthly_t) == HISTORY_WATERING_MONTHLY_SIZE,
+               "history_watering_monthly_t must be 16 bytes");
+
+/*******************************************************************************
+ * Watering Annual Stats Entry (24 bytes)
+ ******************************************************************************/
+typedef struct __attribute__((packed)) {
+    uint16_t year;                /* 2: Year */
+    uint16_t active_days;         /* 2: Days with watering */
+    uint32_t total_ml;            /* 4: Total volume */
+    uint32_t total_sessions;      /* 4: Total sessions */
+    uint32_t total_errors;        /* 4: Total errors */
+    uint16_t max_month_ml;        /* 2: Peak month volume (hundreds of mL) */
+    uint8_t  peak_channel;        /* 1: Most active channel */
+    uint8_t  avg_success_rate;    /* 1: Average success rate */
+    uint8_t  reserved[4];         /* 4: Reserved */
+} history_watering_annual_t;
+
+#define HISTORY_WATERING_ANNUAL_SIZE 24
+_Static_assert(sizeof(history_watering_annual_t) == HISTORY_WATERING_ANNUAL_SIZE,
+               "history_watering_annual_t must be 24 bytes");
+
+/*******************************************************************************
  * File Paths on LittleFS
  ******************************************************************************/
 #define HISTORY_MOUNT_POINT         "/lfs"
@@ -194,6 +296,18 @@ _Static_assert(sizeof(history_rain_daily_t) == HISTORY_RAIN_DAILY_SIZE,
 #define HISTORY_PATH_ENV_MONTHLY    "/lfs/history/env_monthly.bin"
 #define HISTORY_PATH_RAIN_HOURLY    "/lfs/history/rain_hourly.bin"
 #define HISTORY_PATH_RAIN_DAILY     "/lfs/history/rain_daily.bin"
+/* Watering history paths - one file per channel for fast parallel loading */
+#define HISTORY_PATH_WATERING_CH0   "/lfs/history/water_ch0.bin"
+#define HISTORY_PATH_WATERING_CH1   "/lfs/history/water_ch1.bin"
+#define HISTORY_PATH_WATERING_CH2   "/lfs/history/water_ch2.bin"
+#define HISTORY_PATH_WATERING_CH3   "/lfs/history/water_ch3.bin"
+#define HISTORY_PATH_WATERING_CH4   "/lfs/history/water_ch4.bin"
+#define HISTORY_PATH_WATERING_CH5   "/lfs/history/water_ch5.bin"
+#define HISTORY_PATH_WATERING_CH6   "/lfs/history/water_ch6.bin"
+#define HISTORY_PATH_WATERING_CH7   "/lfs/history/water_ch7.bin"
+#define HISTORY_PATH_WATERING_DAILY "/lfs/history/water_daily.bin"
+#define HISTORY_PATH_WATERING_MONTH "/lfs/history/water_month.bin"
+#define HISTORY_PATH_WATERING_YEAR  "/lfs/history/water_year.bin"
 
 /*******************************************************************************
  * Runtime Statistics
@@ -353,6 +467,112 @@ int history_flash_read_rain_daily(uint16_t start_index,
                                   history_rain_daily_t *entries,
                                   uint16_t max_entries,
                                   uint16_t *count);
+
+/*******************************************************************************
+ * API Functions - Watering History
+ ******************************************************************************/
+
+/**
+ * @brief Add watering event to channel history
+ * @param channel Channel ID (0-7)
+ * @param entry Pointer to event data
+ * @return 0 on success, negative errno on failure
+ */
+int history_flash_add_watering_event(uint8_t channel, const history_watering_event_t *entry);
+
+/**
+ * @brief Read all watering events for a channel
+ * @param channel Channel ID (0-7)
+ * @param entries Output buffer for entries
+ * @param max_entries Maximum entries to read
+ * @param[out] count Actual entries read
+ * @return 0 on success, negative errno on failure
+ */
+int history_flash_read_watering_channel(uint8_t channel,
+                                        history_watering_event_t *entries,
+                                        uint16_t max_entries,
+                                        uint16_t *count);
+
+/**
+ * @brief Add daily watering stats entry
+ * @param entry Pointer to entry data
+ * @return 0 on success, negative errno on failure
+ */
+int history_flash_add_watering_daily(const history_watering_daily_t *entry);
+
+/**
+ * @brief Read watering daily entries
+ * @param start_index Starting index (0 = oldest)
+ * @param entries Output buffer for entries
+ * @param max_entries Maximum entries to read
+ * @param[out] count Actual entries read
+ * @return 0 on success, negative errno on failure
+ */
+int history_flash_read_watering_daily(uint16_t start_index,
+                                      history_watering_daily_t *entries,
+                                      uint16_t max_entries,
+                                      uint16_t *count);
+
+/**
+ * @brief Add monthly watering stats entry
+ * @param entry Pointer to entry data
+ * @return 0 on success, negative errno on failure
+ */
+int history_flash_add_watering_monthly(const history_watering_monthly_t *entry);
+
+/**
+ * @brief Read watering monthly entries
+ * @param start_index Starting index (0 = oldest)
+ * @param entries Output buffer for entries
+ * @param max_entries Maximum entries to read
+ * @param[out] count Actual entries read
+ * @return 0 on success, negative errno on failure
+ */
+int history_flash_read_watering_monthly(uint16_t start_index,
+                                        history_watering_monthly_t *entries,
+                                        uint16_t max_entries,
+                                        uint16_t *count);
+
+/**
+ * @brief Add annual watering stats entry
+ * @param entry Pointer to entry data
+ * @return 0 on success, negative errno on failure
+ */
+int history_flash_add_watering_annual(const history_watering_annual_t *entry);
+
+/**
+ * @brief Read watering annual entries
+ * @param start_index Starting index (0 = oldest)
+ * @param entries Output buffer for entries
+ * @param max_entries Maximum entries to read
+ * @param[out] count Actual entries read
+ * @return 0 on success, negative errno on failure
+ */
+int history_flash_read_watering_annual(uint16_t start_index,
+                                       history_watering_annual_t *entries,
+                                       uint16_t max_entries,
+                                       uint16_t *count);
+
+/**
+ * @brief Get watering channel event count
+ * @param channel Channel ID (0-7)
+ * @param[out] count Number of events stored
+ * @return 0 on success, negative errno on failure
+ */
+int history_flash_get_watering_channel_count(uint8_t channel, uint16_t *count);
+
+/**
+ * @brief Clear watering history for a specific channel
+ * @param channel Channel ID (0-7)
+ * @return 0 on success, negative errno on failure
+ */
+int history_flash_clear_watering_channel(uint8_t channel);
+
+/**
+ * @brief Clear all watering history (all channels + aggregates)
+ * @return 0 on success, negative errno on failure
+ */
+int history_flash_clear_all_watering(void);
 
 /*******************************************************************************
  * API Functions - Query by Timestamp

@@ -46,8 +46,8 @@ Values are encoded little-endian. `day_of_week` is overwritten with firmware's o
 - **Length/offset:** The handler expects one contiguous 16-byte frame at offset 0. Any other combination returns `BT_ATT_ERR_INVALID_OFFSET`.
 - **Range checks:** Month/day/hour/minute/second bounds are enforced with `BT_ATT_ERR_VALUE_NOT_ALLOWED`. Additional month/day combinations block impossible dates such as 31 April.
 - **Day-of-week:** Firmware recomputes `day_of_week` from the supplied date, ignoring the incoming byte.
-- **Local->UTC conversion:** The supplied values are interpreted as *local* time. `timezone_rtc_to_unix_utc()` converts the local struct to a Unix timestamp; `timezone_local_to_utc()` removes the offset; `timezone_unix_to_rtc_utc()` produces the UTC struct written to hardware via `rtc_datetime_set()`.
-- **Timezone update:** The payload's `utc_offset_minutes` and `dst_active` bits are applied to the stored timezone configuration (`timezone_set_config()`). Only the total offset and DST enable flag are exposed here; detailed DST rule fields require the dedicated Timezone characteristic. Disabling DST zeroes the rule fields.
+- **Local->UTC conversion:** The supplied values are interpreted as *local* time. The `utc_offset_minutes` field represents the **total** UTC offset (already including DST if active). Firmware subtracts this offset directly to compute UTC, then stores via `rtc_datetime_set()`.
+- **Timezone update:** The `utc_offset_minutes` is stored as the base timezone offset. **Important:** The `dst_active` field is informational only; firmware does NOT enable automatic DST calculation from RTC writes to prevent double-application of DST offset. For automatic DST transitions, clients must configure DST rules via the Timezone characteristic.
 - **Error propagation:** Any conversion failure or RTC write issue produces `BT_ATT_ERR_UNLIKELY`.
 - **Confirmation notify:** When notifications are enabled the handler calls `bt_irrigation_rtc_notify()` to broadcast the recomputed struct after a successful update.
 
