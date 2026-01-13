@@ -56,6 +56,8 @@ The Plant Packs system enables storage and management of custom plant profiles o
 | Storage | [pack_storage.h/c](PACK_STORAGE.md) | Flash filesystem operations |
 | BLE Handlers | [bt_pack_handlers.h/c](BLE_PACK_SERVICE.md) | GATT service implementation |
 | Transfer Protocol | - | [TRANSFER_PROTOCOL.md](TRANSFER_PROTOCOL.md) |
+| **Sync Guide** | - | [SYNC_GUIDE.md](SYNC_GUIDE.md) | **Mobile app sync workflow** |
+| Mobile App Guide | - | [MOBILE_APP_GUIDE.md](MOBILE_APP_GUIDE.md) | Full mobile implementation |
 
 ## Quick Start
 
