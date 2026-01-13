@@ -605,6 +605,56 @@ uint16_t pack_storage_get_plant_count(void)
     return count;
 }
 
+uint16_t pack_storage_get_custom_plant_count(void)
+{
+    if (!pack_storage_initialized) {
+        return 0;
+    }
+    
+    struct fs_dir_t dir;
+    struct fs_dirent dirent;
+    uint16_t count = 0;
+    int rc;
+    
+    fs_dir_t_init(&dir);
+    
+    k_mutex_lock(&pack_storage_mutex, K_FOREVER);
+    
+    rc = fs_opendir(&dir, PACK_PLANTS_DIR);
+    if (rc < 0) {
+        k_mutex_unlock(&pack_storage_mutex);
+        return 0;
+    }
+    
+    while (true) {
+        rc = fs_readdir(&dir, &dirent);
+        if (rc < 0 || dirent.name[0] == 0) {
+            break;
+        }
+        
+        /* Check if it's a plant file (p_XXXX.bin) */
+        if (dirent.type == FS_DIR_ENTRY_FILE &&
+            dirent.name[0] == 'p' && dirent.name[1] == '_' &&
+            strstr(dirent.name, ".bin") != NULL) {
+            
+            /* Read plant to check pack_id */
+            char path[64];
+            snprintf(path, sizeof(path), "%s/%s", PACK_PLANTS_DIR, dirent.name);
+            
+            pack_plant_v1_t plant;
+            pack_result_t res = read_plant_file(path, &plant);
+            if (res == PACK_RESULT_SUCCESS && plant.pack_id != PACK_ID_BUILTIN) {
+                count++;
+            }
+        }
+    }
+    
+    fs_closedir(&dir);
+    k_mutex_unlock(&pack_storage_mutex);
+    
+    return count;
+}
+
 /* ============================================================================
  * Pack Operations (stubs for now - will implement with issue #7)
  * ============================================================================ */
@@ -847,6 +897,7 @@ pack_result_t pack_storage_get_stats(pack_storage_stats_t *stats)
     stats->free_bytes = stat.f_bsize * stat.f_bfree;
     stats->used_bytes = stats->total_bytes - stats->free_bytes;
     stats->plant_count = pack_storage_get_plant_count();
+    stats->custom_plant_count = pack_storage_get_custom_plant_count();
     stats->pack_count = pack_storage_get_pack_count();
     stats->change_counter = pack_change_counter;
     

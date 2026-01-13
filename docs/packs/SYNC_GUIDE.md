@@ -73,9 +73,10 @@ data class PackStats(
     val totalBytes: Long,
     val usedBytes: Long,
     val freeBytes: Long,
-    val plantCount: Int,
+    val plantCount: Int,         // Total plants in flash storage
+    val customPlantCount: Int,   // Custom plants only (pack_id != 0)
     val packCount: Int,
-    val builtinCount: Int,
+    val builtinCount: Int,       // ROM plants (223, constant)
     val status: Int,
     val changeCounter: Long
 )
@@ -87,6 +88,7 @@ fun parsePackStats(data: ByteArray): PackStats {
         usedBytes = buffer.int.toLong() and 0xFFFFFFFFL,
         freeBytes = buffer.int.toLong() and 0xFFFFFFFFL,
         plantCount = buffer.short.toInt() and 0xFFFF,
+        customPlantCount = buffer.short.toInt() and 0xFFFF,  // NEW: custom only
         packCount = buffer.short.toInt() and 0xFFFF,
         builtinCount = buffer.short.toInt() and 0xFFFF,
         status = buffer.get().toInt() and 0xFF,
@@ -98,6 +100,9 @@ fun checkSyncNeeded(stats: PackStats): Boolean {
     val cachedCounter = sharedPrefs.getLong("plant_change_counter", -1)
     return cachedCounter != stats.changeCounter
 }
+
+// Use customPlantCount to decide if streaming custom plants is needed
+fun hasCustomPlants(stats: PackStats): Boolean = stats.customPlantCount > 0
 ```
 
 ### Step 3: Request Plant List Streaming
@@ -325,6 +330,38 @@ sealed class SyncResult {
 ```swift
 import CoreBluetooth
 
+// Pack Stats structure (26 bytes)
+struct PackStats {
+    let totalBytes: UInt32
+    let usedBytes: UInt32
+    let freeBytes: UInt32
+    let plantCount: UInt16         // Total plants in flash storage
+    let customPlantCount: UInt16   // Custom plants only (pack_id != 0)
+    let packCount: UInt16
+    let builtinCount: UInt16       // ROM plants (223, constant)
+    let status: UInt8
+    let changeCounter: UInt32
+    
+    static func parse(_ data: Data) -> PackStats? {
+        guard data.count >= 26 else { return nil }
+        return data.withUnsafeBytes { ptr in
+            PackStats(
+                totalBytes: ptr.load(fromByteOffset: 0, as: UInt32.self),
+                usedBytes: ptr.load(fromByteOffset: 4, as: UInt32.self),
+                freeBytes: ptr.load(fromByteOffset: 8, as: UInt32.self),
+                plantCount: ptr.load(fromByteOffset: 12, as: UInt16.self),
+                customPlantCount: ptr.load(fromByteOffset: 14, as: UInt16.self),
+                packCount: ptr.load(fromByteOffset: 16, as: UInt16.self),
+                builtinCount: ptr.load(fromByteOffset: 18, as: UInt16.self),
+                status: ptr.load(fromByteOffset: 20, as: UInt8.self),
+                changeCounter: ptr.load(fromByteOffset: 22, as: UInt32.self)
+            )
+        }
+    }
+    
+    var hasCustomPlants: Bool { customPlantCount > 0 }
+}
+
 class PlantSyncManager: NSObject, CBPeripheralDelegate {
     
     private var peripheral: CBPeripheral
@@ -395,14 +432,18 @@ class PlantSyncManager: NSObject, CBPeripheralDelegate {
     // MARK: - Private
     
     private func handleStatsRead(_ data: Data) {
-        let stats = parsePackStats(data)
+        guard let stats = PackStats.parse(data) else { return }
         currentStats = stats
         
         let cachedCounter = UserDefaults.standard.integer(forKey: "changeCounter")
         if cachedCounter == stats.changeCounter {
             syncCompletion?(.success([]))  // Already up to date
-        } else {
+        } else if stats.hasCustomPlants {
             requestPlantStream(filter: .customOnly)
+        } else {
+            // No custom plants to sync
+            saveToCache()
+            syncCompletion?(.success([]))
         }
     }
     

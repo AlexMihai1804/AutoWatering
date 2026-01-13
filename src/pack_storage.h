@@ -60,7 +60,8 @@ typedef struct {
     uint32_t total_bytes;       /**< Total partition size */
     uint32_t used_bytes;        /**< Used bytes */
     uint32_t free_bytes;        /**< Free bytes */
-    uint16_t plant_count;       /**< Installed custom plants */
+    uint16_t plant_count;       /**< Total plants in storage (builtin provisioned + custom) */
+    uint16_t custom_plant_count;/**< Custom plants only (pack_id != 0) */
     uint16_t pack_count;        /**< Installed packs */
     uint32_t change_counter;    /**< Increments on each install/delete (for cache invalidation) */
 } pack_storage_stats_t;
@@ -138,11 +139,23 @@ pack_result_t pack_storage_list_plants(pack_plant_list_entry_t *entries,
                                        uint16_t offset);
 
 /**
- * @brief Get count of installed custom plants
+ * @brief Get count of all plants in flash storage
+ * 
+ * Includes both provisioned built-in plants and custom plants.
+ * 
+ * @return Total number of plant files in storage
+ */
+uint16_t pack_storage_get_plant_count(void);
+
+/**
+ * @brief Get count of custom plants only
+ * 
+ * Counts only plants with pack_id != 0 (not built-in).
+ * Used by app to determine sync requirements.
  * 
  * @return Number of custom plants (excludes built-in)
  */
-uint16_t pack_storage_get_plant_count(void);
+uint16_t pack_storage_get_custom_plant_count(void);
 
 /* ============================================================================
  * Pack Operations

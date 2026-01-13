@@ -194,7 +194,12 @@ static int stream_start(uint8_t filter)
     }
     
     if (!pack_notifications_enabled) {
-        LOG_WRN("Streaming requested but notifications not enabled");
+        LOG_ERR("STREAM FAIL: notifications not enabled! Enable CCC first.");
+        return -EINVAL;
+    }
+    
+    if (!pack_plant_attr) {
+        LOG_ERR("STREAM FAIL: pack_plant_attr is NULL! Init not called?");
         return -EINVAL;
     }
     
@@ -234,8 +239,12 @@ static int stream_start(uint8_t filter)
             filter, stream_state.total_count, 
             stream_state.include_builtin, stream_state.include_custom);
     
+    LOG_INF("Stream state: active=%d, pack_plant_attr=%p", 
+            stream_state.active, (void *)pack_plant_attr);
+    
     /* Schedule first work item immediately */
     k_work_schedule(&stream_work, K_NO_WAIT);
+    LOG_INF("Work scheduled, waiting for handler...");
     
     return 0;
 }
@@ -247,7 +256,12 @@ static void stream_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
     
+    LOG_INF("stream_work_handler: active=%d, notif=%d, attr=%p",
+            stream_state.active, pack_notifications_enabled, (void *)pack_plant_attr);
+    
     if (!stream_state.active || !pack_notifications_enabled) {
+        LOG_WRN("Stream aborted: active=%d, notif=%d", 
+                stream_state.active, pack_notifications_enabled);
         stream_state.active = false;
         return;
     }
@@ -324,7 +338,11 @@ static void stream_work_handler(struct k_work *work)
     
     /* 4. Send notification */
     size_t size = 4 + count * sizeof(bt_pack_plant_list_entry_t);
+    LOG_INF("Sending notification: total=%u, returned=%u, flags=0x%02X, size=%zu, attr=%p",
+            list_response.total_count, list_response.returned_count, 
+            list_response.flags, size, (void *)pack_plant_attr);
     int err = bt_gatt_notify(NULL, pack_plant_attr, &list_response, size);
+    LOG_INF("bt_gatt_notify returned: %d", err);
     
     if (err == -ENOMEM || err == -EBUSY) {
         /* Buffer exhaustion - retry with exponential backoff */
@@ -442,9 +460,14 @@ ssize_t bt_pack_stats_read(struct bt_conn *conn,
         stats_response.used_bytes = stats.used_bytes;
         stats_response.free_bytes = stats.free_bytes;
         stats_response.plant_count = stats.plant_count;
+        stats_response.custom_plant_count = stats.custom_plant_count;
         stats_response.pack_count = stats.pack_count;
         stats_response.change_counter = stats.change_counter;
         stats_response.status = 0;
+        
+        LOG_INF("Stats: total_plants=%u, custom=%u, builtin=%u, packs=%u, change=%u",
+                stats.plant_count, stats.custom_plant_count, PLANT_FULL_SPECIES_COUNT, 
+                stats.pack_count, stats.change_counter);
     } else {
         stats_response.status = 2; /* Error */
     }
@@ -632,8 +655,12 @@ ssize_t bt_pack_plant_write(struct bt_conn *conn,
         
         /* Streaming mode: max_count == 0 means stream all via notifications */
         if (req->max_count == BT_PACK_STREAM_MODE) {
-            LOG_INF("Pack plant STREAM request: filter=0x%02X", req->filter_pack_id);
-            stream_start(req->filter_pack_id);
+            LOG_INF("Pack plant STREAM request: filter=0x%02X, notif_enabled=%d, pack_plant_attr=%p",
+                    req->filter_pack_id, pack_notifications_enabled, (void *)pack_plant_attr);
+            int ret = stream_start(req->filter_pack_id);
+            if (ret != 0) {
+                LOG_ERR("stream_start FAILED: %d", ret);
+            }
             return len;
         }
         

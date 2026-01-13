@@ -195,17 +195,25 @@ typedef struct __attribute__((packed)) {
 
 /**
  * @brief Pack storage stats response
+ * 
+ * Size: 26 bytes
+ * 
+ * Plant count breakdown:
+ * - builtin_count: ROM plants (223, constant)
+ * - plant_count: Total in flash storage (builtin provisioned + custom)
+ * - custom_plant_count: Custom only (pack_id != 0), for sync logic
  */
 typedef struct __attribute__((packed)) {
-    uint32_t total_bytes;   /**< Total storage capacity */
-    uint32_t used_bytes;    /**< Used storage */
-    uint32_t free_bytes;    /**< Free storage */
-    uint16_t plant_count;   /**< Number of custom plants */
-    uint16_t pack_count;    /**< Number of packs */
-    uint16_t builtin_count; /**< Built-in plant count (223) */
-    uint8_t status;         /**< 0=OK, 1=not mounted, 2=error */
+    uint32_t total_bytes;       /**< Total storage capacity */
+    uint32_t used_bytes;        /**< Used storage */
+    uint32_t free_bytes;        /**< Free storage */
+    uint16_t plant_count;       /**< Total plants in flash storage */
+    uint16_t custom_plant_count;/**< Custom plants only (pack_id != 0) */
+    uint16_t pack_count;        /**< Number of packs */
+    uint16_t builtin_count;     /**< Built-in plant count in ROM (223) */
+    uint8_t status;             /**< 0=OK, 1=not mounted, 2=error */
     uint8_t reserved;
-    uint32_t change_counter;/**< Increments on install/delete (cache invalidation) */
+    uint32_t change_counter;    /**< Increments on install/delete (cache invalidation) */
 } bt_pack_stats_resp_t;
 
 /**

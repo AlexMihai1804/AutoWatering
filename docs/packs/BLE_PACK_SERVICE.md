@@ -368,16 +368,30 @@ typedef struct __attribute__((packed)) {
     uint32_t total_bytes;       // Total partition size
     uint32_t used_bytes;        // Currently used
     uint32_t free_bytes;        // Available
-    uint16_t plant_count;       // Installed custom plants
+    uint16_t plant_count;       // Total plants in flash storage (provisioned + custom)
+    uint16_t custom_plant_count;// Custom plants only (pack_id != 0) - for sync logic
     uint16_t pack_count;        // Installed packs
-    uint16_t builtin_count;     // ROM plants (223)
+    uint16_t builtin_count;     // ROM plants (223, constant)
     uint8_t status;             // 0=ok, 1=not mounted, 2=error
     uint8_t reserved;
     uint32_t change_counter;    // Increments on each install/delete (for cache invalidation)
 } bt_pack_stats_resp_t;
 ```
 
-**Size:** 24 bytes
+**Size:** 26 bytes
+
+### Plant Count Fields Explained
+
+| Field | Description | Typical Value |
+|-------|-------------|---------------|
+| `builtin_count` | ROM plants (constant) | 223 |
+| `plant_count` | Total in flash storage | 223 (if provisioned) |
+| `custom_plant_count` | Custom only (pack_id != 0) | 0-N |
+
+**For App Sync Logic:**
+- Use `custom_plant_count` to decide if streaming is needed
+- If `custom_plant_count == 0`, no custom plants to sync
+- Built-in plants are always available from ROM
 
 ### Cache Invalidation
 
@@ -396,7 +410,8 @@ The `change_counter` field enables efficient caching in mobile apps:
 00 00 DC 00    // total_bytes = 14,417,920 (0x00DC0000)
 00 20 00 00    // used_bytes = 8,192
 00 E0 DB 00    // free_bytes = 14,409,728
-05 00          // plant_count = 5
+DF 00          // plant_count = 223 (all provisioned)
+05 00          // custom_plant_count = 5 (custom only)
 01 00          // pack_count = 1
 DF 00          // builtin_count = 223
 00             // status = OK
