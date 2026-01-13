@@ -24,6 +24,12 @@ static bt_pack_plant_list_resp_t list_response;
 static bt_pack_stats_resp_t stats_response;
 static bt_pack_op_result_t op_result;
 
+/* Pack list static storage */
+static bt_pack_list_resp_t pack_list_response;
+static bt_pack_content_resp_t pack_content_response;
+static uint8_t pack_list_opcode = BT_PACK_LIST_OP_LIST;
+static uint16_t pack_list_param = 0;
+
 static bool pack_notifications_enabled = false;
 static uint16_t list_offset = 0;
 static uint8_t list_filter_pack = 0xFF;
@@ -62,10 +68,13 @@ static bt_pack_xfer_status_t xfer_status;
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x9abc, 0xdef123456787)
 #define BT_UUID_PACK_XFER_VAL \
     BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x9abc, 0xdef123456788)
+#define BT_UUID_PACK_LIST_VAL \
+    BT_UUID_128_ENCODE(0x12345678, 0x1234, 0x5678, 0x9abc, 0xdef123456789)
 
 static struct bt_uuid_128 pack_plant_uuid = BT_UUID_INIT_128(BT_UUID_PACK_PLANT_VAL);
 static struct bt_uuid_128 pack_stats_uuid = BT_UUID_INIT_128(BT_UUID_PACK_STATS_VAL);
 static struct bt_uuid_128 pack_xfer_uuid = BT_UUID_INIT_128(BT_UUID_PACK_XFER_VAL);
+static struct bt_uuid_128 pack_list_uuid = BT_UUID_INIT_128(BT_UUID_PACK_LIST_VAL);
 
 /* ============================================================================
  * CCC Callbacks
@@ -212,6 +221,157 @@ ssize_t bt_pack_stats_read(struct bt_conn *conn,
     
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              &stats_response, sizeof(stats_response));
+}
+
+/* ============================================================================
+ * Pack List Read/Write Handlers
+ * ============================================================================ */
+
+ssize_t bt_pack_list_read(struct bt_conn *conn,
+                          const struct bt_gatt_attr *attr,
+                          void *buf, uint16_t len, uint16_t offset)
+{
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    
+    if (pack_list_opcode == BT_PACK_LIST_OP_CONTENT) {
+        /* Return pack content (plant IDs) */
+        memset(&pack_content_response, 0, sizeof(pack_content_response));
+        
+        if (!pack_storage_is_ready()) {
+            pack_content_response.pack_id = pack_list_param;
+            return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                                     &pack_content_response, sizeof(pack_content_response));
+        }
+        
+        /* Get pack info with plant IDs */
+        pack_pack_v1_t pack_data;
+        uint16_t plant_ids[64];
+        pack_result_t result = pack_storage_get_pack(pack_list_param, &pack_data, 
+                                                      plant_ids, 64);
+        
+        if (result != PACK_RESULT_SUCCESS) {
+            /* Check if it's the builtin pack (pack_id=0) */
+            if (pack_list_param == 0) {
+                pack_content_response.pack_id = 0;
+                pack_content_response.version = 1;
+                pack_content_response.total_plants = PLANT_FULL_SPECIES_COUNT;
+                pack_content_response.returned_count = 0; /* Too many to list */
+                pack_content_response.offset = 0;
+                LOG_INF("Builtin pack has %u plants (not enumerated)", 
+                        PLANT_FULL_SPECIES_COUNT);
+            } else {
+                LOG_WRN("Pack %u not found: %d", pack_list_param, result);
+                pack_content_response.pack_id = pack_list_param;
+            }
+            return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                                     &pack_content_response, sizeof(pack_content_response));
+        }
+        
+        pack_content_response.pack_id = pack_list_param;
+        pack_content_response.version = pack_data.version;
+        pack_content_response.total_plants = pack_data.plant_count;
+        pack_content_response.offset = 0;
+        
+        /* Copy up to 16 plant IDs */
+        uint8_t copy_count = (pack_data.plant_count > 16) ? 16 : pack_data.plant_count;
+        pack_content_response.returned_count = copy_count;
+        for (uint8_t i = 0; i < copy_count; i++) {
+            pack_content_response.plant_ids[i] = plant_ids[i];
+        }
+        
+        size_t resp_size = 8 + copy_count * sizeof(uint16_t);
+        return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                                 &pack_content_response, resp_size);
+    }
+    
+    /* Default: Return pack list */
+    memset(&pack_list_response, 0, sizeof(pack_list_response));
+    
+    if (!pack_storage_is_ready()) {
+        /* Return just builtin pack */
+        pack_list_response.total_count = 1;
+        pack_list_response.returned_count = 1;
+        pack_list_response.include_builtin = 1;
+        pack_list_response.entries[0].pack_id = 0;
+        pack_list_response.entries[0].version = 1;
+        pack_list_response.entries[0].plant_count = PLANT_FULL_SPECIES_COUNT;
+        strncpy(pack_list_response.entries[0].name, "Built-in Plants", 23);
+        return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                                 &pack_list_response, 4 + sizeof(bt_pack_list_entry_t));
+    }
+    
+    /* Get custom packs */
+    pack_pack_list_entry_t entries[4];
+    uint16_t count = 0;
+    uint16_t req_offset = pack_list_param;
+    
+    /* First entry is always builtin pack if offset is 0 */
+    uint8_t entry_idx = 0;
+    if (req_offset == 0) {
+        pack_list_response.include_builtin = 1;
+        pack_list_response.entries[0].pack_id = 0;
+        pack_list_response.entries[0].version = 1;
+        pack_list_response.entries[0].plant_count = PLANT_FULL_SPECIES_COUNT;
+        strncpy(pack_list_response.entries[0].name, "Built-in Plants", 23);
+        entry_idx = 1;
+    }
+    
+    /* Get custom packs (max 3 if builtin included, 4 otherwise) */
+    uint16_t custom_offset = (req_offset > 0) ? (req_offset - 1) : 0;
+    pack_result_t result = pack_storage_list_packs(entries, 4 - entry_idx, 
+                                                    &count, custom_offset);
+    
+    if (result == PACK_RESULT_SUCCESS) {
+        for (uint16_t i = 0; i < count && entry_idx < 4; i++, entry_idx++) {
+            pack_list_response.entries[entry_idx].pack_id = entries[i].pack_id;
+            pack_list_response.entries[entry_idx].version = entries[i].version;
+            pack_list_response.entries[entry_idx].plant_count = entries[i].plant_count;
+            strncpy(pack_list_response.entries[entry_idx].name, entries[i].name, 23);
+            pack_list_response.entries[entry_idx].name[23] = '\0';
+        }
+    }
+    
+    pack_list_response.total_count = 1 + pack_storage_get_pack_count(); /* +1 for builtin */
+    pack_list_response.returned_count = entry_idx;
+    
+    size_t resp_size = 4 + entry_idx * sizeof(bt_pack_list_entry_t);
+    return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                             &pack_list_response, resp_size);
+}
+
+ssize_t bt_pack_list_write(struct bt_conn *conn,
+                           const struct bt_gatt_attr *attr,
+                           const void *buf, uint16_t len,
+                           uint16_t offset, uint8_t flags)
+{
+    ARG_UNUSED(conn);
+    ARG_UNUSED(attr);
+    ARG_UNUSED(flags);
+    
+    if (offset != 0) {
+        LOG_WRN("Pack list write with non-zero offset");
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+    
+    if (len < sizeof(bt_pack_list_req_t)) {
+        LOG_WRN("Pack list write too short: %u", len);
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+    }
+    
+    const bt_pack_list_req_t *req = buf;
+    pack_list_opcode = req->opcode;
+    pack_list_param = req->offset;
+    
+    if (req->opcode == BT_PACK_LIST_OP_LIST) {
+        LOG_INF("Pack list request: offset=%u", req->offset);
+    } else if (req->opcode == BT_PACK_LIST_OP_CONTENT) {
+        LOG_INF("Pack content request: pack_id=%u", req->offset);
+    } else {
+        LOG_WRN("Unknown pack list opcode: 0x%02x", req->opcode);
+    }
+    
+    return len;
 }
 
 /* ============================================================================
@@ -631,6 +791,13 @@ BT_GATT_SERVICE_DEFINE(pack_svc,
                            bt_pack_stats_read, NULL,
                            &stats_response),
     
+    /* Pack List characteristic - list installed packs and their contents */
+    BT_GATT_CHARACTERISTIC(&pack_list_uuid.uuid,
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_READ_ENCRYPT | BT_GATT_PERM_WRITE_ENCRYPT,
+                           bt_pack_list_read, bt_pack_list_write,
+                           &pack_list_response),
+    
     /* Pack Transfer characteristic - multi-part pack installation */
     BT_GATT_CHARACTERISTIC(&pack_xfer_uuid.uuid,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
@@ -642,7 +809,7 @@ BT_GATT_SERVICE_DEFINE(pack_svc,
 
 /* Attribute indices for notifications */
 #define PACK_ATTR_PLANT_VALUE 2
-#define PACK_ATTR_XFER_VALUE  7
+#define PACK_ATTR_XFER_VALUE  10
 
 /* Transfer notification attribute pointer */
 static const struct bt_gatt_attr *pack_xfer_attr = NULL;
@@ -658,11 +825,15 @@ int bt_pack_handlers_init(void)
     memset(&list_response, 0, sizeof(list_response));
     memset(&stats_response, 0, sizeof(stats_response));
     memset(&op_result, 0, sizeof(op_result));
+    memset(&pack_list_response, 0, sizeof(pack_list_response));
+    memset(&pack_content_response, 0, sizeof(pack_content_response));
     
     pack_notifications_enabled = false;
     pack_xfer_notifications_enabled = false;
     list_offset = 0;
     list_filter_pack = 0xFF;
+    pack_list_opcode = BT_PACK_LIST_OP_LIST;
+    pack_list_param = 0;
     
     /* Reset transfer state */
     xfer_reset();
@@ -675,6 +846,7 @@ int bt_pack_handlers_init(void)
     LOG_INF("Pack BLE handlers initialized (service UUID: def123456800)");
     LOG_INF("  - Plant characteristic: install/delete/list single plants");
     LOG_INF("  - Stats characteristic: storage statistics");
+    LOG_INF("  - List characteristic: list packs and pack contents");
     LOG_INF("  - Transfer characteristic: multi-part pack installation");
     return 0;
 }

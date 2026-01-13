@@ -1,11 +1,11 @@
 # BLE Pack Service Documentation
 
-**Version**: 1.0.0  
+**Version**: 1.1.0  
 **Files**: `src/bt_pack_handlers.h`, `src/bt_pack_handlers.c`
 
 ## Overview
 
-The Pack Service is a dedicated BLE GATT service for managing custom plant packs. It provides three characteristics for plant operations, storage statistics, and multi-part pack transfers.
+The Pack Service is a dedicated BLE GATT service for managing custom plant packs. It provides four characteristics for plant operations, storage statistics, pack listing, and multi-part pack transfers.
 
 ---
 
@@ -23,6 +23,7 @@ Primary Service: 12345678-1234-5678-9abc-def123456800
 |------|------|------------|-------------|
 | Pack Plant | `...def123456786` | R/W/N | Install/delete/list plants |
 | Pack Stats | `...def123456787` | R | Storage statistics |
+| Pack List | `...def123456789` | R/W | List packs and pack contents |
 | Pack Transfer | `...def123456788` | R/W/N | Multi-part pack transfer |
 
 ---
@@ -205,7 +206,136 @@ DF 00          // builtin_count = 223
 
 ---
 
-## Characteristic 3: Pack Transfer
+## Characteristic 3: Pack List
+
+**UUID**: `12345678-1234-5678-9abc-def123456789`  
+**Properties**: Read, Write  
+**Permissions**: Encrypted Read/Write
+
+### Purpose
+
+List installed packs and retrieve pack contents (which plants are in each pack).
+
+### Write Operations
+
+The write operation selects what to return on the next read:
+
+```c
+typedef struct __attribute__((packed)) {
+    uint8_t opcode;         // 0x01=list packs, 0x02=get pack content
+    uint16_t offset;        // Pagination offset (for list) or pack_id (for content)
+    uint8_t reserved;
+} bt_pack_list_req_t;
+```
+
+**Size:** 4 bytes
+
+| Opcode | Name | offset field meaning |
+|--------|------|---------------------|
+| 0x01 | LIST_PACKS | Pagination offset |
+| 0x02 | GET_CONTENT | Pack ID to query |
+
+### Read Response (after opcode 0x01 - List Packs)
+
+Returns a paginated list of installed packs:
+
+```c
+typedef struct __attribute__((packed)) {
+    uint16_t total_count;       // Total packs (including builtin)
+    uint8_t returned_count;     // Entries in this response
+    uint8_t include_builtin;    // 1 if builtin pack 0 is included
+    bt_pack_list_entry_t entries[4];  // Up to 4 entries per read
+} bt_pack_list_resp_t;
+```
+
+**Entry structure (30 bytes each):**
+```c
+typedef struct __attribute__((packed)) {
+    uint16_t pack_id;       // Pack ID (0 = built-in)
+    uint16_t version;       // Pack version
+    uint16_t plant_count;   // Number of plants in pack
+    char name[24];          // Pack name (truncated)
+} bt_pack_list_entry_t;
+```
+
+**Maximum response size:** 4 + (4 × 30) = 124 bytes
+
+**Note:** The built-in pack (pack_id=0) is always included first when offset=0. It contains all 223 built-in plant species.
+
+### Read Response (after opcode 0x02 - Get Pack Content)
+
+Returns the plant IDs contained in a specific pack:
+
+```c
+typedef struct __attribute__((packed)) {
+    uint16_t pack_id;       // Pack ID
+    uint16_t version;       // Pack version
+    uint16_t total_plants;  // Total plants in pack
+    uint8_t returned_count; // Number of plant IDs in this response
+    uint8_t offset;         // Current offset (for pagination)
+    uint16_t plant_ids[16]; // Up to 16 plant IDs per read
+} bt_pack_content_resp_t;
+```
+
+**Maximum response size:** 8 + (16 × 2) = 40 bytes
+
+**Note:** For the built-in pack (pack_id=0), `total_plants=223` and `returned_count=0` (too many to enumerate via BLE).
+
+### Usage Examples
+
+#### List All Installed Packs
+
+```
+1. Write: 01 00 00 00 (opcode=LIST, offset=0)
+2. Read characteristic
+3. Parse bt_pack_list_resp_t
+4. If total_count > returned_count, repeat with higher offset
+```
+
+**Example Response (hex):**
+```
+02 00          // total_count = 2 (builtin + 1 custom)
+02             // returned_count = 2
+01             // include_builtin = 1
+// Entry 0: Built-in pack
+00 00          // pack_id = 0
+01 00          // version = 1
+DF 00          // plant_count = 223
+"Built-in Plants\0\0\0\0\0\0\0\0\0"  // name (24 bytes)
+// Entry 1: Custom pack
+01 00          // pack_id = 1
+02 00          // version = 2
+05 00          // plant_count = 5
+"Mediterranean Herbs\0\0\0\0\0"      // name (24 bytes)
+```
+
+#### Get Pack Contents (Plants in Pack)
+
+```
+1. Write: 02 01 00 00 (opcode=CONTENT, pack_id=1)
+2. Read characteristic
+3. Parse bt_pack_content_resp_t
+```
+
+**Example Response (hex):**
+```
+01 00          // pack_id = 1
+02 00          // version = 2
+05 00          // total_plants = 5
+05             // returned_count = 5
+00             // offset = 0
+// Plant IDs:
+E9 03          // plant_id = 1001
+EA 03          // plant_id = 1002
+EB 03          // plant_id = 1003
+EC 03          // plant_id = 1004
+ED 03          // plant_id = 1005
+// Remaining 11 slots unused (zeros)
+```
+
+---
+
+## Characteristic 4: Pack Transfer
 
 **UUID**: `12345678-1234-5678-9abc-def123456788`  
 **Properties**: Read, Write, Notify  

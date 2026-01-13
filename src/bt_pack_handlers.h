@@ -193,6 +193,61 @@ typedef struct __attribute__((packed)) {
 } bt_pack_op_result_t;
 
 /* ============================================================================
+ * Pack List Structures (for listing installed packs)
+ * ============================================================================ */
+
+/**
+ * @brief Pack list request (write to Pack List characteristic)
+ * 
+ * Opcode 0x01: List packs
+ * Opcode 0x02: Get pack content (plant IDs)
+ */
+typedef struct __attribute__((packed)) {
+    uint8_t opcode;         /**< 0x01=list packs, 0x02=get content */
+    uint16_t offset;        /**< Pagination offset (for list) or pack_id (for content) */
+    uint8_t reserved;
+} bt_pack_list_req_t;
+
+#define BT_PACK_LIST_OP_LIST     0x01
+#define BT_PACK_LIST_OP_CONTENT  0x02
+
+/**
+ * @brief Pack list entry (in response)
+ */
+typedef struct __attribute__((packed)) {
+    uint16_t pack_id;       /**< Pack ID */
+    uint16_t version;       /**< Pack version */
+    uint16_t plant_count;   /**< Number of plants in pack */
+    char name[24];          /**< Pack name (truncated) */
+} bt_pack_list_entry_t;
+
+/**
+ * @brief Pack list response (read after list request)
+ */
+typedef struct __attribute__((packed)) {
+    uint16_t total_count;   /**< Total packs available (including builtin) */
+    uint8_t returned_count; /**< Number of entries in this response */
+    uint8_t include_builtin;/**< 1 if builtin pack 0 is included */
+    bt_pack_list_entry_t entries[4]; /**< Up to 4 entries per read */
+} bt_pack_list_resp_t;
+
+#define BT_PACK_LIST_RESP_SIZE (4 + 4 * sizeof(bt_pack_list_entry_t))
+
+/**
+ * @brief Pack content response (plant IDs in a pack)
+ */
+typedef struct __attribute__((packed)) {
+    uint16_t pack_id;       /**< Pack ID */
+    uint16_t version;       /**< Pack version */
+    uint16_t total_plants;  /**< Total plants in pack */
+    uint8_t returned_count; /**< Number of plant IDs in this response */
+    uint8_t offset;         /**< Current offset */
+    uint16_t plant_ids[16]; /**< Up to 16 plant IDs per read */
+} bt_pack_content_resp_t;
+
+#define BT_PACK_CONTENT_RESP_SIZE (8 + 16 * sizeof(uint16_t))
+
+/* ============================================================================
  * API Functions
  * ============================================================================ */
 
@@ -221,6 +276,16 @@ ssize_t bt_pack_plant_write(struct bt_conn *conn,
 ssize_t bt_pack_stats_read(struct bt_conn *conn,
                            const struct bt_gatt_attr *attr,
                            void *buf, uint16_t len, uint16_t offset);
+
+/* Pack List handlers - list installed packs and their contents */
+ssize_t bt_pack_list_read(struct bt_conn *conn,
+                          const struct bt_gatt_attr *attr,
+                          void *buf, uint16_t len, uint16_t offset);
+
+ssize_t bt_pack_list_write(struct bt_conn *conn,
+                           const struct bt_gatt_attr *attr,
+                           const void *buf, uint16_t len,
+                           uint16_t offset, uint8_t flags);
 
 /* ============================================================================
  * Pack Transfer Handlers
