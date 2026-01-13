@@ -10,11 +10,50 @@
 #include "plant_db.h"
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(bt_pack, LOG_LEVEL_DBG);
+
+/* ============================================================================
+ * Connection Debug (helps when reads fail before handler is invoked)
+ * ============================================================================ */
+
+static void pack_connected(struct bt_conn *conn, uint8_t err)
+{
+    if (err) {
+        printk("[bt_pack] connected: err=%u\n", err);
+        LOG_WRN("connected: err=%u", err);
+        return;
+    }
+
+    uint8_t sec = bt_conn_get_security(conn);
+    printk("[bt_pack] connected OK, security=%u\n", sec);
+    LOG_INF("connected OK, security=%u", sec);
+}
+
+static void pack_disconnected(struct bt_conn *conn, uint8_t reason)
+{
+    ARG_UNUSED(conn);
+    printk("[bt_pack] disconnected: reason=%u\n", reason);
+    LOG_INF("disconnected: reason=%u", reason);
+}
+
+static void pack_security_changed(struct bt_conn *conn, bt_security_t level,
+                                  enum bt_security_err err)
+{
+    ARG_UNUSED(conn);
+    printk("[bt_pack] security_changed: level=%u err=%d\n", (uint8_t)level, (int)err);
+    LOG_INF("security_changed: level=%u err=%d", (uint8_t)level, (int)err);
+}
+
+static struct bt_conn_cb pack_conn_cb = {
+    .connected = pack_connected,
+    .disconnected = pack_disconnected,
+    .security_changed = pack_security_changed,
+};
 
 /* ============================================================================
  * Static Storage - Single Plant Operations
@@ -440,8 +479,12 @@ ssize_t bt_pack_stats_read(struct bt_conn *conn,
                            const struct bt_gatt_attr *attr,
                            void *buf, uint16_t len, uint16_t offset)
 {
-    ARG_UNUSED(conn);
     ARG_UNUSED(attr);
+
+    uint32_t t0 = k_uptime_get_32();
+    uint8_t sec = (conn != NULL) ? bt_conn_get_security(conn) : 0;
+    LOG_INF("PACK_STATS read: len=%u offset=%u security=%u", len, offset, sec);
+    printk("[bt_pack] PACK_STATS read (len=%u off=%u sec=%u)\n", len, offset, sec);
     
     memset(&stats_response, 0, sizeof(stats_response));
     
@@ -474,6 +517,12 @@ ssize_t bt_pack_stats_read(struct bt_conn *conn,
     }
     
     stats_response.builtin_count = PLANT_FULL_SPECIES_COUNT;
+
+    uint32_t dt = k_uptime_get_32() - t0;
+    if (dt > 100) {
+        LOG_WRN("PACK_STATS read took %u ms", dt);
+        printk("[bt_pack] PACK_STATS slow: %u ms\n", dt);
+    }
     
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              &stats_response, sizeof(stats_response));
@@ -1100,6 +1149,7 @@ BT_GATT_SERVICE_DEFINE(pack_svc,
 int bt_pack_handlers_init(void)
 {
     LOG_INF("Initializing pack BLE handlers");
+    printk("[bt_pack] init\n");
     
     memset(&list_response, 0, sizeof(list_response));
     memset(&stats_response, 0, sizeof(stats_response));
@@ -1121,6 +1171,9 @@ int bt_pack_handlers_init(void)
     /* Initialize streaming work queue */
     k_work_init_delayable(&stream_work, stream_work_handler);
     stream_reset();
+
+    /* Connection/security debug */
+    bt_conn_cb_register(&pack_conn_cb);
     
     /* Get attribute pointers for notifications */
     pack_plant_attr = &pack_svc.attrs[PACK_ATTR_PLANT_VALUE];

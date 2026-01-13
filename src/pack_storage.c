@@ -712,20 +712,18 @@ uint16_t pack_storage_get_custom_plant_count(void)
         if (rc < 0 || dirent.name[0] == 0) {
             break;
         }
-        
-        /* Check if it's a plant file (p_XXXX.bin) */
+
+        /* Plant file: p_XXXX.bin */
         if (dirent.type == FS_DIR_ENTRY_FILE &&
             dirent.name[0] == 'p' && dirent.name[1] == '_' &&
             strstr(dirent.name, ".bin") != NULL) {
-            
-            /* Read plant to check pack_id */
-            char path[64];
-            snprintf(path, sizeof(path), "%s/%s", PACK_PLANTS_DIR, dirent.name);
-            
-            pack_plant_v1_t plant;
-            pack_result_t res = read_plant_file(path, &plant);
-            if (res == PACK_RESULT_SUCCESS && plant.pack_id != PACK_ID_BUILTIN) {
-                count++;
+
+            uint16_t plant_id = 0;
+            if (sscanf(dirent.name, "p_%4hx.bin", &plant_id) == 1) {
+                /* Custom plants are outside the built-in ID range (1..223) */
+                if (plant_id > PLANT_FULL_SPECIES_COUNT) {
+                    count++;
+                }
             }
         }
     }
@@ -763,7 +761,7 @@ pack_result_t pack_storage_get_pack(uint16_t pack_id,
             uint16_t to_fill = (max_plant_ids < PLANT_FULL_SPECIES_COUNT) ? 
                                max_plant_ids : PLANT_FULL_SPECIES_COUNT;
             for (uint16_t i = 0; i < to_fill; i++) {
-                plant_ids[i] = i;
+                plant_ids[i] = i + 1;
             }
         }
         
