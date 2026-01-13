@@ -13,10 +13,11 @@ This guide reflects the current Bluetooth Low Energy interface implemented in `s
 
 ## Characteristic Inventory (Verified)
 
-Characteristics are exposed through two services:
+Characteristics are exposed through three services:
 
 - **Irrigation Service** (primary): `12345678-1234-5678-1234-56789abcdef0`
 - **Custom Configuration Service**: `12345678-1234-5678-9abc-def123456780`
+- **Pack Service**: `12345678-1234-5678-9abc-def123456800` (see [pack-service.md](pack-service.md))
 
 Properties come directly from the `BT_GATT_CHARACTERISTIC` declarations; sizes match the packed structs in `bt_gatt_structs.h` and `bt_gatt_structs_enhanced.h`. For the full list (including Custom Configuration Service characteristics) see `docs/ble-api/characteristics/README.md`.
 
@@ -62,9 +63,18 @@ Properties come directly from the `BT_GATT_CHARACTERISTIC` declarations; sizes m
 | 33 | Config Status | `12345678-1234-5678-9abc-def123456783` | Var. | R / W / N | Configuration status and completeness |
 | 34 | Interval Mode Configuration | `12345678-1234-5678-9abc-def123456785` | 17 bytes | R / W / N | Configure Cycle & Soak ON/OFF durations per-channel |
 
+### Pack Service Characteristics (4 additional)
+
+| # | Characteristic | UUID | Size | Properties | Notes |
+| --- | --- | --- | --- | --- | --- |
+| 35 | Pack Plant | `12345678-1234-5678-9abc-def123456786` | Variable | R / W / N | Install/delete/list/stream plants (see [pack-service.md](pack-service.md)) |
+| 36 | Pack Stats | `12345678-1234-5678-9abc-def123456787` | 22 bytes | R | Storage statistics (flash usage, plant/pack counts) |
+| 37 | Pack Transfer | `12345678-1234-5678-9abc-def123456788` | Variable | R / W / N | Multi-part pack installation with state machine |
+| 38 | Pack List | `12345678-1234-5678-9abc-def123456789` | Variable | R / W / N | List installed packs and pack contents |
+
 Legend: R = Read, W = Write, N = Notify.
 
-**Total: 34 characteristics** (29 Irrigation Service + 5 Custom Configuration Service)
+**Total: 38 characteristics** (29 Irrigation Service + 5 Custom Configuration Service + 4 Pack Service)
 
 ## Performance Optimizations (v2.1+)
 
@@ -148,6 +158,7 @@ The firmware keeps 20-byte payload compatibility for writes even when a larger M
 - `docs/ble-api/fragmentation-guide.md` - Detailed walkthrough of fragmentation headers and examples.
 - `docs/ble-api/notification-throttling.md` - Priority ladder, adaptive timers, and CCC state tracking.
 - `docs/ble-api/protocol-specification.md` - Message sequencing reference (update pending final review cycle).
+- `docs/ble-api/pack-service.md` - **Pack Service documentation** - Plant packs, streaming, and custom plant management.
 - Characteristic-specific files under `docs/ble-api/characteristics/` - Deep dives into each attribute's payload and state machine.
 - `docs/TROUBLESHOOTING.md` - BLE troubleshooting steps now aligned with the current firmware.
 
