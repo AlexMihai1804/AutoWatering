@@ -1,7 +1,8 @@
 # BLE Pack Service Documentation
 
-**Version**: 1.1.0  
-**Files**: `src/bt_pack_handlers.h`, `src/bt_pack_handlers.c`
+**Version**: 1.2.0  
+**Files**: `src/bt_pack_handlers.h`, `src/bt_pack_handlers.c`  
+**Updated**: January 2026 - Added streaming mode for plant lists
 
 ## Overview
 
@@ -44,24 +45,221 @@ The write operation is polymorphic based on payload size:
 
 | Size | Operation | Payload |
 |------|-----------|---------|
-| 4 bytes | List request | `bt_pack_plant_list_req_t` |
+| 4 bytes | List/Stream request | `bt_pack_plant_list_req_t` |
 | 2 bytes | Delete request | `bt_pack_plant_delete_t` |
 | 156 bytes | Install request | `pack_plant_v1_t` |
 
-#### List Request (4 bytes)
+#### List Request (4 bytes) - Pagination or Streaming
 
 ```c
 typedef struct __attribute__((packed)) {
-    uint16_t offset;            // Pagination offset
-    uint8_t max_results;        // Max results to return (≤8)
-    uint8_t filter_pack_id;     // Filter by pack (0xFF = all)
+    uint16_t offset;            // Pagination offset (ignored in streaming)
+    uint8_t filter_pack_id;     // Filter (see below)
+    uint8_t max_count;          // 0 = STREAMING MODE, >0 = pagination
 } bt_pack_plant_list_req_t;
 ```
 
-**Example (hex):**
+**Filter Values:**
+
+| Value | Constant | Description |
+|-------|----------|-------------|
+| `0xFF` | `PACK_FILTER_CUSTOM_ONLY` | Only custom plants (default) |
+| `0xFE` | `PACK_FILTER_ALL` | Built-in (223) + custom plants |
+| `0x00` | `PACK_FILTER_BUILTIN_ONLY` | Only built-in plants (Pack 0) |
+| `0x01-0xFD` | Specific pack | Only plants from that pack |
+
+**Pagination Example (hex):**
 ```
-00 00 08 FF    // offset=0, max=8, filter=all
+00 00 FF 08    // offset=0, filter=custom only, max=8
 ```
+
+**Streaming Example (hex):**
+```
+00 00 FE 00    // offset=0, filter=ALL, max=0 (STREAMING)
+```
+
+---
+
+### Streaming Mode (Recommended)
+
+> **New in v1.2.0** - High-speed plant list transfer via notifications
+
+When `max_count=0`, firmware streams the entire plant list via notifications instead of pagination. This solves Android BLE timeout issues with large databases.
+
+#### Why Streaming?
+
+| Method | 223 plants | Time |
+|--------|------------|------|
+| Pagination | 28 pages × 200ms | **~5.6 seconds** |
+| Streaming | 23 notifications × 2ms | **~50ms** |
+
+#### Stream Response Structure
+
+Each notification contains up to 10 plants:
+
+```c
+typedef struct __attribute__((packed)) {
+    uint16_t total_count;   // Total plants matching filter
+    uint8_t returned_count; // Entries in this notification (0-10)
+    uint8_t flags;          // Stream status flags
+    bt_pack_plant_list_entry_t entries[10]; // Up to 10 plants
+} bt_pack_plant_list_resp_t;
+```
+
+**Entry structure (22 bytes each):**
+```c
+typedef struct __attribute__((packed)) {
+    uint16_t plant_id;      // 0-222=built-in, ≥1000=custom
+    uint16_t pack_id;       // 0=built-in, ≥1=custom pack
+    uint16_t version;       // Installed version
+    char name[16];          // Truncated name (null-terminated)
+} bt_pack_plant_list_entry_t;
+```
+
+**Maximum notification size:** 4 + (10 × 22) = 224 bytes
+
+#### Stream Flags
+
+| Flag | Value | Meaning |
+|------|-------|---------|
+| `BT_PACK_STREAM_FLAG_STARTING` | `0x80` | First notification |
+| `BT_PACK_STREAM_FLAG_NORMAL` | `0x00` | More coming |
+| `BT_PACK_STREAM_FLAG_COMPLETE` | `0x01` | Stream finished |
+| `BT_PACK_STREAM_FLAG_ERROR` | `0x02` | Stream aborted |
+
+#### Streaming Protocol
+
+```
+┌─────────┐                              ┌──────────┐
+│  App    │                              │ Firmware │
+└────┬────┘                              └────┬─────┘
+     │                                        │
+     │  Enable notifications (CCC=0x0100)     │
+     │───────────────────────────────────────►│
+     │                                        │
+     │  Write: 00 00 FE 00 (stream ALL)       │
+     │───────────────────────────────────────►│
+     │                                        │
+     │  Notify: flags=0x80 (STARTING)         │
+     │◄───────────────────────────────────────│
+     │  [10 plants, 224 bytes]                │
+     │                                        │
+     │  Notify: flags=0x00 (NORMAL)           │
+     │◄───────────────────────────────────────│ (2ms delay)
+     │  [10 plants]                           │
+     │                                        │
+     │  ... repeats every 2ms ...             │
+     │                                        │
+     │  Notify: flags=0x01 (COMPLETE)         │
+     │◄───────────────────────────────────────│
+     │  [remaining plants]                    │
+     │                                        │
+```
+
+#### Error Handling
+
+- **Buffer exhaustion**: Firmware retries with exponential backoff (10→320ms)
+- **Max retries**: 6 before sending ERROR flag
+- **On ERROR**: App should retry after 500ms delay
+
+#### Android Implementation
+
+```kotlin
+// Enable notifications first
+gatt.setCharacteristicNotification(packPlantChar, true)
+val descriptor = packPlantChar.getDescriptor(CCC_UUID)
+descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+gatt.writeDescriptor(descriptor)
+
+// Request streaming
+val request = byteArrayOf(
+    0x00, 0x00,       // offset = 0
+    0xFE.toByte(),    // filter = ALL
+    0x00              // max_count = 0 (streaming)
+)
+packPlantChar.value = request
+gatt.writeCharacteristic(packPlantChar)
+
+// Handle notifications
+override fun onCharacteristicChanged(
+    gatt: BluetoothGatt, 
+    char: BluetoothGattCharacteristic
+) {
+    val data = char.value
+    val totalCount = data.getShort(0)
+    val returnedCount = data[2].toInt() and 0xFF
+    val flags = data[3].toInt() and 0xFF
+    
+    when {
+        flags and 0x80 != 0 -> plantList.clear() // STARTING
+        flags == 0x02 -> { /* ERROR - retry */ }
+    }
+    
+    // Parse entries
+    for (i in 0 until returnedCount) {
+        val offset = 4 + i * 22
+        val plantId = data.getShort(offset)
+        val packId = data.getShort(offset + 2)
+        val version = data.getShort(offset + 4)
+        val name = String(data, offset + 6, 16).trim('\u0000')
+        plantList.add(Plant(plantId, packId, version, name))
+    }
+    
+    if (flags == 0x01) {
+        // COMPLETE - all done
+        onPlantListReady(plantList)
+    }
+}
+```
+
+#### iOS Implementation
+
+```swift
+// Enable notifications
+peripheral.setNotifyValue(true, for: packPlantCharacteristic)
+
+// Request streaming
+var request = Data(count: 4)
+request[0] = 0x00; request[1] = 0x00  // offset
+request[2] = 0xFE                      // filter = ALL
+request[3] = 0x00                      // streaming mode
+peripheral.writeValue(request, for: packPlantCharacteristic, type: .withResponse)
+
+// Handle notifications
+func peripheral(_ peripheral: CBPeripheral, 
+                didUpdateValueFor characteristic: CBCharacteristic, 
+                error: Error?) {
+    guard let data = characteristic.value else { return }
+    
+    let totalCount = data.withUnsafeBytes { $0.load(as: UInt16.self) }
+    let returnedCount = Int(data[2])
+    let flags = data[3]
+    
+    if flags & 0x80 != 0 { plantList.removeAll() } // STARTING
+    if flags == 0x02 { /* ERROR */ return }
+    
+    for i in 0..<returnedCount {
+        let offset = 4 + i * 22
+        let plantId = data.subdata(in: offset..<offset+2)
+            .withUnsafeBytes { $0.load(as: UInt16.self) }
+        // ... parse other fields
+    }
+    
+    if flags == 0x01 { onComplete() } // COMPLETE
+}
+```
+
+---
+
+### Legacy Pagination Mode
+
+For backwards compatibility, set `max_count > 0` for pagination:
+
+```
+00 00 FF 08    // offset=0, filter=custom, max=8 (pagination)
+```
+
+This returns up to 8 plants per read, requiring multiple read operations.
 
 #### Delete Request (2 bytes)
 
@@ -80,30 +278,32 @@ E9 03          // Delete plant 1001 (0x03E9)
 
 Write a full `pack_plant_v1_t` structure. See [PACK_SCHEMA.md](PACK_SCHEMA.md) for structure details.
 
-### Read Response
+### Read Response (Legacy Pagination)
+
+> **Note**: For new implementations, use streaming mode instead.
 
 Returns plant list with pagination:
 
 ```c
 typedef struct __attribute__((packed)) {
     uint16_t total_count;           // Total plants available
-    uint8_t returned_count;         // Entries in this response
-    uint8_t reserved;
-    bt_pack_plant_list_entry_t entries[8];  // Up to 8 entries
+    uint8_t returned_count;         // Entries in this response (0-10)
+    uint8_t flags;                  // 0 for pagination reads
+    bt_pack_plant_list_entry_t entries[10];  // Up to 10 entries
 } bt_pack_plant_list_resp_t;
 ```
 
-**Entry structure (20 bytes each):**
+**Entry structure (22 bytes each):**
 ```c
 typedef struct __attribute__((packed)) {
-    uint16_t plant_id;
-    uint8_t pack_id;
-    uint8_t version;
-    char name[16];                  // Truncated name
+    uint16_t plant_id;      // Plant ID
+    uint16_t pack_id;       // Pack ID (0=built-in)
+    uint16_t version;       // Version
+    char name[16];          // Truncated name
 } bt_pack_plant_list_entry_t;
 ```
 
-**Maximum response size:** 4 + (8 × 20) = 164 bytes
+**Maximum response size:** 4 + (10 × 22) = 224 bytes
 
 ### Notifications
 

@@ -17,7 +17,7 @@ Characteristics are exposed through three services:
 
 - **Irrigation Service** (primary): `12345678-1234-5678-1234-56789abcdef0`
 - **Custom Configuration Service**: `12345678-1234-5678-9abc-def123456780`
-- **Pack Service**: `12345678-1234-5678-9abc-def123456800` (see [pack-service.md](pack-service.md))
+- **Pack Service**: `12345678-1234-5678-9abc-def123456800` (see [../packs/BLE_PACK_SERVICE.md](../packs/BLE_PACK_SERVICE.md))
 
 Properties come directly from the `BT_GATT_CHARACTERISTIC` declarations; sizes match the packed structs in `bt_gatt_structs.h` and `bt_gatt_structs_enhanced.h`. For the full list (including Custom Configuration Service characteristics) see `docs/ble-api/characteristics/README.md`.
 
@@ -67,7 +67,7 @@ Properties come directly from the `BT_GATT_CHARACTERISTIC` declarations; sizes m
 
 | # | Characteristic | UUID | Size | Properties | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 35 | Pack Plant | `12345678-1234-5678-9abc-def123456786` | Variable | R / W / N | Install/delete/list/stream plants (see [pack-service.md](pack-service.md)) |
+| 35 | Pack Plant | `12345678-1234-5678-9abc-def123456786` | Variable | R / W / N | Install/delete/list/stream plants (see [packs docs](../packs/BLE_PACK_SERVICE.md)) |
 | 36 | Pack Stats | `12345678-1234-5678-9abc-def123456787` | 22 bytes | R | Storage statistics (flash usage, plant/pack counts) |
 | 37 | Pack Transfer | `12345678-1234-5678-9abc-def123456788` | Variable | R / W / N | Multi-part pack installation with state machine |
 | 38 | Pack List | `12345678-1234-5678-9abc-def123456789` | Variable | R / W / N | List installed packs and pack contents |
@@ -158,7 +158,7 @@ The firmware keeps 20-byte payload compatibility for writes even when a larger M
 - `docs/ble-api/fragmentation-guide.md` - Detailed walkthrough of fragmentation headers and examples.
 - `docs/ble-api/notification-throttling.md` - Priority ladder, adaptive timers, and CCC state tracking.
 - `docs/ble-api/protocol-specification.md` - Message sequencing reference (update pending final review cycle).
-- `docs/ble-api/pack-service.md` - **Pack Service documentation** - Plant packs, streaming, and custom plant management.
+- `docs/packs/` - **Pack Service documentation** - Plant packs, streaming, and custom plant management.
 - Characteristic-specific files under `docs/ble-api/characteristics/` - Deep dives into each attribute's payload and state machine.
 - `docs/TROUBLESHOOTING.md` - BLE troubleshooting steps now aligned with the current firmware.
 
