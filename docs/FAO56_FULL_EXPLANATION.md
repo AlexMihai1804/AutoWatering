@@ -467,10 +467,8 @@ Kc_eff clamp: 0.1..2.0
 ## 9) Root depth (dynamic)
 ```
 total_season = sum(stage_days_ini/dev/mid/end)
-if total_season <= 0:
-  // use sigmoid(progress=0) directly (about 0.0474)
-  root_depth = root_min + (root_max - root_min) * 0.0474259
-else:
+progress = 0
+if total_season > 0:
   progress = clamp(days_after_planting / total_season, 0..1)
 sigmoid = 1 / (1 + exp(-6*(progress - 0.5)))
 root_depth = root_min + (root_max - root_min) * sigmoid

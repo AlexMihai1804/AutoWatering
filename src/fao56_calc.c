@@ -987,12 +987,11 @@ static float fao56_calc_ke(const water_balance_t *balance,
     if (ke_max < 0.0f) ke_max = 0.0f;
     if (ke_max > 1.2f) ke_max = 1.2f;
 
-    if (d_surface <= rew_mm || tew_mm <= rew_mm) {
-        return ke_max;
-    }
-
     if ((tew_mm - rew_mm) <= eps) {
         return 0.0f;
+    }
+    if (d_surface <= rew_mm || tew_mm <= rew_mm) {
+        return ke_max;
     }
 
     float ke = ke_max * (tew_mm - d_surface) / (tew_mm - rew_mm);
@@ -2224,16 +2223,16 @@ float calc_current_root_depth(
     uint16_t total_season = plant->stage_days_ini + plant->stage_days_dev + 
                            plant->stage_days_mid + plant->stage_days_end;
 
-    if (total_season == 0) {
-        // progress=0 -> sigmoid = 1/(1+exp(3)) ~= 0.0474259
-        const float sigmoid0 = 0.047425873f;
-        LOG_WRN("Zero season length, using sigmoid0 root depth");
-        return root_min + (root_max - root_min) * sigmoid0;
+    float season_progress = 0.0f;
+    if (total_season > 0) {
+        season_progress = (float)days_after_planting / total_season;
+        if (season_progress > 1.0f) season_progress = 1.0f;
+        if (season_progress < 0.0f) season_progress = 0.0f;
+    } else {
+        LOG_WRN("Zero season length, using sigmoid(0) root depth");
     }
 
     // Root development follows a sigmoid curve, reaching ~90% max depth by mid-season
-    float season_progress = (float)days_after_planting / total_season;
-    if (season_progress > 1.0f) season_progress = 1.0f;
 
     // Sigmoid function for root development: f(x) = 1 / (1 + e^(-k*(x-0.5)))
     // where k=6 gives good root development curve
