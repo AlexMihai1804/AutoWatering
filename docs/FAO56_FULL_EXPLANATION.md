@@ -330,7 +330,7 @@ Ra = (24*60/pi) * SOLAR_CONSTANT * dr *
 ```
 dT = max(Tmax - Tmin, 0)
 ET0 = 0.0023 * (Tmean + 17.8) * sqrt(dT) * Ra
-ET0 clamp: 0..15 mm/day
+ET0 clamp: 0..ET0_ABSOLUTE_MAX_MM_DAY
 ```
 
 ### 7.3 Penman-Monteith (PM)
@@ -352,13 +352,14 @@ Rs from delta-T:
 Rso = (0.75 + 2e-5*alt) * Ra
 Rs/Rso is clamped to [0.05..1.0]
 Rns = (1 - albedo) * Rs
-Rnl = sigma * ((TmaxK^4 + TminK^4)/2) * (0.34 - 0.14*sqrt(ea)) * (1.35*Rs/Rso - 0.35)
+Rnl = STEFAN_BOLTZMANN * ((TmaxK^4 + TminK^4)/2) * (0.34 - 0.14*sqrt(ea)) * (1.35*Rs/Rso - 0.35)
 Rn = Rns - Rnl
 G = 0 (daily timestep)
 
 ET0 = [0.408*delta*(Rn-G) + gamma*(900/(T+273))*u2*(es-ea)] /
       [delta + gamma*(1+0.34*u2)]
 ```
+ET0 clamp: 0..ET0_ABSOLUTE_MAX_MM_DAY
 
 Notes/units:
 - sunshine_ratio is clamped to 0..1
@@ -370,7 +371,7 @@ Notes/units:
 
 Altitude from pressure (if pressure valid):
 ```
-alt = 44331 * (1 - (P/101.3)^0.1903)
+alt = 44331 * (1 - (P_kPa/101.3)^0.1903)
 ```
 If pressure is invalid, alt is assumed 0 m (sea level) for Rso.
 
@@ -383,7 +384,11 @@ Weight w increases with sensor quality:
 w = 0.5 + 0.1*(pressure_valid) + 0.2*(humidity_valid) + 0.1*(data_quality>=80)
 w clamped to 0.2..0.85
 ```
+pressure_valid and humidity_valid are treated as 0/1.
 If PM invalid, fallback to HS only.
+ET0_PM_raw is the pre-clamp PM value used for validity checks.
+PM invalid if ET0_PM_raw <= 0.01 or ET0_PM_raw > ET0_ABSOLUTE_MAX_MM_DAY * 1.2.
+If valid, ET0_PM = clamp(ET0_PM_raw, 0..ET0_ABSOLUTE_MAX_MM_DAY) before mixing.
 
 Sanity gates on PM weight:
 - if ET0_PM / ET0_HS is outside 0.30..2.50 -> weight reduced
@@ -578,6 +583,7 @@ D = clamp(D + ET_root*dt/86400 - P_eff_root - I_eff, 0, wetting_awc)
 P_eff_root is the remaining effective rain after filling the surface bucket.
 D tracks root depletion only; surface evaporation is tracked separately in D_surface.
 ```
+AWC_rz is zone-averaged mm; wetting_awc is effective root-zone water after wetting_fraction.
 
 AWC change handling:
 - when wetting_awc changes (root depth or wf), D is rescaled to keep D/AWC stable
@@ -739,13 +745,15 @@ Cycle/soak logic:
 - if app_rate <= 1.2 * soil_infil => single cycle
 - else:
   ```
-  target = 0.8 * soil_infil
-  cycles = ceil(app_rate / target), clamp 2..6
-  duration_h = gross_mm / (target * cycles)
+  target_mm_h = 0.8 * soil_infil
+  cycles = ceil(app_rate_mm_h / target_mm_h), clamp 2..6
+  depth_per_cycle_mm = gross_mm / cycles
+  duration_h = depth_per_cycle_mm / app_rate_mm_h
   duration_min = duration_h * 60
   soak_min = duration_min * factor (sand=2, loam=3, clay=4)
   duration_min clamp 5..60 min, soak_min clamp 10..240 min
   ```
+Clamping is a practical constraint; total applied depth may be slightly adjusted by the runtime implementation.
 
 If flow not available, app_rate uses DB min/max.
 
@@ -829,8 +837,8 @@ D_surface -= irrigation_mm * eff_surface (capped, zone-avg)
 ```
 
 This is the *real* soil update, not planned volume.
-Surface wet area state is bumped to wetting_fraction for irrigation events.
-Surface wet area uses wetting_fraction * DU (clamped).
+Surface wet area state is bumped to wetting_fraction * DU (clamped) for irrigation events.
+surface_wet_target uses wetting_fraction * DU (clamped).
 eff_surface/eff_root:
 - eff_surface = 1.0 (surface wetting uses applied depth; DU handled via surface_wet_target)
 - eff_root = efficiency * DU
@@ -877,10 +885,17 @@ Per channel:
 
 ---
 
+## 26) Verification notes (NOT RESOLVED)
+- Root depth edge case: when total season length is 0, code returns root_min
+  immediately; the formula above implies sigmoid(progress=0) (about 4.7% of range).
+  Confirm intended behavior and update either code or this doc.
+- Surface wet fraction floor: code clamps `surface_wet_fraction` to FAO56_WF_MIN
+  (0.10), so TEW/REW never reach 0. The text above describes 0..1 behavior.
+  Confirm whether the floor is desired and document the effective range.
+- Non-AUTO water balance path: `calc_water_balance()` uses the heuristic ET0 (VPD)
+  instead of the HS+PM ensemble with slew. Confirm this is intended for that path
+  and note the difference if so.
+
+---
+
 End of full explanation.
-
-
-
-
-
-
