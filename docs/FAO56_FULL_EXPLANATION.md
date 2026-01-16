@@ -468,7 +468,8 @@ Kc_eff clamp: 0.1..2.0
 ```
 total_season = sum(stage_days_ini/dev/mid/end)
 if total_season <= 0:
-  progress = 0
+  // use sigmoid(progress=0) directly (about 0.0474)
+  root_depth = root_min + (root_max - root_min) * 0.0474259
 else:
   progress = clamp(days_after_planting / total_season, 0..1)
 sigmoid = 1 / (1 + exp(-6*(progress - 0.5)))
@@ -484,7 +485,7 @@ Surface evaporation bucket is tracked per channel:
 - D_surface in [0..TEW], 0=wet, TEW=dry (mm over zone area)
 
 Surface wet area state:
-- surface_wet_fraction tracks how much of the surface is effectively wetted.
+- surface_wet_fraction tracks how much of the surface is effectively wetted (0..1).
 - Rain event: set to FAO56_SURFACE_WET_RAIN_FRACTION (1.0).
 - Irrigation event: set to wetting_fraction * DU (clamped) to reflect distribution.
 - surface_wet_target = wetting_fraction * DU (clamped) is the decay target between events.
@@ -507,6 +508,11 @@ REW_base = clamp(TEW_base * 0.5, 2..8) or texture default:
   sand: 3 mm, loam: 6 mm, clay: 8 mm
 TEW = TEW_base * surface_wet_fraction
 REW = min(REW_base * surface_wet_fraction, 0.9*TEW)
+if TEW <= 1e-3:
+  // no effective wetted surface area
+  TEW = 0
+  REW = 0
+  D_surface = 0
 ```
 When TEW changes, D_surface is rescaled to keep D_surface/TEW stable.
 
@@ -519,6 +525,8 @@ canopy_factor is derived from phenological progress (same factor used for Kc sca
 
 if D_surface <= REW:
   Ke = Ke_max
+else if (TEW - REW) <= 1e-3:
+  Ke = 0
 else:
   Ke = Ke_max * (TEW - D_surface) / (TEW - REW)
 ```
@@ -868,7 +876,7 @@ Per channel:
   via surface_wet_target = wetting_fraction * DU.
 - Surface wetting uses applied depth (eff_surface = 1.0); efficiency applies to root refill.
 - Canopy now affects Kc, not area.
-- ET0 uses HS+PM ensemble with quality-weighting.
+- ET0 uses HS+PM ensemble with quality-weighting (AUTO and non-AUTO paths).
 - Slew is asymmetric; rises can be faster on heatwave/VPD.
 - Antecedent moisture is auto-derived if no manual override.
 - ECO mode increases MAD in AUTO, and scales net refill in on-demand Eco calculations.
@@ -882,19 +890,6 @@ Per channel:
 - `fao56_daily_update_deficit()` daily reconcile + decision
 - `fao56_apply_rainfall_increment()` rain tips
 - `fao56_reduce_deficit_after_irrigation()` real delivered volume
-
----
-
-## 26) Verification notes (NOT RESOLVED)
-- Root depth edge case: when total season length is 0, code returns root_min
-  immediately; the formula above implies sigmoid(progress=0) (about 4.7% of range).
-  Confirm intended behavior and update either code or this doc.
-- Surface wet fraction floor: code clamps `surface_wet_fraction` to FAO56_WF_MIN
-  (0.10), so TEW/REW never reach 0. The text above describes 0..1 behavior.
-  Confirm whether the floor is desired and document the effective range.
-- Non-AUTO water balance path: `calc_water_balance()` uses the heuristic ET0 (VPD)
-  instead of the HS+PM ensemble with slew. Confirm this is intended for that path
-  and note the difference if so.
 
 ---
 
