@@ -107,7 +107,7 @@ watering_error_t fao56_calc_water_balance_with_custom_soil(uint8_t channel_id,
     // Fetch real days-after-planting from watering channel infrastructure
     uint16_t dap = 0;
     watering_get_days_after_planting(channel_id, &dap); // ignore error, dap stays 0 if fails
-    return calc_water_balance(plant, &soil_data, method, env, root_depth_current_m, dap, balance);
+    return calc_water_balance(channel_id, plant, &soil_data, method, env, root_depth_current_m, dap, balance);
 }
 
 float fao56_calc_effective_precipitation_with_custom_soil(float rainfall_mm,

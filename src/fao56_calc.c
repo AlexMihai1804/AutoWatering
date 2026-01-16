@@ -490,10 +490,11 @@ static float fao56_calc_et0_ensemble(const environmental_data_t *env,
 
     float et0_hs = calc_et0_hargreaves_samani(env, latitude_rad, day_of_year);
     float et0_pm = 0.0f;
+    float et0_pm_raw = 0.0f;
     bool pm_valid = env->temp_valid && env->humidity_valid;
     if (pm_valid) {
-        et0_pm = calc_et0_penman_monteith(env, latitude_rad, day_of_year);
-        if (et0_pm <= 0.01f || et0_pm > ET0_ABSOLUTE_MAX_MM_DAY * 1.2f) {
+        et0_pm = calc_et0_penman_monteith(env, latitude_rad, day_of_year, &et0_pm_raw);
+        if (et0_pm_raw <= 0.01f || et0_pm_raw > ET0_ABSOLUTE_MAX_MM_DAY * 1.2f) {
             pm_valid = false;
         }
     }
@@ -732,7 +733,7 @@ static float fao56_get_surface_wet_fraction(water_balance_t *balance,
         return target_wet_fraction;
     }
 
-    if (target_wet_fraction < FAO56_WF_MIN) target_wet_fraction = FAO56_WF_MIN;
+    if (target_wet_fraction < 0.0f) target_wet_fraction = 0.0f;
     if (target_wet_fraction > 1.0f) target_wet_fraction = 1.0f;
 
     uint32_t now_s = k_uptime_get_32() / 1000U;
@@ -759,8 +760,8 @@ static float fao56_get_surface_wet_fraction(water_balance_t *balance,
         balance->surface_wet_update_s = now_s;
     }
 
-    if (balance->surface_wet_fraction < FAO56_WF_MIN) {
-        balance->surface_wet_fraction = FAO56_WF_MIN;
+    if (balance->surface_wet_fraction < 0.0f) {
+        balance->surface_wet_fraction = 0.0f;
     }
     if (balance->surface_wet_fraction > 1.0f) {
         balance->surface_wet_fraction = 1.0f;
@@ -776,20 +777,11 @@ static void fao56_apply_surface_wet_event(water_balance_t *balance,
         return;
     }
 
-    if (event_fraction < FAO56_WF_MIN) event_fraction = FAO56_WF_MIN;
+    if (event_fraction < 0.0f) event_fraction = 0.0f;
     if (event_fraction > 1.0f) event_fraction = 1.0f;
 
-    float current = balance->surface_wet_fraction;
-    if (balance->surface_wet_update_s == 0U || current <= 0.0f) {
-        balance->surface_wet_fraction = event_fraction;
-        balance->surface_wet_update_s = k_uptime_get_32() / 1000U;
-        return;
-    }
-
-    if (event_fraction > current + 0.001f) {
-        balance->surface_wet_fraction = event_fraction;
-        balance->surface_wet_update_s = k_uptime_get_32() / 1000U;
-    }
+    balance->surface_wet_fraction = event_fraction;
+    balance->surface_wet_update_s = k_uptime_get_32() / 1000U;
 }
 
 static void fao56_update_surface_bucket(water_balance_t *balance,
@@ -809,6 +801,13 @@ static void fao56_update_surface_bucket(water_balance_t *balance,
     if (tew_mm < 0.0f) tew_mm = 0.0f;
     float base_rew_mm = fao56_calc_surface_rew_mm(soil, base_tew_mm);
     float rew_mm = base_rew_mm * surface_wet_fraction;
+    const float eps = 1e-3f;
+    if (tew_mm <= eps) {
+        balance->surface_tew_mm = 0.0f;
+        balance->surface_rew_mm = 0.0f;
+        balance->surface_deficit_mm = 0.0f;
+        return;
+    }
     if (rew_mm > tew_mm * 0.9f) {
         rew_mm = tew_mm * 0.9f;
         LOG_DBG("Surface REW clamped to TEW for channel bucket (TEW=%.2f)", (double)tew_mm);
@@ -816,10 +815,13 @@ static void fao56_update_surface_bucket(water_balance_t *balance,
     if (rew_mm < 0.0f) rew_mm = 0.0f;
 
     float old_tew_mm = balance->surface_tew_mm;
-    if (old_tew_mm > 0.0f && tew_mm > 0.0f && fabsf(old_tew_mm - tew_mm) > 0.01f) {
-        float frac = balance->surface_deficit_mm / old_tew_mm;
-        if (frac < 0.0f) frac = 0.0f;
-        if (frac > 1.0f) frac = 1.0f;
+    if (fabsf(old_tew_mm - tew_mm) > 0.01f) {
+        float frac = 1.0f;
+        if (old_tew_mm > eps) {
+            frac = balance->surface_deficit_mm / old_tew_mm;
+            if (frac < 0.0f) frac = 0.0f;
+            if (frac > 1.0f) frac = 1.0f;
+        }
         balance->surface_deficit_mm = frac * tew_mm;
     }
 
@@ -954,7 +956,8 @@ static float fao56_calc_ke(const water_balance_t *balance,
                            const plant_full_data_t *plant,
                            uint16_t days_after_planting)
 {
-    if (!balance || !method || tew_mm <= 0.0f) {
+    const float eps = 1e-3f;
+    if (!balance || !method || tew_mm <= eps) {
         return 0.0f;
     }
 
@@ -970,7 +973,7 @@ static float fao56_calc_ke(const water_balance_t *balance,
             wet_area = balance->wetting_fraction;
         }
     }
-    if (wet_area <= 0.0f || wet_area > 1.0f) {
+    if (wet_area <= eps || wet_area > 1.0f) {
         wet_area = 1.0f;
     }
     float canopy_factor = 0.0f;
@@ -986,6 +989,10 @@ static float fao56_calc_ke(const water_balance_t *balance,
 
     if (d_surface <= rew_mm || tew_mm <= rew_mm) {
         return ke_max;
+    }
+
+    if ((tew_mm - rew_mm) <= eps) {
+        return 0.0f;
     }
 
     float ke = ke_max * (tew_mm - d_surface) / (tew_mm - rew_mm);
@@ -2218,8 +2225,10 @@ float calc_current_root_depth(
                            plant->stage_days_mid + plant->stage_days_end;
 
     if (total_season == 0) {
-        LOG_WRN("Zero season length, using minimum root depth");
-        return root_min;
+        // progress=0 -> sigmoid = 1/(1+exp(3)) ~= 0.0474259
+        const float sigmoid0 = 0.047425873f;
+        LOG_WRN("Zero season length, using sigmoid0 root depth");
+        return root_min + (root_max - root_min) * sigmoid0;
     }
 
     // Root development follows a sigmoid curve, reaching ~90% max depth by mid-season
@@ -2247,7 +2256,10 @@ static float calc_extraterrestrial_radiation(float latitude_rad, uint16_t day_of
     float solar_declination = 0.409f * sinf(2.0f * PI * day_of_year / 365.0f - 1.39f);
     
     // Sunset hour angle
-    float sunset_angle = acosf(-tanf(latitude_rad) * tanf(solar_declination));
+    float x = -tanf(latitude_rad) * tanf(solar_declination);
+    if (x < -1.0f) x = -1.0f;
+    if (x > 1.0f) x = 1.0f;
+    float sunset_angle = acosf(x);
     
     // Inverse relative distance Earth-Sun
     float dr = 1.0f + 0.033f * cosf(2.0f * PI * day_of_year / 365.0f);
@@ -2318,18 +2330,26 @@ static float calc_psychrometric_constant(float pressure_kpa)
 float calc_et0_penman_monteith(
     const environmental_data_t *env,
     float latitude_rad,
-    uint16_t day_of_year
+    uint16_t day_of_year,
+    float *et0_raw_out
 )
 {
     if (!env) {
         LOG_ERR("Invalid environmental data");
+        if (et0_raw_out) {
+            *et0_raw_out = 0.0f;
+        }
         return 0.0f;
     }
 
     // Check data validity
     if (!env->temp_valid || !env->humidity_valid) {
         LOG_WRN("Missing required temperature or humidity data for Penman-Monteith");
-        return calc_et0_hargreaves_samani(env, latitude_rad, day_of_year);
+        float fallback = calc_et0_hargreaves_samani(env, latitude_rad, day_of_year);
+        if (et0_raw_out) {
+            *et0_raw_out = fallback;
+        }
+        return fallback;
     }
 
     // Convert atmospheric pressure from hPa to kPa
@@ -2352,7 +2372,7 @@ float calc_et0_penman_monteith(
     float ea = es * env->rel_humidity_pct / 100.0f;
     if (env->derived_values_calculated && env->vapor_pressure_kpa > 0.0f) {
         float dew_es = calc_saturation_vapor_pressure(env->dewpoint_temp_c);
-        if (dew_es > 0.0f && env->dewpoint_temp_c <= env->air_temp_max_c + 2.0f) {
+        if (dew_es > 0.0f) {
             ea = dew_es;
         }
     }
@@ -2380,17 +2400,12 @@ float calc_et0_penman_monteith(
         temp_range = 0.0f;
     }
 
-    float sunshine_ratio = ASSUMED_SUNSHINE_RATIO;
-    float rs;
-    if (temp_range > 0.0f) {
-        rs = HARGREAVES_RS_COEFF * sqrtf(temp_range) * ra;
-        if (ra > 0.0f) {
-            sunshine_ratio = (rs / ra - 0.25f) / 0.50f;
-            if (sunshine_ratio < 0.0f) sunshine_ratio = 0.0f;
-            if (sunshine_ratio > 1.0f) sunshine_ratio = 1.0f;
-        }
-    } else {
-        rs = (0.25f + 0.50f * sunshine_ratio) * ra;
+    float rs = HARGREAVES_RS_COEFF * sqrtf(temp_range) * ra;
+    float sunshine_ratio = 0.0f;
+    if (ra > 0.0f) {
+        sunshine_ratio = (rs / ra - 0.25f) / 0.50f;
+        if (sunshine_ratio < 0.0f) sunshine_ratio = 0.0f;
+        if (sunshine_ratio > 1.0f) sunshine_ratio = 1.0f;
     }
 
     float rso = (0.75f + 2e-5f * altitude_m) * ra;
@@ -2420,10 +2435,15 @@ float calc_et0_penman_monteith(
                      gamma * 900.0f / (temp_mean + 273.0f) * wind_speed * (es - ea);
     float denominator = delta + gamma * (1.0f + 0.34f * wind_speed);
     
-    float et0 = numerator / denominator;
+    float et0_raw = numerator / denominator;
     
     // Sanity check
-    if (et0 < 0.0f) et0 = 0.0f;
+    if (et0_raw < 0.0f) et0_raw = 0.0f;
+    if (et0_raw_out) {
+        *et0_raw_out = et0_raw;
+    }
+
+    float et0 = et0_raw;
     if (et0 > ET0_ABSOLUTE_MAX_MM_DAY) {
         LOG_WRN("ET0 calculation unusually high (%.2f mm/day), clamping to %.1f", (double)et0, (double)ET0_ABSOLUTE_MAX_MM_DAY);
         et0 = ET0_ABSOLUTE_MAX_MM_DAY;
@@ -2461,6 +2481,9 @@ float calc_et0_hargreaves_samani(
     
     // Temperature range
     float temp_range = env->air_temp_max_c - env->air_temp_min_c;
+    if (temp_range < 0.0f) {
+        temp_range = 0.0f;
+    }
     
     // Extraterrestrial radiation
     float ra = calc_extraterrestrial_radiation(latitude_rad, day_of_year);
@@ -3375,6 +3398,7 @@ static watering_error_t track_deficit_accumulation(
  * @brief Update water balance tracking with enhanced deficit calculation
  */
 watering_error_t calc_water_balance(
+    uint8_t channel_id,
     const plant_full_data_t *plant,
     const soil_enhanced_data_t *soil,
     const irrigation_method_data_t *method,
@@ -3414,10 +3438,34 @@ watering_error_t calc_water_balance(
     }
 
     // Soil sensors removed: always use accumulation method.
-    // Compute daily ET0 (mm/day) using heuristic when only temp+humidity available.
+    // Compute daily ET0 (mm/day) using the same ensemble + slew pipeline as AUTO.
     float daily_et0 = 0.0f;
-    if (env->temp_valid && env->humidity_valid) {
-        // Approximate ET0 from mean temperature and VPD (derived from saturation vs actual vapor pressure)
+    uint16_t day_of_year = fao56_get_current_day_of_year();
+    if (day_of_year == 0) {
+        day_of_year = 1;
+    }
+    float latitude_rad = 0.0f;
+    if (channel_id < WATERING_CHANNELS_COUNT) {
+        watering_channel_t *channel = NULL;
+        if (watering_get_channel(channel_id, &channel) == WATERING_SUCCESS && channel) {
+            latitude_rad = channel->latitude_deg * (PI / 180.0f);
+        }
+    }
+
+    float et0_hs = 0.0f;
+    float et0_pm = 0.0f;
+    daily_et0 = fao56_calc_et0_ensemble(env, latitude_rad, day_of_year, &et0_hs, &et0_pm);
+
+    float max_inc = ET0_SLEW_MAX_INC_MM_DAY;
+    float max_dec = ET0_SLEW_MAX_DEC_MM_DAY;
+    fao56_get_et0_slew_limits(env, &max_inc, &max_dec);
+    uint32_t now_s = k_uptime_get_32() / 1000U;
+    if (channel_id < WATERING_CHANNELS_COUNT) {
+        daily_et0 = fao56_apply_et0_slew(channel_id, daily_et0, now_s, max_inc, max_dec);
+    }
+
+    // Fallback safety: heuristic ET0 when ensemble is unavailable or near-zero.
+    if (daily_et0 < 0.05f && env->temp_valid && env->humidity_valid) {
         float t_mean = env->air_temp_mean_c;
         float vpd = 0.0f;
         if (env->derived_values_calculated) {
@@ -3425,7 +3473,6 @@ watering_error_t calc_water_balance(
             float ea = env->vapor_pressure_kpa;            // actual
             if (es > ea) vpd = es - ea;
         }
-        // Heuristic ET0 (mm/day) = HEURISTIC_ET0_COEFF * (Tmean + offset) * sqrt(max(VPD, floor))
         daily_et0 = HEURISTIC_ET0_COEFF * (t_mean + HEURISTIC_ET0_TEMP_OFFSET) *
                     sqrtf(fmaxf(vpd, HEURISTIC_ET0_VPD_FLOOR));
         if (daily_et0 < HEURISTIC_ET0_MIN) daily_et0 = HEURISTIC_ET0_MIN;

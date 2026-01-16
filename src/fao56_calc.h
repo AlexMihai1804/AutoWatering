@@ -128,12 +128,14 @@ float calc_crop_coefficient(
  * @param env Environmental data
  * @param latitude_rad Latitude in radians
  * @param day_of_year Day of year (1-365)
+ * @param et0_raw_out Optional raw ET0 before max clamp (mm/day), may be NULL
  * @return Reference evapotranspiration ET0 (mm/day)
  */
 float calc_et0_penman_monteith(
     const environmental_data_t *env,
     float latitude_rad,
-    uint16_t day_of_year
+    uint16_t day_of_year,
+    float *et0_raw_out
 );
 
 /**
@@ -164,6 +166,7 @@ float calc_et0_hargreaves_samani(
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t calc_water_balance(
+    uint8_t channel_id,
     const plant_full_data_t *plant,
     const soil_enhanced_data_t *soil,
     const irrigation_method_data_t *method,
