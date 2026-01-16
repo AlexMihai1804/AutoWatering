@@ -266,8 +266,16 @@ static int stream_start(uint8_t filter)
         /* Specific pack filter - only custom plants from that pack */
         stream_state.include_builtin = false;
         stream_state.include_custom = true;
-        /* TODO: count plants for specific pack - for now just use total */
-        stream_state.total_count = pack_storage_get_plant_count();
+        /* Get plant count from pack header */
+        {
+            pack_pack_v1_t pack_header;
+            if (pack_storage_get_pack(filter, &pack_header, NULL, 0) == PACK_RESULT_SUCCESS) {
+                stream_state.total_count = pack_header.plant_count;
+            } else {
+                /* Pack not found, fall back to 0 */
+                stream_state.total_count = 0;
+            }
+        }
         break;
     }
     

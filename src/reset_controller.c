@@ -147,9 +147,23 @@ static int wipe_execute_single_step(wipe_step_t step)
         
     case WIPE_STEP_VERIFY:
         printk("WIPE: Step %d - VERIFY\n", step);
-        /* TODO: Add verification logic (check NVS keys absent) */
-        /* For now, assume success if we got here */
-        ret = 0;
+        /* Verify critical NVS keys are absent after wipe */
+        {
+            uint8_t dummy[4];
+            int v1 = nvs_config_read(1 /* ID_WATERING_CFG */, dummy, sizeof(dummy));
+            int v2 = nvs_config_read(100 /* ID_CHANNEL_CFG_BASE */, dummy, sizeof(dummy));
+            int v3 = nvs_config_read(900 /* ID_ONBOARDING_STATE */, dummy, sizeof(dummy));
+            
+            /* All reads should return -ENOENT if wipe was successful */
+            if (v1 == -ENOENT && v2 == -ENOENT && v3 == -ENOENT) {
+                printk("WIPE: Verification PASSED - all keys cleared\n");
+                ret = 0;
+            } else {
+                printk("WIPE: Verification FAILED - keys still present (v1=%d, v2=%d, v3=%d)\n",
+                       v1, v2, v3);
+                ret = -EIO;
+            }
+        }
         break;
         
     case WIPE_STEP_DONE:

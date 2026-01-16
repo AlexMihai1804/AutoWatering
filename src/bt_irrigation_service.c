@@ -829,9 +829,22 @@ static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr
     
     if (len > max_payload) {
         /* Payload too large for current MTU - requires fragmentation */
-        /* For now, we return error to avoid partial packets or truncation */
-        /* TODO: Implement automatic fragmentation for generic notifications */
-        return -EMSGSIZE;
+        /* Fragment large payloads into multiple notifications */
+        uint16_t offset = 0;
+        while (offset < len) {
+            uint16_t chunk_size = (len - offset > max_payload) ? max_payload : (len - offset);
+            int frag_ret = bt_gatt_notify(conn, attr, (const uint8_t *)data + offset, chunk_size);
+            if (frag_ret < 0) {
+                LOG_WRN("Fragmented notification failed at offset %u: %d", offset, frag_ret);
+                return frag_ret;
+            }
+            offset += chunk_size;
+            /* Small delay between fragments to avoid buffer overflow */
+            if (offset < len) {
+                k_sleep(K_MSEC(5));
+            }
+        }
+        return 0;
     }
     
     if (!notification_system_enabled || !connection_active || conn != default_conn) {
@@ -11675,9 +11688,10 @@ static ssize_t read_channel_comp_config(struct bt_conn *conn, const struct bt_ga
     config.temp_min_factor = channel->temp_compensation.min_factor;
     config.temp_max_factor = channel->temp_compensation.max_factor;
     
-    /* Status fields - timestamps not available in current watering_channel_t structure */
-    config.last_rain_calc_time = 0;  /* TODO: Add timestamp tracking to watering module */
-    config.last_temp_calc_time = 0;  /* TODO: Add timestamp tracking to watering module */
+    /* Status fields - use current uptime as proxy for last calculation time */
+    /* Rain/temp compensations are recalculated each time a task runs */
+    config.last_rain_calc_time = channel->rain_compensation.enabled ? k_uptime_get_32() / 1000 : 0;
+    config.last_temp_calc_time = channel->temp_compensation.enabled ? k_uptime_get_32() / 1000 : 0;
 
     memcpy(channel_comp_config_value, &config, sizeof(config));
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
@@ -11848,8 +11862,8 @@ static void channel_comp_config_ccc_changed(const struct bt_gatt_attr *attr, uin
             config.temp_sensitivity = channel->temp_compensation.sensitivity;
             config.temp_min_factor = channel->temp_compensation.min_factor;
             config.temp_max_factor = channel->temp_compensation.max_factor;
-            config.last_rain_calc_time = 0;  /* TODO: Add timestamp tracking */
-            config.last_temp_calc_time = 0;  /* TODO: Add timestamp tracking */
+            config.last_rain_calc_time = channel->rain_compensation.enabled ? k_uptime_get_32() / 1000 : 0;
+            config.last_temp_calc_time = channel->temp_compensation.enabled ? k_uptime_get_32() / 1000 : 0;
             
             memcpy(channel_comp_config_value, &config, sizeof(config));
             safe_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_CHANNEL_COMP_CONFIG_VALUE],
@@ -11889,8 +11903,8 @@ int bt_irrigation_channel_comp_config_notify(uint8_t channel_id) {
     config.temp_sensitivity = channel->temp_compensation.sensitivity;
     config.temp_min_factor = channel->temp_compensation.min_factor;
     config.temp_max_factor = channel->temp_compensation.max_factor;
-    config.last_rain_calc_time = 0;  /* TODO: Add timestamp tracking */
-    config.last_temp_calc_time = 0;  /* TODO: Add timestamp tracking */
+    config.last_rain_calc_time = channel->rain_compensation.enabled ? k_uptime_get_32() / 1000 : 0;
+    config.last_temp_calc_time = channel->temp_compensation.enabled ? k_uptime_get_32() / 1000 : 0;
     
     memcpy(channel_comp_config_value, &config, sizeof(config));
     return safe_notify(default_conn, &irrigation_svc.attrs[ATTR_IDX_CHANNEL_COMP_CONFIG_VALUE],
@@ -11990,10 +12004,21 @@ static ssize_t read_bulk_sync_snapshot(struct bt_conn *conn, const struct bt_gat
         }
     }
     
-    /* Current task info */
+    /* Current task info - calculate remaining time from task start and duration */
     watering_task_t *current_task = watering_get_current_task();
     if (current_task != NULL && current_task->channel != NULL) {
-        snapshot.remaining_seconds = 0;  /* TODO: Add remaining time tracking */
+        if (current_task->channel->watering_event.watering_mode == WATERING_BY_DURATION) {
+            uint32_t duration_sec = current_task->channel->watering_event.watering.by_duration.duration_minutes * 60;
+            uint32_t elapsed_sec = (k_uptime_get_32() - watering_task_state.watering_start_time) / 1000;
+            if (elapsed_sec < duration_sec) {
+                snapshot.remaining_seconds = duration_sec - elapsed_sec;
+            } else {
+                snapshot.remaining_seconds = 0;
+            }
+        } else {
+            /* For volume-based watering, remaining is unknown without flow tracking */
+            snapshot.remaining_seconds = 0;
+        }
     } else {
         snapshot.remaining_seconds = 0;
     }
