@@ -102,13 +102,15 @@ All other failures (e.g., timezone set errors) are logged but do not translate t
 - `src/timezone.c`: conversion helpers (`timezone_rtc_to_unix_utc`, `timezone_local_to_utc`, `timezone_unix_to_rtc_local`, `timezone_is_dst_active`, `timezone_set_config`).
 - `src/bt_gatt_structs.h`: `struct rtc_data` definition and size assert.
 
-## Related Characteristics
-- `docs/ble-api/characteristics/05-schedule-configuration.md` - schedule execution depends on local time.
+## Client Example (Python / Bleak)
 
-## Related Characteristics
-- `docs/ble-api/characteristics/05-schedule-configuration.md` - schedule execution depends on local time.
-- `docs/ble-api/characteristics/17-timezone-configuration.md` - detailed timezone/DST configuration.
-- `docs/ble-api/characteristics/10-alarm-status.md` - RTC/Timezone faults can raise alarms.
+```python
+from datetime import datetime
+import struct
+from bleak import BleakClient
+
+class RTCManager:
+    def __init__(self, client):
         self.client = client
         self.char_uuid = "12345678-1234-5678-1234-56789abcdef9"
 

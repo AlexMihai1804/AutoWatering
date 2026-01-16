@@ -3455,27 +3455,28 @@ watering_error_t calc_water_balance(
     float et0_pm = 0.0f;
     daily_et0 = fao56_calc_et0_ensemble(env, latitude_rad, day_of_year, &et0_hs, &et0_pm);
 
+    // Fallback safety: use monthly default when ensemble is unavailable or near-zero.
+    if (daily_et0 < 0.05f) {
+        uint8_t month = fao56_get_month_from_timestamp(env->timestamp);
+        if (month >= 1 && month <= 12) {
+            daily_et0 = fao56_get_default_et0_for_month(month);
+        } else {
+            daily_et0 = FAO56_DEFAULT_ET0_MM_DAY;
+        }
+    }
+    if (daily_et0 < 0.0f) {
+        daily_et0 = 0.0f;
+    }
+    if (daily_et0 > ET0_ABSOLUTE_MAX_MM_DAY) {
+        daily_et0 = ET0_ABSOLUTE_MAX_MM_DAY;
+    }
+
     float max_inc = ET0_SLEW_MAX_INC_MM_DAY;
     float max_dec = ET0_SLEW_MAX_DEC_MM_DAY;
     fao56_get_et0_slew_limits(env, &max_inc, &max_dec);
     uint32_t now_s = k_uptime_get_32() / 1000U;
     if (channel_id < WATERING_CHANNELS_COUNT) {
         daily_et0 = fao56_apply_et0_slew(channel_id, daily_et0, now_s, max_inc, max_dec);
-    }
-
-    // Fallback safety: heuristic ET0 when ensemble is unavailable or near-zero.
-    if (daily_et0 < 0.05f && env->temp_valid && env->humidity_valid) {
-        float t_mean = env->air_temp_mean_c;
-        float vpd = 0.0f;
-        if (env->derived_values_calculated) {
-            float es = env->saturation_vapor_pressure_kpa; // saturation
-            float ea = env->vapor_pressure_kpa;            // actual
-            if (es > ea) vpd = es - ea;
-        }
-        daily_et0 = HEURISTIC_ET0_COEFF * (t_mean + HEURISTIC_ET0_TEMP_OFFSET) *
-                    sqrtf(fmaxf(vpd, HEURISTIC_ET0_VPD_FLOOR));
-        if (daily_et0 < HEURISTIC_ET0_MIN) daily_et0 = HEURISTIC_ET0_MIN;
-        if (daily_et0 > HEURISTIC_ET0_MAX) daily_et0 = HEURISTIC_ET0_MAX;
     }
 
     // Initialize surface evaporation bucket (dual-Kc light)

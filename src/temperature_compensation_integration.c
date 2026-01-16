@@ -116,7 +116,7 @@ int temp_comp_calculate_compensated_et0(const temperature_compensation_config_t 
     float base_et0;
     if (env->rel_humidity_pct > 0.0f && env->atmos_pressure_hpa > 0.0f) {
         // Use Penman-Monteith if full meteorological data is available
-        base_et0 = calc_et0_penman_monteith(env, latitude_rad, day_of_year);
+        base_et0 = calc_et0_penman_monteith(env, latitude_rad, day_of_year, NULL);
     } else {
         // Fall back to Hargreaves-Samani with temperature only
         base_et0 = calc_et0_hargreaves_samani(env, latitude_rad, day_of_year);

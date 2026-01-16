@@ -7884,7 +7884,7 @@ static void update_auto_calc_calculations(struct auto_calc_status_data *d, water
 
         float et0 = 0.0f;
         if (env_raw.temp_valid && env_raw.humidity_valid && env_raw.pressure_valid) {
-            et0 = calc_et0_penman_monteith(&env_raw, latitude_rad, doy);
+            et0 = calc_et0_penman_monteith(&env_raw, latitude_rad, doy, NULL);
         }
         if (et0 <= 0.01f || et0 >= 20.0f) {
             et0 = calc_et0_hargreaves_samani(&env_raw, latitude_rad, doy);

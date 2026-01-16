@@ -511,8 +511,9 @@ if TEW <= 1e-3:
   TEW = 0
   REW = 0
   D_surface = 0
+  Ke = 0
 ```
-When TEW changes, D_surface is rescaled to keep D_surface/TEW stable.
+When TEW changes, D_surface is rescaled to keep D_surface/TEW stable (if TEW > 1e-3; otherwise D_surface is forced to 0).
 
 Ke (soil evaporation coefficient):
 ```
@@ -874,7 +875,7 @@ Per channel:
   via surface_wet_target = wetting_fraction * DU.
 - Surface wetting uses applied depth (eff_surface = 1.0); efficiency applies to root refill.
 - Canopy now affects Kc, not area.
-- ET0 uses HS+PM ensemble with quality-weighting (AUTO and non-AUTO paths).
+- ET0 uses HS+PM ensemble with quality-weighting (AUTO and non-AUTO paths); if daily ET0 < 0.05 in non-AUTO balance update, fallback to monthly default (RO) or FAO56_DEFAULT_ET0.
 - Slew is asymmetric; rises can be faster on heatwave/VPD.
 - Antecedent moisture is auto-derived if no manual override.
 - ECO mode increases MAD in AUTO, and scales net refill in on-demand Eco calculations.
