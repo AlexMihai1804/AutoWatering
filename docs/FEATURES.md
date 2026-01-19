@@ -1,7 +1,7 @@
 # AutoWatering - Key Features (Code-Verified Summary)
 
 Focused, externally facing list. All items map to existing modules or confirmed limits.
-*Last updated: 2026-01-05*
+*Last updated: 2026-01-18*
 
 ---
 
@@ -15,7 +15,7 @@ Focused, externally facing list. All items map to existing modules or confirmed 
 | Plant species | 223 (`PLANT_FULL_SPECIES_COUNT`) |
 | Soil types | 15 (`SOIL_ENHANCED_TYPES_COUNT`) |
 | Irrigation methods | 15 (`IRRIGATION_METHODS_COUNT`) |
-| BLE characteristics | 34 (29 + 5) |
+| BLE characteristics | 38 (29 irrigation + 5 custom + 4 pack) |
 | Concurrent tasks | 1 (queue depth 10) |
 | Hardware target | Arduino Nano 33 BLE (nRF52840) |
 | Zephyr version | 4.3.0 |
@@ -30,12 +30,13 @@ Focused, externally facing list. All items map to existing modules or confirmed 
   - **VOLUME** (`WATERING_BY_VOLUME`): Fixed volume in liters (flow-sensor monitored).
   - **Quality** (`WATERING_AUTOMATIC_QUALITY`): FAO-56 based, 100% of calculated requirement.
   - **Eco** (`WATERING_AUTOMATIC_ECO`): FAO-56 based, 70% of calculated requirement.
-- Quality and Eco modes are **exclusively FAO-56 based** (require plant/soil/method configuration).
-- Single active watering task at a time (message queue dispatch, depth 10).
-- Interval mode: watering/pause phase cycling for TIME and VOLUME modes (configurable minutes/seconds).
+- Quality and Eco modes are FAO-56 based and require plant/soil/method, planting date, and coverage (area or plant count) configuration.
+- Eco mode exists in firmware, but BLE growing environment writes accept auto_mode 0..2 and cast to `watering_mode_t`, so Eco (3) is not settable via BLE.
+- Single active watering task at a time (message queue depth 10). Scheduler avoids queuing more than 2 tasks to leave room for manual overrides.
+- Interval mode: per-channel cycle/soak for TIME and VOLUME modes (1-3600 sec per phase).
 - State machine states: IDLE, WATERING, PAUSED, ERROR_RECOVERY.
 
-Implementation notes (where this lives in code):
+Implementation notes:
 
 - Task orchestration + scheduling loops: `src/watering_tasks.c`, `src/watering.c`.
 - Valve/master-valve control path: `src/valve_control.c`, `src/watering.c`.
@@ -46,19 +47,18 @@ Implementation notes (where this lives in code):
 - Three schedule modes per channel:
   - **Daily (bitmask)**: Runs on selected days of the week.
   - **Periodic**: Runs every N days.
-  - **AUTO (Smart Schedule)**: FAO-56 based - evaluates soil water deficit daily, irrigates only when deficit exceeds plant's RAW threshold. Requires plant/soil/planting_date and coverage configuration.
-- Solar timing option: sunrise/sunset scheduling with +/-120 min offset using latitude/longitude; falls back to configured start time if solar calc fails.
-- On-demand FAO-56 based irrigation requirement calculation (`watering_run_automatic_calculations()`).
+  - **AUTO (Smart Schedule)**: FAO-56 based - evaluates soil water deficit daily, irrigates only when deficit exceeds the RAW threshold.
+- AUTO schedule gate checks plant_id, soil_db_index, planting_date_unix, and coverage; FAO-56 calculations also require a valid irrigation_method_index.
+- Solar timing option: sunrise/sunset scheduling with -120..+120 min offset using latitude/longitude; longitude is not exposed via BLE and defaults to 0 unless set elsewhere; falls back to configured start time if solar calc fails.
 - AUTO mode features:
-  - Daily deficit tracking with ETc (crop evapotranspiration) accumulation.
-  - Environmental stress adjustment on hot/dry days (reduced MAD threshold).
-  - Automatic rainfall integration (subtracts effective precipitation from deficit).
-  - Multi-day offline gap handling: estimates missed ETc on power-up.
-- Rain integration: skip / reduction logic (channel-specific) using recent rainfall history.
-  - Rain skip/reduction apply **only to TIME and VOLUME modes**.
-  - FAO-56 modes (Quality/Eco/AUTO) already incorporate rain in ET0 calculations.
-  - Temperature compensation is configurable but not applied in the current task execution path.
-- Configurable auto-calculation interval (1-24 hours).
+  - Daily deficit tracking with ETc accumulation.
+  - Environmental stress adjustment on hot/dry days.
+  - Automatic rainfall integration (effective rain subtracts from deficit).
+  - Multi-day offline gap handling on boot.
+- Rain integration: skip/reduction logic is per-channel and applies only to TIME and VOLUME tasks.
+  - FAO-56 modes already incorporate weather in ET0 calculations.
+  - Temperature compensation is configurable but not applied to task execution.
+- Auto calculation interval default is 1 hour; the interval is internal and not exposed via BLE.
 
 Implementation notes:
 
@@ -69,24 +69,27 @@ Implementation notes:
 ## Sensing & Monitoring
 
 - **Flow sensor**: Pulse counting with calibration (100-10,000 pulses/liter; adjustable via BLE).
-  - Default 450 pulses/liter from devicetree.
-  - Debounce configurable (default 5 ms).
+  - Default calibration comes from devicetree (`flow-calibration`), 750 in the board overlay; fallback to 450 if DT is missing. NVS overrides when present.
+  - Debounce uses devicetree `debounce_ms` (2 ms in overlay; fallback 5 ms if missing).
   - BLE notifications: +10 pulses or 5 s heartbeat (whichever first).
 - **Hydraulic Sentinel (H.H.M.)**:
-  - **Auto-learning**: 2-6 runs per channel, measures ramp-up time and nominal flow.
-  - **Profile types**: AUTO (learned), SPRAY (fast), DRIP (slow).
-  - **Start ignore windows**: Fast 8-20 s, Slow 30-90 s, Default 12-25 s (clamped from ramp + offset).
-  - **HIGH FLOW**: 5 s sustained over limit → close all valves; channel or global lock.
-  - **NO FLOW**: 3 s stall detection + 3 valve toggle retries; soft lock with auto-retry, hard lock after 3 consecutive failures.
-  - **LOW FLOW**: Warning only after 30 s below limit; watering continues.
-  - **UNEXPECTED FLOW**: >10 pulses/30 s for 30 s (2 s post-close ignore); global hard lock if persistent.
-  - **Nightly static test**: 03:00, master on 10 s, off 5 s, monitor 60 s; skipped if watering/queued/locked.
-  - **Anomaly log**: Append-only ring on external flash (`/lfs/history/hydraulic_events.bin`).
-- **Hydraulic Status BLE**: Per-channel profile, tolerances, lock state/reason, anomaly counters, plus global lock snapshot.
-- **Rain gauge**: Tipping-bucket with 0.2 mm/pulse default, 50 ms debounce, health monitoring with pulse statistics.
-- **Environmental sensor** (BME280): Temperature, humidity, pressure; 15/60 min polling intervals.
+  - Auto-learning: 2-6 runs per channel, measures ramp-up time and nominal flow.
+  - Profiles: AUTO (learned), SPRAY (fast), DRIP (slow).
+  - Start ignore windows: Fast 8-20 s, Slow 30-90 s, Default 12-25 s (clamped from ramp + offset).
+  - HIGH FLOW: 5 s sustained over limit -> close all valves; channel or global lock.
+  - NO FLOW: 3 s stall detection + 3 valve toggle retries; soft lock with auto-retry, hard lock after 3 consecutive failures.
+  - LOW FLOW: Warning only after 30 s below limit; watering continues.
+  - UNEXPECTED FLOW: >10 pulses/30 s for 30 s (2 s post-close ignore) -> global hard lock if persistent.
+  - Nightly static test: 03:00, master on 10 s, off 5 s, monitor 60 s; skipped if watering/queued/locked.
+  - Mainline leak detection: >3 pulses during the static test -> global hard lock + alarms.
+  - Anomaly log: append-only ring on external flash (`/lfs/history/hydraulic_events.bin`).
+- **Rain gauge**: Tipping-bucket with 0.2 mm/pulse default, 50 ms debounce.
+  - Calibration range: 0.1-10.0 mm/pulse; debounce range 10-1000 ms.
+  - Health monitoring with pulse statistics and error counters.
+- **Environmental sensor** (BME280): Temperature, humidity, pressure.
+  - Default intervals: 15 min (temp/humidity), 60 min (rain aggregation).
   - Data quality score (0-100), calibration offsets, validity flags.
-  - Derived dewpoint and vapor pressures.
+  - BME280 can be enabled and interval set via system config (seconds).
 - Manual soil moisture estimate (global + per-channel override) feeds effective rainfall modeling; no physical probes.
 - Environmental, rain, and watering history with multi-resolution aggregation.
 - Current task progress & completion notifications via BLE.
@@ -101,92 +104,71 @@ Implementation notes:
 
 - Channel configuration, calibration, schedules, custom soil, compensation settings stored in NVS.
 - Soil moisture estimates (global + per-channel overrides) stored in NVS.
-- **Plant database**: 223 entries (`PLANT_FULL_SPECIES_COUNT`), 10 categories, 44-byte structs.
-  - Kc coefficients (initial/development/mid/end season).
-  - Root depth, depletion fraction, spacing, density.
-  - Stage lengths (ini/dev/mid/end days), frost tolerance.
-  - Optimal temperature range, growth cycle, typical irrigation method.
+- **Plant database**: 223 entries (`PLANT_FULL_SPECIES_COUNT`), 10 categories.
+- **Pack storage**: external flash LittleFS at `/lfs_ext` stores built-in plants plus custom plants and packs.
 - **Soil database**: 15 enhanced types (`SOIL_ENHANCED_TYPES_COUNT`).
-  - Field capacity, wilting point, available water capacity.
-  - Infiltration rate, default depletion fraction.
 - **Irrigation methods database**: 15 entries (`IRRIGATION_METHODS_COUNT`).
-  - Efficiency, wetting fraction, distribution uniformity.
-  - Application depth and rate ranges.
 - **Watering history** (NVS):
-  - 30 detailed events/channel (15 bytes: delta, flags, target/actual, flow rate).
-  - 90 daily stats (16 bytes: epoch, total ml, sessions ok/err, success rate).
-  - 36 monthly stats (12 bytes: year/month, total ml, active days, peak channel).
-  - 10 annual stats (20 bytes: year, total ml, sessions, errors, max/min month).
+  - 30 detailed events/channel.
+  - 90 daily stats.
+  - 36 monthly stats.
+  - 10 annual stats.
 - **Rain + environmental history** (LittleFS when `CONFIG_HISTORY_EXTERNAL_FLASH=y`):
-  - Rain: 720 hourly (8 bytes) + 1,825 daily (12 bytes).
+  - Rain: 720 hourly + 1,825 daily.
   - Environmental: 720 hourly + 372 daily + 60 monthly.
-- Hourly rain history recorded on UTC hour rollover; daily summaries derived from hourly.
-- Environmental history auto-aggregated hourly/daily/monthly from BME280 snapshots.
-- Automatic NVS storage cleanup (80/90% thresholds, target 70%); LittleFS wear levelling.
-- Storage monitor: mounts partition, tracks read/write errors, schedules cleanup.
+- Automatic NVS cleanup (80/90% thresholds, target 70%); LittleFS wear leveling.
 
 Implementation notes:
 
-- NVS read/write wrappers (single source of truth): `src/nvs_config.c`.
+- NVS read/write wrappers: `src/nvs_config.c`.
 - NVS usage monitoring/cleanup: `src/nvs_storage_monitor.c`.
 - External flash history + filesystem mount: `src/history_flash.c`.
-- Optional binary DB on LittleFS (`/lfs/db/*.bin`): `src/database_flash.c`.
+- Pack storage: `src/pack_storage.c`, `src/bt_pack_handlers.c`.
 
 ## Master Valve
 
 - Optional master valve with pre-start (default +3 s) and post-stop delays (default +2 s).
-- Overlap grace window (5 s) to keep master open between consecutive tasks.
-- Automatic or manual (when auto disabled) control paths.
+- Negative delays are supported: pre-start < 0 opens after the zone, post-stop < 0 closes before the zone.
+- Overlap grace window (5 s) keeps master open between consecutive tasks.
+- Automatic or manual (when auto management is disabled) control paths.
 
 Implementation notes:
 
-- Master valve gating and delays: `src/valve_control.c`, plus config in `src/watering_config.c`.
+- Master valve gating and delays: `src/valve_control.c`, config in `src/watering_config.c`.
 
 ## Power Modes
 
-- **Normal**: 60 s scheduler sleep.
-- **Energy Saving**: 120 s scheduler sleep.
-- **Ultra Low Power**: 300 s scheduler sleep.
-- Zephyr PM is disabled (`CONFIG_PM=n`), so these modes only adjust scheduler pacing.
+- **Normal**: processing loop 0.5 s, scheduler loop 60 s.
+- **Energy Saving**: processing loop 2 s, scheduler loop 120 s.
+- **Ultra Low Power**: processing loop 600 s, scheduler loop 300 s.
+- Zephyr PM is disabled (`CONFIG_PM=n`), so these modes adjust thread pacing only.
 
 Implementation notes:
 
-- Sleep pacing and power mode switching: `src/power_management.c`, scheduler loop in `src/watering_tasks.c`.
+- Sleep pacing and power mode switching: `src/power_management.c`, loops in `src/watering_tasks.c`.
 
 ## Bluetooth Low Energy
 
-- Primary irrigation service: **29 characteristics** (`docs/ble-api/`), including Bulk Sync Snapshot and Hydraulic Status.
-- Custom configuration service: **5 characteristics** for custom soil, soil moisture, config status/reset, and interval mode.
-- **Total: 34 characteristics** across both services.
-- Notification scheduler: 8-buffer pool, MTU-aware payloads (up to 250 bytes), adaptive throttling:
-  - Critical: 0 ms (alarms, errors).
-  - High: 50 ms (status updates, valve changes).
-  - Normal: 200 ms (flow data, statistics).
-  - Low: 1 s (history, diagnostics).
-- Fragmentation for large payloads (TLV-framed, sequence-numbered).
-- History streaming via write-triggered fragment notifications (no client ACK).
-- **Bulk Sync Snapshot** (UUID 0xde60): Single 60-byte READ replaces 10+ queries at connection; contains system status, environmental data, rain totals, compensation, and channel states.
-- Auto Calc Status characteristic: per-channel selection plus global mode (0xFF = earliest next irrigation) and helper select (0xFE = first automatic channel).
-
-### BLE Performance Optimizations (v3.1.0)
-
-- **PHY 2M**: Automatically requested at connection (~2x throughput).
-- **Data Length Extension (DLE)**: Requests 251-byte packets (gracefully handles failure).
-- **Binary Search**: O(log n) history queries instead of linear scan (~10-70x speedup).
-- **Fragment Streaming**: 2 ms inter-fragment delay, retry with exponential backoff.
-- **Transfer Caching**: 30 s cache for history transfers avoids re-reading flash.
+- Primary irrigation service: 29 characteristics.
+- Custom configuration service: 5 characteristics (custom soil, soil moisture, config status, interval mode).
+- Pack service: 4 characteristics (plant install/list/delete, stats, pack transfer, pack list).
+- **Total: 38 characteristics** across all services.
+- Notification scheduler: 8-buffer pool, MTU-aware payloads (up to 250 bytes), adaptive throttling.
+- Fragmentation for large payloads (history, environmental data).
+- **Bulk Sync Snapshot** (UUID 0xde60): 60-byte read of system status, environmental data, and rain snapshot (current-hour rain; week/skip fields are placeholders; flow rate is pulses/sec).
 
 Implementation notes:
 
 - GATT service/characteristic table: `src/bt_irrigation_service.c`.
 - Domain handlers (channel config, interval mode, histories, etc.): `src/bt_*_handlers.c`.
-- Packed BLE structs/contracts: `src/bt_gatt_structs.h`, `src/bt_gatt_structs_enhanced.h`.
+- Pack service: `src/bt_pack_handlers.c`.
 
 ## Time Handling
 
 - DS3231 RTC integration using UTC timestamps for scheduling and history.
 - Timezone configuration with DST support (UTC offset, start/end rules).
-- Fallback to uptime-derived time if RTC unavailable (5 consecutive failures trigger fallback).
+- RTC writes treat input as local time and store UTC; DST auto rules are set via the Timezone characteristic.
+- Timezone writes validate ranges: UTC offset -720..840, DST offset -120..120, DST months 1..12, weeks 1..5, DOW 0..6; rules are cleared when DST is disabled.
 
 Implementation notes:
 
@@ -195,41 +177,22 @@ Implementation notes:
 
 ## Error & Status Reporting
 
-- **Status codes**: OK, No-Flow, Unexpected-Flow, Fault, RTC Error, Low Power, Freeze Lockout, Locked.
-- **Error codes** (`watering_error_t`): 15 defined codes (0 = SUCCESS, -1 to -14 = errors):
-  - INVALID_PARAM, NOT_INITIALIZED, HARDWARE, BUSY, QUEUE_FULL, TIMEOUT, CONFIG, RTC_FAILURE, STORAGE, DATA_CORRUPT, INVALID_DATA, BUFFER_FULL, NO_MEMORY, SOLAR_FALLBACK.
-- **Schedule types** (`schedule_type_t`): DAILY (bitmask), PERIODIC (every N days), AUTO (FAO-56 smart).
-- **Freeze lockout**: Blocks watering when temp ≤ 2°C or environmental data stale (>10 min); clears at ≥ 4°C; raises BLE alarm.
-- **Manual override**: Explicit BLE commands can temporarily bypass locks for testing.
-- **Enhanced system status** aggregates:
-  - Interval phase.
-  - Compensation state (rain/temp flags).
-  - Sensor health indicators.
-  - Configuration completeness.
-  - Channel bitmaps (active, interval, incomplete).
-- **Error recovery strategies**: Retry, Fallback, Disable, Reset, Graceful Degrade.
-- **Recovery contexts**: BME280 init, sensor reads, compensation errors, interval controller, storage issues.
-- Rain-based skip events logged via history helpers.
-
+- Status codes: OK, NO_FLOW, UNEXPECTED_FLOW, FAULT, RTC_ERROR, LOW_POWER, FREEZE_LOCKOUT, LOCKED.
+- Freeze lockout: blocks enqueue/start when temp <= 2 C or data stale > 10 min; attempts on-demand BME280 read, fails open with warm default if sensor unavailable; clears at >= 4 C; raises BLE alarm.
+- Manual override window for hydraulic locks: 10 minutes via direct commands (bypass locks for testing).
+- Enhanced system status aggregates interval phase, compensation flags, sensor health, config completeness, and channel bitmaps.
 
 Implementation notes:
 
 - Enhanced status aggregation: `src/enhanced_system_status.c`.
-- Error classification/recovery glue: `src/enhanced_error_handling.c`, plus per-module safety checks.
+- Error classification/recovery glue: `src/enhanced_error_handling.c`.
 
 ## Interval Mode
 
-- **State machine**: IDLE → WATERING → PAUSING → COMPLETED (or ERROR).
-- **Configuration** per channel:
-  - Watering phase duration (minutes + seconds).
-  - Pause phase duration (minutes + seconds).
-  - Total target (duration or volume), cycles completed, current phase.
-- **Compatibility**: TIME and VOLUME modes only; FAO-56 modes not supported.
-- **Controller tracks**: Task/phase start times, total elapsed, total volume, cycle count.
-- **Flow rate integration**: Uses ml/sec for volume-based phase calculations.
-- **Master valve sync**: Keeps master valve in sync during phase transitions.
-- Manual pause/resume/stop commands interact with controller.
-
+- State machine: IDLE -> WATERING -> PAUSING -> COMPLETED (or ERROR).
+- Configuration per channel: watering/pause durations (minutes + seconds).
+- Compatibility: TIME and VOLUME modes only; FAO-56 modes not supported.
+- Controller tracks phase timings, volume, and cycle count; master valve stays in sync.
 
 Implementation notes:
 
@@ -239,22 +202,14 @@ Implementation notes:
 
 ## Onboarding & Reset System
 
-- **Configuration scoring** per channel (0-100%, weighted groups):
+- Configuration scoring per channel (0-100%, weighted groups):
   - Basic setup: 25%
   - Growing environment: 25%
   - Compensation: 20%
   - Custom soil: 15%
   - Interval profile: 15%
-- **Health levels**: POOR (<40%), FAIR (40-59%), GOOD (60-79%), EXCELLENT (80%+).
-- **Onboarding flags**: plant, soil, method, coverage, sun exposure, name, compensation, latitude, planting date.
-- **Extended flags**: FAO-56 ready, rain comp, temp comp, volume limit, cycle-soak enabled.
-- **Reset controller** with 32-bit confirmation codes (5 min validity):
-  - Single-channel configuration or schedule.
-  - All channels or all schedules.
-  - System configuration, calibration, histories.
-  - Full factory reset.
-- **Reset log**: 16-entry ring per channel with timestamps, group, and reason.
-- Onboarding complete when ≥1 channel has all critical flags and RTC flag raised.
+- Health levels: POOR (<40%), FAIR (40-59%), GOOD (60-79%), EXCELLENT (80%+).
+- Reset controller with 32-bit confirmation codes (5 min validity): per-channel, all-channel, system, calibration, histories, factory reset.
 
 Implementation notes:
 
@@ -263,65 +218,54 @@ Implementation notes:
 
 ## Compensation Systems
 
-- **Rain compensation** (TIME/VOLUME modes only):
-  - Per-channel sensitivity, skip threshold, lookback hours.
-  - Task adjustments use the rain integration curve in `src/rain_integration.c`.
-  - The standalone algorithm set in `src/rain_compensation.c` exists but is not wired into task execution.
-- **Temperature compensation**:
-  - Configuration and status are stored per channel, but the execution path does not apply it yet.
-  - Default config uses 20 C base, 0.05 sensitivity, 0.5-2.0 factor range.
+- **Rain compensation** (TIME/VOLUME modes only): per-channel sensitivity, lookback, skip threshold, reduction factor.
+  - BLE range for lookback: 1-72 hours (internal validation supports 1-168).
+  - Global rain integration settings (from Rain Sensor Config) are deprecated and not used in task adjustments.
+- **Temperature compensation**: per-channel config persisted but not applied during task execution.
+  - Per-channel BLE ranges: base -40..60 C, sensitivity 0.1..2.0, min 0.5..1.0, max 1.0..2.0.
+  - Global defaults (system config) are clamped to -10..50 C and 0.01..0.20 sensitivity.
 
-  Implementation notes:
+Implementation notes:
 
-  - Rain integration/adjustments: `src/rain_integration.c`.
-  - Compensation engines (not wired to tasks yet): `src/rain_compensation.c`, `src/temperature_compensation.c`, `src/temperature_compensation_integration.c`.
+- Rain integration/adjustments: `src/rain_integration.c`.
+- Compensation engines (not wired to tasks yet): `src/rain_compensation.c`, `src/temperature_compensation.c`.
 
 ## FAO-56 Calculation Engine
 
-- **Reference Evapotranspiration (ET0)**:
-  - Penman-Monteith using temperature, humidity, pressure, latitude, day-of-year.
-  - Hargreaves-Samani fallback when humidity/pressure missing (marked as fallback result).
-  - Per-channel caching to avoid recomputation.
-- **Crop Coefficient (Kc)**:
-  - Four phenological stages: Initial, Development, Mid-Season, End-Season.
-  - Uses plant database Kc values + days after planting.
-  - Per-channel caching.
-- **Water Balance**:
-  - Readily Available Water (RAW) and Total Available Water (TAW).
-  - Current deficit tracking, net irrigation requirement.
-  - Custom soil overlays override database defaults.
-- **Effective Rainfall**: Hourly/daily rain history + soil infiltration factor (default 0.8).
-- **Volume Conversion**: mm → liters using area or per-plant coverage (default 0.5 m²/plant).
-- **Constraints**: Max volume limit, Eco mode (70%), minimum 1 liter enforced.
-
+- Reference ET0: Penman-Monteith with fallback to Hargreaves-Samani.
+- Kc staging: Initial, Development, Mid-Season, End-Season.
+- Water balance: RAW/TAW, deficit tracking, net irrigation requirement.
+- Effective rainfall from history + soil infiltration factor.
+- Volume conversion: mm -> liters using area or per-plant coverage.
+- Constraints: max volume limit, Eco scaling (70%), minimum 1 liter enforced.
 
 Implementation notes:
 
 - FAO-56 calculations: `src/fao56_calc.c`, `src/fao56_custom_soil.c`.
 - Water balance types: `src/water_balance_types.h`.
 
+## Firmware Functions
+
+- Task scheduling/queue + interval mode: duration/volume/auto tasks, pause/resume, cycle/soak sequencing.
+- Valve + master valve control: GPIO sequencing, delays/overlap, manual overrides.
+- FAO-56 irrigation engine: ET0, Kc staging, water balance, automatic volume decisions.
+- Sensor stack + monitoring: flow/hydraulic anomalies, rain gauge/integration, BME280 telemetry.
+- Persistence + storage: NVS configs/history, LittleFS history + pack storage, cleanup.
+- BLE services + time/RTC: GATT handlers, fragmentation/notifications, timezone + freeze lockout, power pacing.
+
 ## Extensibility
 
 - Modular C sources (watering, tasks, history, sensors, FAO calc, rain integration).
-- Generated databases (plant, soil, irrigation methods) via Python scripts (`tools/build_database.py`).
-- Hardware target: Arduino Nano 33 BLE (nRF52840).
+- Generated databases via Python scripts (`tools/build_database.py`).
+- Pack storage and BLE pack service for custom plants and packs.
 
+## Limitations and Behavior Notes
 
-Implementation notes:
-
-- Generated databases are committed `.inc` artefacts; sources are CSVs + generators under `tools/`.
-- Hardware-specific storage sizing/mapping is defined in `boards/*.overlay`.
-
-## Not Implemented (Removed From Marketing)
-
-- Background FAO thread (calculations are on-demand).
-- Generic memory/health monitoring subsystems.
-- Multi-task concurrent irrigation (single active task enforced).
-- Soil moisture probes (no physical sensor integration; manual antecedent moisture estimate only).
-- Temperature compensation in task execution (config exists, not applied).
-- Advanced rain compensation algorithms (simple integration used instead).
-
-This concise sheet avoids speculative metrics (latency, throughput) until measured tests are added.
+- Temperature compensation is not applied to task execution yet.
+- BLE limits: Eco auto mode is not settable; auto-calc interval and longitude for solar timing are not exposed.
+- Global rain integration config fields are deprecated; per-channel settings are used.
+- Multi-task concurrent irrigation is not supported (single active valve only).
+- Soil moisture probes are not supported (manual antecedent moisture estimates only).
 
 ---
 
@@ -338,6 +282,7 @@ This concise sheet avoids speculative metrics (latency, throughput) until measur
 | Environment | `src/env_sensors.c`, `src/environmental_data.c`, `src/environmental_history.c`, `src/bme280_driver.c` | BME280, aggregation |
 | Interval mode | `src/interval_mode_controller.c`, `src/interval_timing.c`, `src/interval_task_integration.c` | Phase cycling |
 | BLE service | `src/bt_irrigation_service.c`, `src/bt_*_handlers.c` | GATT service, characteristics |
+| Pack service | `src/bt_pack_handlers.c`, `src/pack_storage.c`, `src/pack_schema.h` | Custom plants, pack transfers |
 | BLE structs | `src/bt_gatt_structs.h`, `src/bt_gatt_structs_enhanced.h` | Packed payloads |
 | NVS storage | `src/nvs_config.c`, `src/nvs_storage_monitor.c` | Persistence, health |
 | Flash storage | `src/history_flash.c`, `src/database_flash.c` | LittleFS mount, binary DB |
