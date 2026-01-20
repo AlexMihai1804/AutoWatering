@@ -189,7 +189,9 @@ int reset_controller_get_wipe_progress(wipe_progress_t *progress)
         return -EINVAL;
     }
     
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        return -EBUSY;
+    }
     *progress = wipe_progress;
     k_mutex_unlock(&reset_controller_mutex);
     
@@ -198,7 +200,9 @@ int reset_controller_get_wipe_progress(wipe_progress_t *progress)
 
 int reset_controller_resume_wipe(void)
 {
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        return -EBUSY;
+    }
     
     /* Load persisted state */
     int ret = nvs_load_wipe_progress(&wipe_progress);
@@ -222,7 +226,9 @@ int reset_controller_resume_wipe(void)
 
 int reset_controller_start_factory_wipe(uint32_t confirmation_code)
 {
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        return -EBUSY;
+    }
     
     /* Verify confirmation code */
     if (!reset_controller_validate_confirmation_code(confirmation_code,
@@ -258,7 +264,9 @@ int reset_controller_start_factory_wipe(uint32_t confirmation_code)
 
 int reset_controller_execute_wipe_step(void)
 {
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        return -EBUSY;
+    }
     
     /* Check if wipe is in progress */
     if (wipe_progress.state != WIPE_STATE_IN_PROGRESS) {
@@ -272,7 +280,9 @@ int reset_controller_execute_wipe_step(void)
     /* Execute the step (outside mutex to allow BLE notifications) */
     int ret = wipe_execute_single_step(step);
     
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        return -EBUSY; /* Unable to update progress */
+    }
     
     if (ret < 0) {
         /* Step failed */
@@ -320,7 +330,10 @@ int reset_controller_execute_wipe_step(void)
 
 void reset_controller_abort_wipe(uint16_t error)
 {
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        printk("WARNING: Failed to acquire mutex in abort_wipe\n");
+        return;
+    }
     
     if (wipe_progress.state == WIPE_STATE_IN_PROGRESS) {
         wipe_progress.state = WIPE_STATE_DONE_ERROR;
@@ -334,7 +347,9 @@ void reset_controller_abort_wipe(uint16_t error)
 
 int reset_controller_clear_wipe_state(void)
 {
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        return -EBUSY;
+    }
     
     /* Clear NVS */
     int ret = nvs_clear_wipe_progress();
@@ -489,7 +504,10 @@ static uint32_t generate_random_code(void) {
 }
 
 int reset_controller_init(void) {
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        printk("ERROR: Failed to acquire reset controller mutex in init\n");
+        return -EBUSY;
+    }
     
     /* Initialize confirmation structure */
     memset(&current_confirmation, 0, sizeof(current_confirmation));
@@ -517,7 +535,9 @@ uint32_t reset_controller_generate_confirmation_code(reset_type_t type, uint8_t 
         return 0;
     }
     
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        return 0; /* Unable to generate code */
+    }
     
     /* Generate new confirmation code */
     uint32_t timestamp = get_current_timestamp();
@@ -544,7 +564,9 @@ bool reset_controller_validate_confirmation_code(uint32_t code, reset_type_t typ
         return false;
     }
     
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        return false; /* Unable to validate */
+    }
     
     bool valid = false;
     uint32_t current_time = get_current_timestamp();
@@ -589,7 +611,9 @@ reset_status_t reset_controller_execute(const reset_request_t *request) {
                                                     request->channel_id)) {
         uint32_t current_time = get_current_timestamp();
         
-        k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+        if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+            return RESET_STATUS_SYSTEM_ERROR;
+        }
         bool expired = (current_confirmation.is_valid && 
                        current_time > current_confirmation.expiry_time);
         k_mutex_unlock(&reset_controller_mutex);
@@ -655,7 +679,9 @@ int reset_controller_get_confirmation_info(reset_confirmation_t *confirmation) {
         return -EINVAL;
     }
     
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        return -EBUSY;
+    }
     *confirmation = current_confirmation;
     k_mutex_unlock(&reset_controller_mutex);
     
@@ -667,7 +693,9 @@ int reset_controller_clear_confirmation_code(void) {
         return -ENODEV;
     }
     
-    k_mutex_lock(&reset_controller_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_controller_mutex, K_MSEC(100)) != 0) {
+        return -EBUSY;
+    }
     current_confirmation.is_valid = false;
     current_confirmation.code = 0;
     k_mutex_unlock(&reset_controller_mutex);

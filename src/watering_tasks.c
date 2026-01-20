@@ -17,6 +17,7 @@
 #include "environmental_history.h"  /* Environmental history aggregation */
 #include "bme280_driver.h"          /* Direct BME reads for freeze lockout */
 #include "fao56_calc.h"             /* FAO-56 calculations for AUTO mode */
+#include "temperature_compensation_integration.h" /* Temperature compensation for TIME/VOLUME modes */
 
 LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -497,6 +498,73 @@ watering_error_t watering_start_task(watering_task_t *task)
         }
     }
     
+    /* Apply temperature compensation for TIME and VOLUME modes only.
+     * FAO-56 modes (QUALITY/ECO) already incorporate temperature in ET0 calculations,
+     * so applying additional compensation would double-count temperature effects. */
+    watering_mode_t mode = task->channel->watering_event.watering_mode;
+    if ((mode == WATERING_BY_DURATION || mode == WATERING_BY_VOLUME) &&
+        task->channel->temp_compensation.enabled) {
+        
+        /* Get current temperature from environmental data */
+        bme280_environmental_data_t env = {0};
+        int env_ret = environmental_data_get_current(&env);
+        
+        if (env_ret == 0 && env.current.valid) {
+            float current_temp = env.current.temperature;
+            float base_temp = task->channel->temp_compensation.base_temperature;
+            float sensitivity = task->channel->temp_compensation.sensitivity;
+            float min_factor = task->channel->temp_compensation.min_factor;
+            float max_factor = task->channel->temp_compensation.max_factor;
+            
+            /* Calculate compensation factor: factor = 1 + sensitivity * (current - base) */
+            float temp_diff = current_temp - base_temp;
+            float comp_factor = 1.0f + (sensitivity * temp_diff);
+            
+            /* Clamp to configured min/max factors */
+            if (comp_factor < min_factor) comp_factor = min_factor;
+            if (comp_factor > max_factor) comp_factor = max_factor;
+            
+            /* Store compensation result for BLE reporting */
+            task->channel->last_temp_compensation.compensation_factor = comp_factor;
+            
+            /* Apply compensation based on mode */
+            if (mode == WATERING_BY_DURATION) {
+                uint32_t original_duration = task->channel->watering_event.watering.by_duration.duration_minutes;
+                uint32_t adjusted_duration = (uint32_t)(original_duration * comp_factor);
+                
+                /* Ensure minimum duration of 1 minute */
+                if (adjusted_duration < 1) adjusted_duration = 1;
+                
+                /* Snapshot before modification */
+                watering_snapshot_event(channel_id);
+                task->channel->watering_event.watering.by_duration.duration_minutes = adjusted_duration;
+                task->channel->last_temp_compensation.adjusted_requirement = (float)adjusted_duration;
+                
+                printk("Temp-adjusted duration for channel %d: %u -> %u min (T=%.1fC, factor=%.2f)\n",
+                       channel_id, original_duration, adjusted_duration,
+                       (double)current_temp, (double)comp_factor);
+                       
+            } else if (mode == WATERING_BY_VOLUME) {
+                uint32_t original_volume = task->by_volume.volume_liters;
+                uint32_t adjusted_volume = (uint32_t)(original_volume * comp_factor);
+                
+                /* Ensure minimum volume of 1 liter */
+                if (adjusted_volume < 1) adjusted_volume = 1;
+                
+                /* Snapshot before modification */
+                watering_snapshot_event(channel_id);
+                task->by_volume.volume_liters = adjusted_volume;
+                task->channel->last_temp_compensation.adjusted_requirement = (float)adjusted_volume;
+                
+                printk("Temp-adjusted volume for channel %d: %u -> %u liters (T=%.1fC, factor=%.2f)\n",
+                       channel_id, original_volume, adjusted_volume,
+                       (double)current_temp, (double)comp_factor);
+            }
+        } else {
+            printk("Temp compensation enabled but no valid env data for channel %d\n", channel_id);
+        }
+    }
+    
     /* Initialize interval task system for this task */
     int interval_ret = interval_task_start(task);
     if (interval_ret != 0) {
@@ -548,18 +616,18 @@ watering_error_t watering_start_task(watering_task_t *task)
     
     /* Record task start in history */
     #ifdef CONFIG_BT
-    watering_mode_t mode = task->channel->watering_event.watering_mode;
+    watering_mode_t history_mode = task->channel->watering_event.watering_mode;
     uint16_t target_value;
-    if (mode == WATERING_BY_DURATION) {
+    if (history_mode == WATERING_BY_DURATION) {
         target_value = task->channel->watering_event.watering.by_duration.duration_minutes;
     } else {
         target_value = task->channel->watering_event.watering.by_volume.volume_liters;
     }
     
     // Record in history system
-    printk("Recording task start in history: channel=%d, mode=%d, target=%d, trigger=%d\n", 
-           channel_id, mode, target_value, task->trigger_type);
-    watering_history_record_task_start(channel_id, mode, target_value, task->trigger_type);
+    printk("Recording task start in history: channel=%d, mode=%d, target=%d, trigger=%d\\n", 
+           channel_id, history_mode, target_value, task->trigger_type);
+    watering_history_record_task_start(channel_id, history_mode, target_value, task->trigger_type);
     
     // Notify BLE clients about new history event
     bt_irrigation_history_notify_event(channel_id, WATERING_EVENT_START, 

@@ -361,25 +361,9 @@ watering_error_t watering_init(void) {
     /* always start flow-monitoring */
     flow_monitor_init();
     
-    /* Initialize rain sensor system */
-    err = rain_sensor_init();
-    if (err != WATERING_SUCCESS) {
-        printk("Rain sensor initialization failed: %d - continuing without rain integration\n", err);
-    } else {
-        printk("Rain sensor initialized successfully\n");
-        
-        /* Initialize rain integration */
-        err = rain_integration_init();
-        if (err != WATERING_SUCCESS) {
-            printk("Rain integration initialization failed: %d\n", err);
-        }
-        
-        /* Initialize rain history */
-        err = rain_history_init();
-        if (err != WATERING_SUCCESS) {
-            printk("Rain history initialization failed: %d\n", err);
-        }
-    }
+    /* NOTE: Rain sensor/integration/history initialization is done in main.c
+     * to ensure single point of initialization. The modules have idempotency
+     * guards but calling init from multiple places is inefficient and confusing. */
     
     // Ensure all valves are closed as a safety measure
     valve_close_all();
@@ -391,7 +375,10 @@ watering_error_t watering_init(void) {
  * @brief Transition system to a new state
  */
 watering_error_t transition_to_state(watering_state_t new_state) {
-    k_mutex_lock(&system_state_mutex, K_FOREVER);
+    if (k_mutex_lock(&system_state_mutex, K_MSEC(100)) != 0) {
+        LOG_WRN("Failed to acquire system_state_mutex in transition_to_state");
+        return WATERING_ERROR_BUSY;
+    }
     
     // Check for valid state transitions
     bool transition_valid = false;
@@ -502,7 +489,9 @@ watering_error_t watering_get_status(watering_status_t *status) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&system_state_mutex, K_FOREVER);
+    if (k_mutex_lock(&system_state_mutex, K_MSEC(100)) != 0) {
+        return WATERING_ERROR_BUSY;
+    }
     *status = system_status;
     k_mutex_unlock(&system_state_mutex);
     
@@ -517,7 +506,9 @@ watering_error_t watering_get_state(watering_state_t *state) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&system_state_mutex, K_FOREVER);
+    if (k_mutex_lock(&system_state_mutex, K_MSEC(100)) != 0) {
+        return WATERING_ERROR_BUSY;
+    }
     *state = system_state;
     k_mutex_unlock(&system_state_mutex);
     
@@ -533,7 +524,9 @@ watering_error_t watering_set_power_mode(power_mode_t mode) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&system_state_mutex, K_FOREVER);
+    if (k_mutex_lock(&system_state_mutex, K_MSEC(100)) != 0) {
+        return WATERING_ERROR_BUSY;
+    }
     
     // Don't change mode if we're in the middle of watering
     if (system_state == WATERING_STATE_WATERING) {
@@ -566,7 +559,9 @@ watering_error_t watering_get_power_mode(power_mode_t *mode) {
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&system_state_mutex, K_FOREVER);
+    if (k_mutex_lock(&system_state_mutex, K_MSEC(100)) != 0) {
+        return WATERING_ERROR_BUSY;
+    }
     *mode = current_power_mode;
     k_mutex_unlock(&system_state_mutex);
     
@@ -646,7 +641,9 @@ watering_error_t watering_get_queue_status(uint8_t *pending_count, bool *active)
         return WATERING_ERROR_INVALID_PARAM;
     }
     
-    k_mutex_lock(&system_state_mutex, K_FOREVER);
+    if (k_mutex_lock(&system_state_mutex, K_MSEC(100)) != 0) {
+        return WATERING_ERROR_BUSY;
+    }
     
     *pending_count = watering_get_pending_tasks_count();
     *active = (watering_task_state.current_active_task != NULL);
@@ -798,7 +795,9 @@ bool watering_channel_auto_mode_valid(const watering_channel_t *channel)
 /* Clear run-time error flags & counters                              */
 watering_error_t watering_clear_errors(void)
 {
-    k_mutex_lock(&system_state_mutex, K_FOREVER);
+    if (k_mutex_lock(&system_state_mutex, K_MSEC(100)) != 0) {
+        return WATERING_ERROR_BUSY;
+    }
 
     /* return to a known good state */
     if (system_state == WATERING_STATE_ERROR_RECOVERY) {

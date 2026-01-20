@@ -35,7 +35,10 @@ static K_MUTEX_DEFINE(log_mutex);
  * @param level Initial logging level
  */
 void watering_log_init(int level) {
-    k_mutex_lock(&log_mutex, K_FOREVER);
+    if (k_mutex_lock(&log_mutex, K_MSEC(50)) != 0) {
+        printk("WARNING: Failed to acquire log mutex in init\n");
+        return;
+    }
     
     if (level >= WATERING_LOG_LEVEL_NONE && level <= WATERING_LOG_LEVEL_DEBUG) {
         current_log_level = level;
@@ -56,7 +59,9 @@ void watering_log_init(int level) {
  * @param level New logging level
  */
 void watering_log_set_level(int level) {
-    k_mutex_lock(&log_mutex, K_FOREVER);
+    if (k_mutex_lock(&log_mutex, K_MSEC(50)) != 0) {
+        return; /* Skip if mutex busy */
+    }
     
     if (level != current_log_level) {
         LOG_INF("Changing log level from %d to %d", current_log_level, level);
@@ -76,7 +81,9 @@ void watering_log_set_level(int level) {
 int watering_log_to_file(bool enable, const char *file_path) {
     int ret = 0;
     
-    k_mutex_lock(&log_mutex, K_FOREVER);
+    if (k_mutex_lock(&log_mutex, K_MSEC(50)) != 0) {
+        return -EBUSY;
+    }
     
     // Disable previous logging if it exists
     if (logging_to_file) {
@@ -127,7 +134,9 @@ void watering_log_write(int level, const char *message) {
     
     // Check if file logging is enabled
     if (logging_to_file) {
-        k_mutex_lock(&log_mutex, K_FOREVER);
+        if (k_mutex_lock(&log_mutex, K_MSEC(50)) != 0) {
+            return; /* Skip logging if mutex busy */
+        }
         
         if (fs_tell(&log_file) >= 0) {
             // Add timestamp and level to message

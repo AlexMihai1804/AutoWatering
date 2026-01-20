@@ -619,7 +619,10 @@ watering_error_t check_flow_anomalies(void)
             valve_close_all();
             k_sleep(K_MSEC(HYDRAULIC_POST_CLOSE_IGNORE_MS));
             uint32_t pulses_after = get_pulse_count();
-            k_mutex_lock(&flow_monitor_mutex, K_FOREVER);
+            if (k_mutex_lock(&flow_monitor_mutex, K_MSEC(100)) != 0) {
+                printk("WARNING: Failed to reacquire flow_monitor_mutex after valve close\n");
+                return WATERING_SUCCESS; /* Unable to continue, return gracefully */
+            }
 
             bool still_flowing = (pulses_after > pulses + 2);
             if (still_flowing) {
@@ -667,7 +670,10 @@ watering_error_t check_flow_anomalies(void)
                 printk("NO_FLOW: Waiting %d ms before reopening...\n", NO_FLOW_RETRY_COOLDOWN_MS);
                 k_mutex_unlock(&flow_monitor_mutex);
                 k_sleep(K_MSEC(NO_FLOW_RETRY_COOLDOWN_MS));
-                k_mutex_lock(&flow_monitor_mutex, K_FOREVER);
+                if (k_mutex_lock(&flow_monitor_mutex, K_MSEC(100)) != 0) {
+                    printk("WARNING: Failed to reacquire flow_monitor_mutex after retry cooldown\n");
+                    return WATERING_SUCCESS; /* Unable to continue, return gracefully */
+                }
 
                 printk("NO_FLOW: TOGGLE - Reopening channel %d valve\n", channel_id + 1);
                 watering_error_t reopen_err = watering_channel_on(channel_id);
@@ -1116,7 +1122,10 @@ static void flow_monitor_fn(void *p1, void *p2, void *p3) {
  * @return WATERING_SUCCESS on success, error code on failure
  */
 watering_error_t flow_monitor_init(void) {
-    k_mutex_lock(&flow_monitor_mutex, K_FOREVER);
+    if (k_mutex_lock(&flow_monitor_mutex, K_MSEC(100)) != 0) {
+        printk("ERROR: Failed to acquire flow_monitor_mutex in init\n");
+        return WATERING_ERROR_BUSY;
+    }
     
     system_status = WATERING_STATUS_OK;
     ble_status_update();                              /* NEW */
@@ -1155,7 +1164,9 @@ watering_error_t flow_monitor_init(void) {
  * @return WATERING_SUCCESS if successfully reset, error code if not in fault state
  */
 watering_error_t watering_reset_fault(void) {
-    k_mutex_lock(&flow_monitor_mutex, K_FOREVER);
+    if (k_mutex_lock(&flow_monitor_mutex, K_MSEC(100)) != 0) {
+        return WATERING_ERROR_BUSY;
+    }
     
     watering_status_t current_status;
     if (watering_get_status(&current_status) != WATERING_SUCCESS) {
@@ -1184,7 +1195,10 @@ watering_error_t watering_reset_fault(void) {
 /* ---------- NEW: public helper to clear flow error counters -------- */
 void flow_monitor_clear_errors(void)
 {
-    k_mutex_lock(&flow_monitor_mutex, K_FOREVER);
+    if (k_mutex_lock(&flow_monitor_mutex, K_MSEC(100)) != 0) {
+        printk("WARNING: Failed to acquire flow_monitor_mutex in clear_errors\n");
+        return;
+    }
     flow_error_attempts   = 0;
     last_flow_check_time  = 0;
     last_task_pulses      = 0;

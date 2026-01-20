@@ -578,7 +578,10 @@ static bool should_throttle_channel_name_notification(uint8_t channel_id) {
 
 /* Allocate a buffer from the pool */
 static ble_notification_buffer_t* allocate_notification_buffer(void) {
-    k_mutex_lock(&notification_mutex, K_FOREVER);
+    if (k_mutex_lock(&notification_mutex, K_MSEC(50)) != 0) {
+        LOG_WRN("Failed to acquire notification mutex for buffer allocation");
+        return NULL;
+    }
     
     for (int i = 0; i < BLE_BUFFER_POOL_SIZE; i++) {
         uint8_t idx = (pool_head + i) % BLE_BUFFER_POOL_SIZE;
@@ -606,7 +609,10 @@ static void release_notification_buffer(ble_notification_buffer_t* buffer) {
         if (idx >= 0 && idx < BLE_BUFFER_POOL_SIZE) {
             notify_retry_reset((uint8_t)idx);
         }
-        k_mutex_lock(&notification_mutex, K_FOREVER);
+        if (k_mutex_lock(&notification_mutex, K_MSEC(50)) != 0) {
+            LOG_WRN("Failed to acquire mutex for buffer release");
+            return;
+        }
         if (buffer->in_use) {
             buffer->in_use = false;
             if (buffers_in_use > 0) {
@@ -744,7 +750,10 @@ static void notify_retry_work_handler(struct k_work *work)
     uint8_t idx = state->pool_idx;
 
     /* Grab a snapshot of buffer fields under mutex */
-    k_mutex_lock(&notification_mutex, K_FOREVER);
+    if (k_mutex_lock(&notification_mutex, K_MSEC(50)) != 0) {
+        LOG_WRN("Failed to acquire mutex in retry handler");
+        return;
+    }
     ble_notification_buffer_t *buffer = &notification_pool[idx];
     if (!buffer->in_use || !buffer->pending_retry) {
         k_mutex_unlock(&notification_mutex);
@@ -793,7 +802,10 @@ static void notify_retry_work_handler(struct k_work *work)
     }
 
     if (err == -EBUSY || err == -ENOMEM) {
-        k_mutex_lock(&notification_mutex, K_FOREVER);
+        if (k_mutex_lock(&notification_mutex, K_MSEC(50)) != 0) {
+            release_notification_buffer(buffer);
+            return;
+        }
         if (buffer->retry_count < MAX_NOTIFICATION_RETRIES) {
             buffer->retry_count++;
             uint32_t delay_ms = notify_retry_backoff_ms(priority, buffer->retry_count);
@@ -856,22 +868,23 @@ static int advanced_notify(struct bt_conn *conn, const struct bt_gatt_attr *attr
 
     /* If we're throttled and already have a pending retry for this attr, coalesce into it. */
     if (should_throttle_notification(priority)) {
-        k_mutex_lock(&notification_mutex, K_FOREVER);
-        for (int i = 0; i < BLE_BUFFER_POOL_SIZE; i++) {
-            if (notification_pool[i].in_use && notification_pool[i].pending_retry && notification_pool[i].attr == attr) {
-                /* Update payload and reschedule soon; keep a single pending notification per attr. */
-                memcpy(notification_pool[i].data, data, len);
-                notification_pool[i].len = len;
-                notification_pool[i].priority = priority;
-                notification_pool[i].timestamp = k_uptime_get_32();
-                notification_pool[i].retry_count = 0;
-                k_mutex_unlock(&notification_mutex);
+        if (k_mutex_lock(&notification_mutex, K_MSEC(50)) == 0) {
+            for (int i = 0; i < BLE_BUFFER_POOL_SIZE; i++) {
+                if (notification_pool[i].in_use && notification_pool[i].pending_retry && notification_pool[i].attr == attr) {
+                    /* Update payload and reschedule soon; keep a single pending notification per attr. */
+                    memcpy(notification_pool[i].data, data, len);
+                    notification_pool[i].len = len;
+                    notification_pool[i].priority = priority;
+                    notification_pool[i].timestamp = k_uptime_get_32();
+                    notification_pool[i].retry_count = 0;
+                    k_mutex_unlock(&notification_mutex);
 
-                (void)notify_retry_schedule(&notification_pool[i], 1U);
-                return 0;
+                    (void)notify_retry_schedule(&notification_pool[i], 1U);
+                    return 0;
+                }
             }
+            k_mutex_unlock(&notification_mutex);
         }
-        k_mutex_unlock(&notification_mutex);
     }
 
     /* Try to allocate buffer (or drop silently if pool is exhausted). */
@@ -2423,7 +2436,10 @@ static void reset_execute_work_handler(struct k_work *work) {
     ARG_UNUSED(work);
 
     reset_request_t request;
-    k_mutex_lock(&reset_async_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_async_mutex, K_MSEC(100)) != 0) {
+        LOG_ERR("Failed to acquire reset mutex in work handler");
+        return;
+    }
     request = reset_async_request;
     k_mutex_unlock(&reset_async_mutex);
 
@@ -2432,9 +2448,10 @@ static void reset_execute_work_handler(struct k_work *work) {
         int ret = reset_controller_start_factory_wipe(request.confirmation_code);
         if (ret < 0) {
             LOG_ERR("Failed to start factory wipe: %d", ret);
-            k_mutex_lock(&reset_async_mutex, K_FOREVER);
-            reset_async_in_progress = false;
-            k_mutex_unlock(&reset_async_mutex);
+            if (k_mutex_lock(&reset_async_mutex, K_MSEC(100)) == 0) {
+                reset_async_in_progress = false;
+                k_mutex_unlock(&reset_async_mutex);
+            }
             bt_irrigation_reset_control_notify();
             return;
         }
@@ -2447,9 +2464,10 @@ static void reset_execute_work_handler(struct k_work *work) {
     /* Non-factory resets use the old synchronous path */
     reset_status_t status = reset_controller_execute(&request);
 
-    k_mutex_lock(&reset_async_mutex, K_FOREVER);
-    reset_async_in_progress = false;
-    k_mutex_unlock(&reset_async_mutex);
+    if (k_mutex_lock(&reset_async_mutex, K_MSEC(100)) == 0) {
+        reset_async_in_progress = false;
+        k_mutex_unlock(&reset_async_mutex);
+    }
 
     if (status == RESET_STATUS_SUCCESS) {
         LOG_INF("Async reset completed successfully: type=%u, channel=%u",
@@ -2485,9 +2503,10 @@ static void wipe_step_work_handler(struct k_work *work) {
         /* Wipe complete! */
         LOG_INF("Factory wipe completed successfully");
         
-        k_mutex_lock(&reset_async_mutex, K_FOREVER);
-        reset_async_in_progress = false;
-        k_mutex_unlock(&reset_async_mutex);
+        if (k_mutex_lock(&reset_async_mutex, K_MSEC(100)) == 0) {
+            reset_async_in_progress = false;
+            k_mutex_unlock(&reset_async_mutex);
+        }
         
         /* Final notifications */
         bt_irrigation_reset_control_notify();
@@ -2498,9 +2517,10 @@ static void wipe_step_work_handler(struct k_work *work) {
         /* Error occurred */
         LOG_ERR("Factory wipe failed at step: ret=%d", ret);
         
-        k_mutex_lock(&reset_async_mutex, K_FOREVER);
-        reset_async_in_progress = false;
-        k_mutex_unlock(&reset_async_mutex);
+        if (k_mutex_lock(&reset_async_mutex, K_MSEC(100)) == 0) {
+            reset_async_in_progress = false;
+            k_mutex_unlock(&reset_async_mutex);
+        }
         
         bt_irrigation_reset_control_notify();
     }
@@ -2667,7 +2687,10 @@ static ssize_t write_reset_control(struct bt_conn *conn, const struct bt_gatt_at
         .confirmation_code = reset_data->confirmation_code,
     };
 
-    k_mutex_lock(&reset_async_mutex, K_FOREVER);
+    if (k_mutex_lock(&reset_async_mutex, K_MSEC(100)) != 0) {
+        LOG_WRN("Failed to acquire reset mutex for write");
+        return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+    }
     if (reset_async_in_progress) {
         /* Idempotent behavior: if the same request is already running, accept the write */
         bool same = (reset_async_request.type == request.type) &&
@@ -2691,9 +2714,10 @@ static ssize_t write_reset_control(struct bt_conn *conn, const struct bt_gatt_at
 
     int qret = k_work_submit_to_queue(&reset_work_q, &reset_execute_work);
     if (qret < 0) {
-        k_mutex_lock(&reset_async_mutex, K_FOREVER);
-        reset_async_in_progress = false;
-        k_mutex_unlock(&reset_async_mutex);
+        if (k_mutex_lock(&reset_async_mutex, K_MSEC(100)) == 0) {
+            reset_async_in_progress = false;
+            k_mutex_unlock(&reset_async_mutex);
+        }
 
         LOG_ERR("Failed to queue async reset: %d", qret);
         return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
@@ -8889,9 +8913,10 @@ int bt_irrigation_resume_wipe_if_needed(void) {
     
     if (ret == 1) {
         /* Wipe was in progress - resume it */
-        k_mutex_lock(&reset_async_mutex, K_FOREVER);
-        reset_async_in_progress = true;
-        k_mutex_unlock(&reset_async_mutex);
+        if (k_mutex_lock(&reset_async_mutex, K_MSEC(100)) == 0) {
+            reset_async_in_progress = true;
+            k_mutex_unlock(&reset_async_mutex);
+        }
         
         k_work_submit_to_queue(&reset_work_q, &wipe_step_work);
         LOG_INF("Resuming interrupted factory wipe");
@@ -10532,7 +10557,9 @@ static void buffer_pool_maintenance(void) {
     last_maintenance = now;
     
     // Clean up expired buffers
-    k_mutex_lock(&notification_mutex, K_FOREVER);
+    if (k_mutex_lock(&notification_mutex, K_MSEC(50)) != 0) {
+        return; /* Skip maintenance this cycle if mutex busy */
+    }
     for (int i = 0; i < BLE_BUFFER_POOL_SIZE; i++) {
         if (notification_pool[i].in_use) {
             // Check if buffer has been in use too long (over 60 seconds)

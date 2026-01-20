@@ -3299,25 +3299,20 @@ float adjust_volume_for_partial_wetting(
     }
     
     // Calculate adjustment factor for localized irrigation
+    // NOTE (Issue #18 fix): Do NOT divide by wetting_fraction here!
+    // The wetting_fraction is already applied to AWC in calc_effective_available_water_capacity()
+    // at line 3245: effective_awc = total_awc_mm * wetting_fraction * root_distribution_factor
+    // Applying 1/wetting_fraction here would double-compensate.
+    // Instead, we only apply soil-specific lateral movement adjustments.
     float volume_adjustment = 1.0f;
     
-    // Base adjustment - need more water per wetted area to compensate for partial coverage
-    // This accounts for the fact that the wetted zone needs to supply water to the entire root system
-    volume_adjustment = 1.0f / wetting_fraction;
-    
-    // Apply efficiency factor - localized systems are typically more efficient
-    float efficiency_factor = method->efficiency_pct / 100.0f;
-    if (efficiency_factor > 0.0f && efficiency_factor <= 1.0f) {
-        // Higher efficiency means less adjustment needed
-        volume_adjustment *= (1.0f + (1.0f - efficiency_factor) * 0.5f);
-    }
-    
-    // Soil texture adjustment
+    // Soil texture adjustment for lateral water movement
+    // Sandy soils have less lateral movement, clay soils have more
     if (strstr(soil->texture, "Sand") || strstr(soil->texture, "sand")) {
-        // Sandy soils have less lateral water movement, need more volume
-        volume_adjustment *= 1.1f;
+        // Sandy soils have less lateral water movement, slight increase
+        volume_adjustment *= 1.05f;
     } else if (strstr(soil->texture, "Clay") || strstr(soil->texture, "clay")) {
-        // Clay soils have better lateral movement, need less volume
+        // Clay soils have better lateral movement, slight decrease
         volume_adjustment *= 0.9f;
     }
     
@@ -3326,15 +3321,15 @@ float adjust_volume_for_partial_wetting(
     if (plant_spacing_m > 0.0f) {
         // Closer spacing allows better water sharing between plants
         if (plant_spacing_m < 0.5f) {
-            volume_adjustment *= 0.9f;  // 10% reduction for close spacing
+            volume_adjustment *= 0.95f;  // 5% reduction for close spacing
         } else if (plant_spacing_m > 1.5f) {
-            volume_adjustment *= 1.1f;  // 10% increase for wide spacing
+            volume_adjustment *= 1.05f;  // 5% increase for wide spacing
         }
     }
     
-    // Apply reasonable limits to prevent extreme adjustments
-    if (volume_adjustment < 0.8f) volume_adjustment = 0.8f;   // Min 80% of base
-    if (volume_adjustment > 2.0f) volume_adjustment = 2.0f;   // Max 200% of base
+    // Apply reasonable limits - now much tighter since we removed the 1/wf factor
+    if (volume_adjustment < 0.9f) volume_adjustment = 0.9f;   // Min 90% of base
+    if (volume_adjustment > 1.15f) volume_adjustment = 1.15f; // Max 115% of base
     
     float adjusted_volume = base_volume_mm * volume_adjustment;
     
@@ -4434,7 +4429,42 @@ watering_error_t fao56_realtime_update_deficit(uint8_t channel_id,
     }
 
     float delta_etc_mm = et_root_mm_day * (delta_s / 86400.0f);
-    err = track_deficit_accumulation(balance, delta_etc_mm, 0.0f, 0.0f);
+    
+    // Issue #20 fix: Apply rainfall in realtime, not just at daily check
+    // This prevents watering immediately after a rain event
+    float realtime_rain_mm = 0.0f;
+    if (env->rain_valid && env->rain_mm_24h > 0.0f) {
+        // Check if we've already applied this rain (track per-channel)
+        float rain_applied_raw = s_rain_applied_raw_mm[channel_id];
+        float new_rain = env->rain_mm_24h - rain_applied_raw;
+        if (new_rain > 0.5f) {  // Only apply if significant new rain (>0.5mm)
+            // Calculate effective rain using simplified estimation
+            float antecedent_moisture_pct = fao56_get_antecedent_moisture_pct(channel_id, balance);
+            float effectiveness = 0.7f;  // Conservative 70% effectiveness
+            // Adjust effectiveness based on soil and antecedent moisture
+            if (antecedent_moisture_pct > 80.0f) {
+                effectiveness = 0.5f;  // Wet soil = more runoff
+            } else if (antecedent_moisture_pct < 40.0f) {
+                effectiveness = 0.85f; // Dry soil = better absorption
+            }
+            realtime_rain_mm = new_rain * effectiveness;
+            s_rain_applied_raw_mm[channel_id] = env->rain_mm_24h;
+            LOG_INF("Realtime rain update ch%u: +%.1f mm raw -> %.1f mm effective",
+                    channel_id, (double)new_rain, (double)realtime_rain_mm);
+            // Mark surface as wet from rain
+            if (realtime_rain_mm > 0.0f) {
+                fao56_apply_surface_wet_event(balance, FAO56_SURFACE_WET_RAIN_FRACTION);
+            }
+        }
+    }
+    
+    // Route effective rain through surface and root buckets
+    float root_rain_recharge = 0.0f;
+    if (realtime_rain_mm > 0.0f) {
+        root_rain_recharge = fao56_route_effective_precipitation(balance, realtime_rain_mm);
+    }
+    
+    err = track_deficit_accumulation(balance, delta_etc_mm, root_rain_recharge, 0.0f);
     if (err != WATERING_SUCCESS) {
         return err;
     }

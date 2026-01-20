@@ -6,6 +6,30 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.
 
 ## [Unreleased]
 
+### Fixed - January 2026 Audit
+
+#### K_FOREVER Mutex Replacements
+- **bt_irrigation_service.c**: All `K_FOREVER` mutex locks replaced with `K_MSEC(50-100)` timeouts to prevent system deadlocks
+- **watering.c**: State mutex operations now use timeouts, return `WATERING_ERROR_BUSY` on failure
+- **watering_monitor.c**: Flow monitor mutex operations use timeouts with graceful fallback
+- **watering_log.c**: Log mutex operations use timeouts, skip logging if mutex busy
+- **watering_config.c**: Config mutex uses timeout with error reporting
+- **reset_controller.c**: All reset/wipe operations use mutex timeouts
+
+#### FAO-56 Calculation Fixes
+- **Issue #18 Fixed**: Removed double wetting fraction compensation in `adjust_volume_for_partial_wetting()` - AWC is already scaled by wetting_fraction in `calc_effective_available_water_capacity()`, so dividing volume by wetting_fraction was causing overwatering for drip systems. Now only applies ±5-15% soil texture and plant spacing adjustments.
+- **Issue #20 Fixed**: Rain is now applied in realtime via `fao56_realtime_update_deficit()`, not just at daily check. Prevents watering immediately after rain events. Tracks applied rain per-channel via `s_rain_applied_raw_mm[]` to avoid double-counting.
+
+#### Temperature Compensation Integration
+- Added temperature compensation for TIME and VOLUME modes in `watering_tasks.c`
+- FAO-56 modes (QUALITY/ECO) excluded as they already incorporate temperature in ET0 calculations
+- Compensation factor calculated as: `1 + sensitivity * (current_temp - base_temp)`
+- Clamped to configurable min/max factors per channel
+
+#### Code Cleanup
+- Removed duplicate rain sensor/integration/history init calls from `watering_init()` (already done in main.c)
+- Consolidated initialization to single point in main.c
+
 ### Changed
 
 - Documentation pruning for accuracy (eliminated speculative architecture & marketing claims).
@@ -14,6 +38,7 @@ The format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.0.
 ### Removed
 
 - Internal progress/audit markdown files (replaced by accurate docs) - final clean-up pending.
+- Removed `docs/FAO56_ISSUES.md` - all 9 issues verified and closed (7 were false positives, 2 fixed in code)
 
 ## [3.1.0] - 2025-12-19
 

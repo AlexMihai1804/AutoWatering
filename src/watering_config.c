@@ -384,7 +384,10 @@ watering_error_t watering_load_config(void) {
     uint32_t saved_calibration;
     int loaded_configs = 0;
     
-    k_mutex_lock(&config_mutex, K_FOREVER);
+    if (k_mutex_lock(&config_mutex, K_MSEC(100)) != 0) {
+        LOG_ERROR("Failed to acquire config mutex", -EBUSY);
+        return WATERING_ERROR_BUSY;
+    }
     
     // Load flow sensor calibration
     ret = nvs_load_flow_calibration(&saved_calibration);
