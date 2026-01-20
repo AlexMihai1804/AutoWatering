@@ -1,4 +1,4 @@
-# AutoWatering - Key Features (Code-Verified Summary)
+﻿# AutoWatering - Key Features (Code-Verified Summary)
 
 Focused, externally facing list. All items map to existing modules or confirmed limits.
 *Last updated: 2026-01-18*
@@ -57,7 +57,10 @@ Implementation notes:
   - Multi-day offline gap handling on boot.
 - Rain integration: skip/reduction logic is per-channel and applies only to TIME and VOLUME tasks.
   - FAO-56 modes already incorporate weather in ET0 calculations.
-  - Temperature compensation is configurable but not applied to task execution.
+  - Rain is applied in realtime (not just at daily check) - prevents watering immediately after rain events.
+- Temperature compensation: applied to **TIME and VOLUME modes only** at task start.
+  - Calculates factor: `1 + sensitivity * (current_temp - base_temp)`, clamped to min/max factors.
+  - FAO-56 modes (Quality/Eco) excluded - they already incorporate temperature in ET0 calculations.
 - Auto calculation interval default is 1 hour; the interval is internal and not exposed via BLE.
 
 Implementation notes:

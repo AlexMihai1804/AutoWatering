@@ -81,7 +81,8 @@ All module initializations log warnings on failure but keep the system running u
 - FAO-56 calculations executed on demand (`apply_quality_irrigation_mode`, `apply_eco_irrigation_mode`) with maximum volume limiting.
 - AUTO mode (`fao56_daily_update_deficit`) evaluates deficit at configured time (e.g., 06:00), applies missed-day accumulation on power-up, and triggers volume-based irrigation when needed.
 - Rain integration (`rain_integration_calculate_impact`) applies volume/time reductions or skips before tasks start.
-- Temperature compensation is configurable but not applied to the current task execution path.
+- **Rain is applied in realtime** via `fao56_realtime_update_deficit()` - prevents watering immediately after rain events (tracks applied rain per-channel to avoid double-counting).
+- Temperature compensation is applied to **TIME and VOLUME modes only** at task start. FAO-56 modes (QUALITY/ECO) already incorporate temperature in ET0 calculations, so applying additional compensation would double-count.
 
 ### Sensors & Telemetry
 - Flow pulses captured via GPIO interrupts (`flow_sensor.c`) with calibration and no-flow/unexpected-flow alarms.
