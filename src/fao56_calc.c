@@ -1081,11 +1081,6 @@ static float fao56_get_antecedent_moisture_pct(uint8_t channel_id,
         return (float)moisture_pct;
     }
 
-    if (soil_moisture_get_global_with_presence(&enabled, &moisture_pct, &has_data) == 0 &&
-        enabled) {
-        return (float)moisture_pct;
-    }
-
     if (balance && channel_id < WATERING_CHANNELS_COUNT) {
         bool have_root = (balance->wetting_awc_mm > 0.0f);
         bool have_surface = (balance->surface_tew_mm > 0.0f);

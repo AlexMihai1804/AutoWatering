@@ -3,8 +3,8 @@
 Part of the **Custom Configuration Service** (`12345678-1234-5678-9abc-def123456780`), separate from the main Irrigation Service.
 
 This characteristic configures the **antecedent soil moisture estimate** used by the FAO‑56 **effective precipitation / runoff** model. It supports:
-- a **global** override (applies to all channels)
-- an optional **per-channel** override (takes precedence over global)
+- a **global derived** view (computed from per-channel overrides)
+- an optional **per-channel** override (used directly by that channel)
 
 ## Quick overview
 - **Properties**: Read, Write, Notify (no fragmentation).
@@ -30,8 +30,13 @@ All fields are single-byte (endianness does not apply).
 The FAO‑56 layer resolves an “effective” antecedent moisture percent per channel like this:
 
 1. If **per-channel override** is enabled for that channel → use that `moisture_pct`
-2. Else if **global override** is enabled → use global `moisture_pct`
+2. Else → use weather/water-balance derived antecedent estimate when available
 3. Else → use the default `50%`
+
+The `channel_id=0xFF` response is a **derived summary**:
+- `enabled=1` if at least one channel override is enabled
+- `moisture_pct` = arithmetic mean of enabled per-channel override values
+- if no channel override is enabled, `moisture_pct=50`
 
 ## Validation & rules
 - `channel_id` must be `0xFF` or `< 8`.
@@ -43,13 +48,13 @@ Invalid requests return ATT errors (`BT_ATT_ERR_VALUE_NOT_ALLOWED` or `BT_ATT_ER
 
 ## Operation semantics
 ### Read (`operation = 0`)
-- `channel_id = 0xFF`: returns the global override state.
+- `channel_id = 0xFF`: returns the global derived summary (from per-channel overrides).
 - `channel_id = 0..7`: returns the per-channel override state for that channel.
 
 Fields `enabled` and `moisture_pct` in the response are filled by firmware.
 
 ### Set (`operation = 1`)
-- `channel_id = 0xFF`: sets global override enable + percent.
+- `channel_id = 0xFF`: compatibility no-op (global is derived; no manual global set is applied).
 - `channel_id = 0..7`: sets per-channel override enable + percent.
 
 On success: `status = 0`.
@@ -63,7 +68,6 @@ A GATT read returns the last response buffer (8 bytes). Typically you:
 If CCC is set to Notify, firmware sends an 8-byte notification after each valid write.
 
 ## Persistence
-- Global config is persisted in NVS.
 - Per-channel overrides are persisted in NVS as individual records per channel.
 
 ### Missing-data marker

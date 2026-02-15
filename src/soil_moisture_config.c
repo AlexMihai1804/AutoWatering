@@ -21,6 +21,45 @@ static uint8_t clamp_pct(uint8_t pct)
     return (pct > 100u) ? 100u : pct;
 }
 
+static bool soil_moisture_any_channel_override_enabled(void)
+{
+    for (uint8_t ch = 0; ch < WATERING_CHANNELS_COUNT; ch++) {
+        if (channel_cfg[ch].override_enabled != 0u) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool soil_moisture_any_channel_has_data(void)
+{
+    for (uint8_t ch = 0; ch < WATERING_CHANNELS_COUNT; ch++) {
+        if (channel_has_data[ch]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static uint8_t soil_moisture_get_global_derived_pct(void)
+{
+    uint16_t sum = 0u;
+    uint8_t count = 0u;
+
+    for (uint8_t ch = 0; ch < WATERING_CHANNELS_COUNT; ch++) {
+        if (channel_cfg[ch].override_enabled != 0u) {
+            sum += clamp_pct(channel_cfg[ch].moisture_pct);
+            count++;
+        }
+    }
+
+    if (count == 0u) {
+        return SOIL_MOISTURE_DEFAULT_PCT;
+    }
+
+    return (uint8_t)(sum / count);
+}
+
 int soil_moisture_config_init(void)
 {
     int ret = nvs_load_soil_moisture_global_config(&global_cfg);
@@ -79,10 +118,11 @@ int soil_moisture_config_init(void)
 
 uint8_t soil_moisture_get_global_effective_pct(void)
 {
-    if (initialized && global_cfg.enabled) {
-        return clamp_pct(global_cfg.moisture_pct);
+    if (!initialized) {
+        (void)soil_moisture_config_init();
     }
-    return SOIL_MOISTURE_DEFAULT_PCT;
+
+    return soil_moisture_get_global_derived_pct();
 }
 
 uint8_t soil_moisture_get_effective_pct(uint8_t channel_id)
@@ -90,9 +130,6 @@ uint8_t soil_moisture_get_effective_pct(uint8_t channel_id)
     if (initialized && channel_id < WATERING_CHANNELS_COUNT) {
         if (channel_cfg[channel_id].override_enabled) {
             return clamp_pct(channel_cfg[channel_id].moisture_pct);
-        }
-        if (global_cfg.enabled) {
-            return clamp_pct(global_cfg.moisture_pct);
         }
     }
     return SOIL_MOISTURE_DEFAULT_PCT;
@@ -108,8 +145,8 @@ int soil_moisture_get_global(bool *enabled, uint8_t *moisture_pct)
         (void)soil_moisture_config_init();
     }
 
-    *enabled = (global_cfg.enabled != 0);
-    *moisture_pct = clamp_pct(global_cfg.moisture_pct);
+    *enabled = soil_moisture_any_channel_override_enabled();
+    *moisture_pct = soil_moisture_get_global_derived_pct();
     return 0;
 }
 
@@ -123,28 +160,22 @@ int soil_moisture_get_global_with_presence(bool *enabled, uint8_t *moisture_pct,
         (void)soil_moisture_config_init();
     }
 
-    *enabled = (global_cfg.enabled != 0);
-    *moisture_pct = clamp_pct(global_cfg.moisture_pct);
-    *has_data = global_has_data;
+    *enabled = soil_moisture_any_channel_override_enabled();
+    *moisture_pct = soil_moisture_get_global_derived_pct();
+    *has_data = soil_moisture_any_channel_has_data();
     return 0;
 }
 
 int soil_moisture_set_global(bool enabled, uint8_t moisture_pct)
 {
+    ARG_UNUSED(enabled);
+    ARG_UNUSED(moisture_pct);
+
     if (!initialized) {
         (void)soil_moisture_config_init();
     }
 
-    global_cfg.enabled = enabled ? 1u : 0u;
-    global_cfg.moisture_pct = clamp_pct(moisture_pct);
-
-    int ret = nvs_save_soil_moisture_global_config(&global_cfg);
-    if (ret < 0) {
-        LOG_WRN("Failed to save global soil moisture config: %d", ret);
-        return ret;
-    }
-
-    global_has_data = true;
+    LOG_INF("Ignoring manual global soil moisture set; global is derived from channel overrides");
 
     return 0;
 }
