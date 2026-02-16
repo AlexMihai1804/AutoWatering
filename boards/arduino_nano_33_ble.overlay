@@ -74,6 +74,7 @@
         zephyr,bt-settings-partition = &settings_partition;
         zephyr,console               = &cdc_acm_uart0;
         zephyr,shell-uart            = &cdc_acm_uart0;
+        zephyr,uart-mcumgr           = &cdc_acm_uart0;
     };
 
     /* Lightweight CPU power states to unlock Zephyr's PM policy */
@@ -237,13 +238,13 @@
         /* MCUboot bootloader (must match sysbuild/mcuboot.overlay) */
         boot_partition: partition@0 {
             label = "mcuboot";
-            reg = <0x00000000 0x00014000>;  /* 80 KB */
+            reg = <0x00000000 0x00022000>;  /* 136 KB (Arduino BL 64K + MCUboot 72K) */
         };
 
         /* Slot 0: Primary application image (must match sysbuild/mcuboot.overlay) */
-        slot0_partition: partition@14000 {
+        slot0_partition: partition@22000 {
             label = "image-0";
-            reg = <0x00014000 0x000C4000>;  /* 784 KB */
+            reg = <0x00022000 0x000B6000>;  /* 728 KB */
         };
     };
 };

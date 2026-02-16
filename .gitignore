@@ -22,6 +22,7 @@ __pycache__/
 nvs_tmp.c
 *.tmp
 *.log
+tools/factory.settings.json
 
 # Zephyr specific
 .config

@@ -2,37 +2,23 @@
  * MCUboot Overlay for AutoWatering
  * - USB CDC ACM for serial recovery
  * - External W25Q128 flash support (slot1/scratch)
- * - Optional DFU button for guaranteed recovery entry
  */
 
 / {
     chosen {
-        /* Use CDC ACM for mcumgr serial recovery */
         zephyr,console = &cdc_acm_uart0;
         zephyr,uart-mcumgr = &cdc_acm_uart0;
+        /* Link MCUboot at 0x0 so the vector table is at the CPU reset address.
+           Without this, the board default code_partition at 0x10000 is used,
+           requiring the Arduino bootloader to redirect to MCUboot. */
+        zephyr,code-partition = &boot_partition;
     };
+};
 
-    /* 
-     * DFU Recovery Button (optional)
-     * Hold this button during reset to enter USB recovery mode
-     * Wire to any available GPIO with a pull-up and button to GND
-     */
-    aliases {
-        mcuboot-button0 = &dfu_button;
-    };
-
-    buttons {
-        compatible = "gpio-keys";
-        
-        dfu_button: dfu_button {
-            /* 
-             * Using P0.13 as DFU button (adjust to available GPIO)
-             * Button should pull to GND when pressed
-             * NOTE: Change this to match your hardware!
-             */
-            gpios = <&gpio0 13 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
-            label = "MCUboot DFU Button";
-        };
+/* ---------- USB CDC ACM for serial recovery ---------- */
+&zephyr_udc0 {
+    cdc_acm_uart0: cdc_acm_uart0 {
+        compatible = "zephyr,cdc-acm-uart";
     };
 };
 
@@ -95,13 +81,6 @@
     };
 };
 
-/* ---------- USB CDC ACM for serial recovery ---------- */
-&zephyr_udc0 {
-    cdc_acm_uart0: cdc_acm_uart0 {
-        compatible = "zephyr,cdc-acm-uart";
-    };
-};
-
 /* ---------- Internal flash partitions for MCUboot ---------- */
 &flash0 {
     partitions {
@@ -109,16 +88,16 @@
         #address-cells = <1>;
         #size-cells = <1>;
 
-        /* MCUboot bootloader - increased size for USB stack */
+        /* MCUboot bootloader (136 KB – Arduino BL 64 KB + MCUboot 72 KB) */
         boot_partition: partition@0 {
             label = "mcuboot";
-            reg = <0x00000000 0x00014000>;  /* 80 KB */
+            reg = <0x00000000 0x00022000>;  /* 136 KB */
         };
 
         /* Primary application slot (slot0) */
-        slot0_partition: partition@14000 {
+        slot0_partition: partition@22000 {
             label = "image-0";
-            reg = <0x00014000 0x000C4000>;  /* ~784 KB */
+            reg = <0x00022000 0x000B6000>;  /* 728 KB */
         };
     };
 };

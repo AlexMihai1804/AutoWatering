@@ -1,0 +1,17 @@
+{
+  "apiBaseUrl": "https://<api-id>.execute-api.<region>.amazonaws.com",
+  "factoryToken": "<factory-token>",
+  "defaultHwId": "",
+  "board": "arduino_nano_33_ble",
+  "buildDir": "build_factory",
+  "sysbuild": true,
+  "pristine": true,
+  "flashRunner": "bossac",
+  "openocdBin": "",
+  "openocdInterfaceCfg": "interface/stlink.cfg",
+  "openocdTargetCfg": "target/nordic/nrf52.cfg",
+  "openocdTransport": "swd",
+  "openocdSpeedKHz": 1000,
+  "operator": "",
+  "batch": ""
+}

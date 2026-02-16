@@ -36,6 +36,10 @@ For full environment setup (WSL/Linux/macOS), board overlays, and simulator flag
 
 - Platform setup & builds: `docs/INSTALLATION.md`
 - System architecture: `docs/system-architecture.md`
+- Bootloader/factory OTA operations: `docs/bootloader+ota.md`
+- OTA over BLE app integration: `docs/ota-ble-app-guide.md`
+- OTA backend release API (latest version + download): `docs/ota-backend-api.md`
+- GitHub no-leak release checklist: `docs/github-safe-publish.md`
 - Feature overview (concise/full): `docs/FEATURES.md`, `docs/FEATURES_FULL.md`
 - BLE API (UUIDs, fragmentation, characteristic deep dives): `docs/ble-api/README.md` + `docs/ble-api/characteristics/`
 - Plant database + FAO-56 engine + complete species list: `docs/plant-database-fao56-system.md`

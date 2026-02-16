@@ -1406,9 +1406,12 @@ struct __attribute__((packed)) bulk_sync_snapshot_t {
     
     /* Channel quick status - 8 bytes (1 byte per channel for 8 channels) */
     uint8_t channel_status[8];    /* Per-channel: bits 0-1=mode, bit2=valve, bit3=has_schedule */
+
+    /* Device identity - 8 bytes */
+    char device_serial[8];        /* Null-terminated serial (e.g. "000123") */
 };
 /* Size assertion */
-_Static_assert(sizeof(struct bulk_sync_snapshot_t) == 60, "bulk_sync_snapshot_t size mismatch");
+_Static_assert(sizeof(struct bulk_sync_snapshot_t) == 68, "bulk_sync_snapshot_t size mismatch");
 
 #define BULK_SYNC_SNAPSHOT_SIZE sizeof(struct bulk_sync_snapshot_t)
 static uint8_t bulk_sync_snapshot_value[BULK_SYNC_SNAPSHOT_SIZE];
@@ -8862,24 +8865,23 @@ int bt_irrigation_service_init(void) {
         return err;
     }
 
-#if defined(CONFIG_MCUMGR_TRANSPORT_BT)
-    err = smp_bt_register();
-    if (err) {
-        LOG_ERR("SMP BT (mcumgr) register failed: %d", err);
-        return err;
+    /* Load settings early so BT identity/address is available before
+     * registering optional transports like mcumgr SMP over BLE.
+     */
+    if (IS_ENABLED(CONFIG_SETTINGS)) {
+        settings_load();
     }
-#endif
+
+    /* SMP BT transport is initialized by Zephyr mcumgr handler setup.
+     * Do not call smp_bt_register() here, unless service was explicitly
+     * unregistered before, otherwise GATT handle conflicts can occur.
+     */
     
     /* Register authentication callbacks */
     bt_conn_auth_cb_register(&auth_cb_just_works);
     bt_conn_auth_info_cb_register(&auth_cb_info);
     
     LOG_DBG("Bluetooth initialized");
-    
-    /* Load settings if available */
-    if (IS_ENABLED(CONFIG_SETTINGS)) {
-        settings_load();
-    }
     
     /* Initialize notification state */
     memset(&notification_state, 0, sizeof(notification_state));
@@ -12002,7 +12004,7 @@ static ssize_t read_bulk_sync_snapshot(struct bt_conn *conn, const struct bt_gat
     struct bulk_sync_snapshot_t snapshot = {0};
     
     /* Header */
-    snapshot.version = 1;
+    snapshot.version = 2;
     snapshot.flags = 0;
     
     /* Time */
@@ -12168,14 +12170,22 @@ static ssize_t read_bulk_sync_snapshot(struct bt_conn *conn, const struct bt_gat
             }
         }
     }
+
+    /* Device serial (prefer persisted identity from NVS) */
+    device_identity_nvs_t identity = {0};
+    int identity_ret = nvs_load_device_identity(&identity);
+    if (identity_ret > 0 && identity.serial[0] != '\0') {
+        strncpy(snapshot.device_serial, identity.serial, sizeof(snapshot.device_serial) - 1);
+    }
     
     /* Copy to static buffer and return */
     memcpy(bulk_sync_snapshot_value, &snapshot, sizeof(snapshot));
     
-    LOG_DBG("Bulk Sync Snapshot: mode=%u, valves=0x%02X, env=%s, rain=%s",
+        LOG_DBG("Bulk Sync Snapshot: mode=%u, valves=0x%02X, env=%s, rain=%s, serial=%s",
             snapshot.system_mode, snapshot.valve_states,
             (snapshot.flags & 0x02) ? "valid" : "n/a",
-            (snapshot.flags & 0x04) ? "valid" : "n/a");
+            (snapshot.flags & 0x04) ? "valid" : "n/a",
+            snapshot.device_serial[0] ? snapshot.device_serial : "n/a");
     
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
                              bulk_sync_snapshot_value, sizeof(snapshot));

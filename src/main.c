@@ -1,6 +1,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/reboot.h>
 #include <hal/nrf_power.h>
+#include <hal/nrf_ficr.h>
 #include <hal/nrf_wdt.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/usb/usb_device.h>
@@ -8,6 +9,9 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/pm/pm.h>
 #include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
 
 // Core system includes
 #include "flow_sensor.h"
@@ -51,6 +55,10 @@
 #include "nvs_config.h"
 #include "soil_moisture_config.h"
 #include "watering_history.h"
+
+#ifdef CONFIG_BOOTLOADER_MCUBOOT
+#include <zephyr/dfu/mcuboot.h>
+#endif
 bool critical_section_active = false;
 #define INIT_TIMEOUT_MS 5000
 #define STATUS_CHECK_INTERVAL_S 30
@@ -71,6 +79,8 @@ static int setup_usb_cdc_acm(void);
 static uint32_t boot_start_ms;
 
 static int set_default_rtc_time(void);
+
+static int ensure_device_identity_persisted(void);
 
 /* WDT feed helper when bootloader watchdog is running */
 static void wdt_feed_timer_handler(struct k_timer *timer)
@@ -310,6 +320,65 @@ static int set_default_rtc_time(void) {
     return 0;
 }
 
+static int ensure_device_identity_persisted(void)
+{
+#ifndef CONFIG_BT_DIS_SERIAL_NUMBER_STR
+#define CONFIG_BT_DIS_SERIAL_NUMBER_STR "000000"
+#endif
+
+    device_identity_nvs_t existing = {0};
+    int existing_ret = nvs_load_device_identity(&existing);
+    if (existing_ret > 0) {
+        printk("Device identity already present in NVS (SN=%s, thing=%s)\n",
+               existing.serial,
+               existing.thing_name);
+        return 0;
+    }
+
+    const char *serial_str = CONFIG_BT_DIS_SERIAL_NUMBER_STR;
+    if (!serial_str || serial_str[0] == '\0') {
+        return -EINVAL;
+    }
+
+    if ((strlen(serial_str) != 6U) ||
+        (strspn(serial_str, "0123456789") != 6U) ||
+        (strcmp(serial_str, "000000") == 0)) {
+        printk("Device identity missing in NVS and image serial is default/invalid (%s). "
+               "Factory provisioning required for first flash.\n",
+               serial_str);
+        return -ENOENT;
+    }
+
+    device_identity_nvs_t identity = {0};
+    strncpy(identity.serial, serial_str, sizeof(identity.serial) - 1);
+    identity.serial_seq = (uint32_t)strtoul(serial_str, NULL, 10);
+    snprintf(identity.thing_name, sizeof(identity.thing_name), "autowatering-%s", identity.serial);
+    identity.hw_id_word0 = NRF_FICR->DEVICEID[0];
+    identity.hw_id_word1 = NRF_FICR->DEVICEID[1];
+    identity.provisioned_uptime_s = k_uptime_get_32() / 1000U;
+
+    int ret = nvs_save_device_identity_once(&identity);
+    if (ret == 0) {
+        printk("Device identity persisted/verified (SN=%s, thing=%s)\n", identity.serial, identity.thing_name);
+        return 0;
+    }
+
+    if (ret == -EACCES) {
+        device_identity_nvs_t existing_locked = {0};
+        int load_ret = nvs_load_device_identity(&existing_locked);
+        if (load_ret > 0) {
+            printk("Device identity locked in NVS (SN=%s, thing=%s); ignoring image serial %s\n",
+                   existing_locked.serial,
+                   existing_locked.thing_name,
+                   identity.serial);
+            return 0;
+        }
+    }
+
+    printk("Warning: Device identity persistence failed: %d\n", ret);
+    return ret;
+}
+
 __attribute__((unused))
 static watering_error_t run_valve_test(void) {
     printk("Running valve test sequence...\n");
@@ -386,6 +455,15 @@ int main(void) {
     print_reset_reason(resetreas);
     critical_section_active = true;
     printk("Starting USB init with port release safeguards...\n");
+
+    /* Feed bootloader watchdog IMMEDIATELY – before USB init or
+     * anything else that might take time.  The nRF WDT cannot be
+     * stopped once started; if MCUboot started it we must keep feeding. */
+    if ((NRF_WDT->RUNSTATUS & WDT_RUNSTATUS_RUNSTATUS_Msk) != 0) {
+        printk("Bootloader watchdog active – starting 100 ms feed timer early\n");
+        k_timer_start(&wdt_feed_timer, K_MSEC(100), K_MSEC(100));
+    }
+
     int usb_ret = setup_usb_cdc_acm();
     if (usb_ret != 0) {
         printk("WARNING: USB init failed (%d), continuing without USB console\n", usb_ret);
@@ -399,6 +477,23 @@ int main(void) {
         k_sleep(K_FOREVER);
     }
     printk("NVS initialization successful\n");
+
+    /* ----- MCUboot image confirmation ----- */
+    /* After an OTA swap MCUboot marks the new image as "test".  Unless we
+     * confirm it here the bootloader will revert on the next reboot, which
+     * leads to a boot-loop when the old image is also no longer valid.     */
+#ifdef CONFIG_BOOTLOADER_MCUBOOT
+    if (!boot_is_img_confirmed()) {
+        int confirm_ret = boot_write_img_confirmed();
+        if (confirm_ret) {
+            printk("WARNING: boot_write_img_confirmed failed: %d\n", confirm_ret);
+        } else {
+            printk("MCUboot image confirmed (self-test passed)\n");
+        }
+    }
+#endif
+
+    (void)ensure_device_identity_persisted();
     
     // Initialize onboarding state EARLY - must be before any nvs_save_* calls
     // that update onboarding flags (flow, timezone, rain sensor, etc.)
@@ -714,11 +809,11 @@ int main(void) {
     }
 #endif
     
-    // Detect if a hardware watchdog was started by the bootloader; feed it to prevent unexpected resets
+    // Detect if a hardware watchdog was started by the bootloader
+    // (Already handled at the top of main – this is just a status print)
     bool bootloader_wdt_active = (NRF_WDT->RUNSTATUS & WDT_RUNSTATUS_RUNSTATUS_Msk) != 0;
     if (bootloader_wdt_active) {
-        printk("Bootloader watchdog detected - will feed via 100ms timer\n");
-        k_timer_start(&wdt_feed_timer, K_MSEC(100), K_MSEC(100));
+        printk("Bootloader watchdog still being fed by early-init timer\n");
     }
 
     // Main loop with periodic memory monitoring and WDT feed (if bootloader started it)

@@ -11,6 +11,9 @@
 #include <stdio.h>    /* for snprintf */
 #include <errno.h>    /* for EINVAL */
 
+#define DEVICE_IDENTITY_MAGIC   0x49445741u /* "AWDI" */
+#define DEVICE_IDENTITY_VERSION 1u
+
 /* ΓÇöΓÇöΓÇö instan┼ú─â NVS ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 static struct nvs_fs fs;
 static bool nvs_ready;
@@ -85,7 +88,17 @@ enum {
     ID_CONFIG_RESET_LOG_BASE = 940, /* Configuration reset logs +ch (0-7) */
     ID_HYDRAULIC_GLOBAL_LOCK = 950, /* Global hydraulic lock state */
     ID_WIPE_PROGRESS = 960,      /* Persistent wipe state machine progress */
+    ID_DEVICE_IDENTITY = 970,    /* device_identity_nvs_t */
 };
+
+static bool device_identity_equal(const device_identity_nvs_t *a, const device_identity_nvs_t *b)
+{
+    return (strncmp(a->serial, b->serial, sizeof(a->serial)) == 0)
+        && (a->serial_seq == b->serial_seq)
+        && (strncmp(a->thing_name, b->thing_name, sizeof(a->thing_name)) == 0)
+        && (a->hw_id_word0 == b->hw_id_word0)
+        && (a->hw_id_word1 == b->hw_id_word1);
+}
 
 int nvs_save_soil_moisture_global_config(const soil_moisture_global_config_t *cfg)
 {
@@ -1495,4 +1508,51 @@ int nvs_load_wipe_progress(wipe_progress_t *progress)
 int nvs_clear_wipe_progress(void)
 {
     return nvs_config_delete(ID_WIPE_PROGRESS);
+}
+
+int nvs_load_device_identity(device_identity_nvs_t *identity)
+{
+    if (!identity) {
+        return -EINVAL;
+    }
+
+    int ret = nvs_config_read(ID_DEVICE_IDENTITY, identity, sizeof(*identity));
+    if (ret < 0) {
+        return ret;
+    }
+    if (ret != sizeof(*identity)) {
+        return -EINVAL;
+    }
+    if (identity->magic != DEVICE_IDENTITY_MAGIC || identity->version != DEVICE_IDENTITY_VERSION) {
+        return -EINVAL;
+    }
+    if (identity->locked != 1) {
+        return -EINVAL;
+    }
+
+    return ret;
+}
+
+int nvs_save_device_identity_once(const device_identity_nvs_t *identity)
+{
+    if (!identity) {
+        return -EINVAL;
+    }
+
+    device_identity_nvs_t candidate = *identity;
+    candidate.magic = DEVICE_IDENTITY_MAGIC;
+    candidate.version = DEVICE_IDENTITY_VERSION;
+    candidate.locked = 1;
+
+    device_identity_nvs_t existing;
+    int load_ret = nvs_load_device_identity(&existing);
+    if (load_ret > 0) {
+        return device_identity_equal(&existing, &candidate) ? 0 : -EACCES;
+    }
+
+    int ret = nvs_config_write(ID_DEVICE_IDENTITY, &candidate, sizeof(candidate));
+    if (ret < 0) {
+        return ret;
+    }
+    return 0;
 }

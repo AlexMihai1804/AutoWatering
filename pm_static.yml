@@ -4,9 +4,9 @@
 #############################################
 #
 # Internal Flash (1 MB):
-# - MCUboot: 80 KB
-# - Application slot0: 784 KB  
-# - NVS Storage: 150 KB
+# - MCUboot: 136 KB (Arduino BL 64K + MCUboot 72K)
+# - Application slot0: 728 KB  
+# - NVS Storage: 152 KB
 # - Settings: 8 KB
 #
 # External Flash W25Q128 (16 MB):
@@ -22,23 +22,23 @@
 
 mcuboot:
   address: 0x0
-  size: 0x14000              # 80 KB
+  size: 0x22000              # 136 KB (Arduino BL 64K + MCUboot 72K)
   region: flash_primary
 
 mcuboot_primary:
-  address: 0x14000
-  size: 0xC4000              # 784 KB
+  address: 0x22000
+  size: 0xB6000              # 728 KB
   span: [mcuboot_pad, app]
   region: flash_primary
 
 mcuboot_pad:
-  address: 0x14000
+  address: 0x22000
   size: 0x200
   region: flash_primary
 
 app:
-  address: 0x14200
-  size: 0xC3E00              # Remaining slot0 space
+  address: 0x22200
+  size: 0xB5E00              # Remaining slot0 space
   region: flash_primary
 
 nvs_storage:
