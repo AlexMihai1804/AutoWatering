@@ -8,6 +8,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/pm/pm.h>
+#include <zephyr/app_version.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
@@ -448,8 +449,7 @@ int main(void) {
     NRF_POWER->RESETREAS = resetreas; /* clear so next boot is clean */
 
     printk("\n\n==============================\n");
-    printk("AutoWatering System v2.4\n");
-    printk("SERIAL PORT FIX BUILD\n");
+    printk("AutoWatering System v%s\n", APP_VERSION_EXTENDED_STRING);
     printk("==============================\n\n");
     printk("Reset reason bits: 0x%08lx\n", (unsigned long)resetreas);
     print_reset_reason(resetreas);

@@ -77,7 +77,25 @@ def get_version_from_version_file(project_root: Path) -> Optional[str]:
     raw = version_file.read_text(encoding="utf-8").strip()
     if not raw:
         return None
-    return semver_normalize(raw)
+
+    lines = [line.strip() for line in raw.splitlines() if line.strip() and not line.strip().startswith("#")]
+    if len(lines) == 1 and "=" not in lines[0]:
+        return semver_normalize(lines[0])
+
+    values: Dict[str, str] = {}
+    for line in lines:
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"')
+
+    major = values.get("VERSION_MAJOR", "")
+    minor = values.get("VERSION_MINOR", "")
+    patch = values.get("PATCHLEVEL", "")
+    if major.isdigit() and minor.isdigit() and patch.isdigit():
+        return f"{int(major)}.{int(minor)}.{int(patch)}"
+
+    return None
 
 
 def get_version_from_prj_conf(project_root: Path) -> Optional[str]:

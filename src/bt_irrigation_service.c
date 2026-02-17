@@ -31,6 +31,7 @@ struct bt_conn;
 #include <zephyr/sys/printk.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/storage/flash_map.h>
 
 #if defined(CONFIG_MCUMGR_TRANSPORT_BT)
 #include <zephyr/mgmt/mcumgr/transport/smp_bt.h>
@@ -8861,8 +8862,30 @@ int bt_irrigation_service_init(void) {
     /* Initialize Bluetooth stack */
     err = bt_enable(NULL);
     if (err) {
-        LOG_ERR("Bluetooth init failed: %d", err);
-        return err;
+        LOG_WRN("Bluetooth init failed: %d – erasing settings partition and retrying", err);
+
+        /*
+         * The settings partition on external flash may contain stale
+         * data from a previous partition layout (e.g. after a slot1
+         * offset migration).  Erase it and retry bt_enable() once.
+         */
+        const struct flash_area *fa;
+        int erc = flash_area_open(
+                FIXED_PARTITION_ID(settings_partition), &fa);
+        if (erc == 0) {
+            LOG_INF("Erasing settings partition (%u bytes)", fa->fa_size);
+            flash_area_erase(fa, 0, fa->fa_size);
+            flash_area_close(fa);
+        } else {
+            LOG_ERR("Could not open settings partition: %d", erc);
+        }
+
+        err = bt_enable(NULL);
+        if (err) {
+            LOG_ERR("Bluetooth init failed after settings erase: %d", err);
+            return err;
+        }
+        LOG_INF("Bluetooth recovered after settings erase");
     }
 
     /* Load settings early so BT identity/address is available before

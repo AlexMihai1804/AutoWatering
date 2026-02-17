@@ -147,40 +147,45 @@
             #address-cells = <1>;
             #size-cells = <1>;
 
-            /* Slot 1 for MCUboot secondary image (1 MB - matches slot0) */
-            slot1_partition: partition@0 {
+            /*
+             * Slot 1 starts at 0x23000 so its offset exceeds
+             * CONFIG_FLASH_LOAD_OFFSET (0x22000).  This prevents the
+             * MCUmgr range-check macro from misidentifying slot1 as
+             * the running partition (external vs internal flash).
+             */
+            slot1_partition: partition@23000 {
                 label = "image-1";
-                reg = <0x00000000 0x00100000>;
+                reg = <0x00023000 0x000B6000>;
             };
 
             /* Scratch partition for MCUboot swap (128 KB) */
-            scratch_partition: partition@100000 {
+            scratch_partition: partition@D9000 {
                 label = "image-scratch";
-                reg = <0x00100000 0x00020000>;
+                reg = <0x000D9000 0x00020000>;
             };
 
             /* NVS storage partition (256 KB) */
-            nvs_storage: partition@120000 {
+            nvs_storage: partition@F9000 {
                 label = "nvs_storage";
-                reg = <0x00120000 0x00040000>;
+                reg = <0x000F9000 0x00040000>;
             };
 
             /* Settings partition for BT (8 KB) */
-            settings_partition: partition@160000 {
+            settings_partition: partition@139000 {
                 label = "settings";
-                reg = <0x00160000 0x00002000>;
+                reg = <0x00139000 0x00002000>;
             };
 
             /* Database partition for plant/soil/irrigation data (512 KB) */
-            database_partition: partition@162000 {
+            database_partition: partition@13B000 {
                 label = "database";
-                reg = <0x00162000 0x00080000>;
+                reg = <0x0013B000 0x00080000>;
             };
 
-            /* Remaining space for future use (approx 14.4 MB) */
-            ext_storage_partition: partition@1E2000 {
+            /* Remaining space for future use (approx 14.3 MB) */
+            ext_storage_partition: partition@1BB000 {
                 label = "ext_storage";
-                reg = <0x001E2000 0x00E1E000>;
+                reg = <0x001BB000 0x00E45000>;
             };
         };
     };

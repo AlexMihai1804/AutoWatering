@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from botocore.config import Config
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -403,7 +404,12 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     dynamodb = boto3.resource("dynamodb")
     table = dynamodb.Table(table_name)
-    s3_client = boto3.client("s3")
+    aws_region = os.getenv("AWS_REGION", "") or os.getenv("AWS_DEFAULT_REGION", "") or None
+    s3_client = boto3.client(
+        "s3",
+        region_name=aws_region,
+        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+    )
 
     method, path = _paths(event)
 

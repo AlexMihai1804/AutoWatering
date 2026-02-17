@@ -29,6 +29,40 @@ endif()
 
 message(STATUS "Using Python: ${PYTHON_EXECUTABLE}")
 
+# Keep Bluetooth DIS firmware revision in sync with VERSION file.
+# Zephyr DIS in this project uses compile-time Kconfig string values,
+# so we generate an extra .conf fragment on every configure.
+set(AW_VERSION_FILE ${CMAKE_CURRENT_SOURCE_DIR}/VERSION)
+file(READ ${AW_VERSION_FILE} AW_VERSION_CONTENT)
+
+string(REGEX MATCH "VERSION_MAJOR[ \t]*=[ \t]*([0-9]+)" _ ${AW_VERSION_CONTENT})
+set(AW_VER_MAJOR ${CMAKE_MATCH_1})
+string(REGEX MATCH "VERSION_MINOR[ \t]*=[ \t]*([0-9]+)" _ ${AW_VERSION_CONTENT})
+set(AW_VER_MINOR ${CMAKE_MATCH_1})
+string(REGEX MATCH "PATCHLEVEL[ \t]*=[ \t]*([0-9]+)" _ ${AW_VERSION_CONTENT})
+set(AW_VER_PATCH ${CMAKE_MATCH_1})
+string(REGEX MATCH "EXTRAVERSION[ \t]*=[ \t]*([^\r\n]*)" _ ${AW_VERSION_CONTENT})
+set(AW_VER_EXTRA_RAW ${CMAKE_MATCH_1})
+string(STRIP "${AW_VER_EXTRA_RAW}" AW_VER_EXTRA)
+
+set(AW_BT_FW_REV "${AW_VER_MAJOR}.${AW_VER_MINOR}.${AW_VER_PATCH}")
+if(NOT "${AW_VER_EXTRA}" STREQUAL "")
+    set(AW_BT_FW_REV "${AW_BT_FW_REV}-${AW_VER_EXTRA}")
+endif()
+
+set(AW_BT_FW_REV_CONF ${CMAKE_CURRENT_BINARY_DIR}/autogen_bt_dis_fw_rev.conf)
+file(WRITE ${AW_BT_FW_REV_CONF}
+    "# Auto-generated from VERSION\n"
+    "CONFIG_BT_DIS_FW_REV_STR=\"${AW_BT_FW_REV}\"\n")
+
+if(DEFINED EXTRA_CONF_FILE AND NOT "${EXTRA_CONF_FILE}" STREQUAL "")
+    set(EXTRA_CONF_FILE "${EXTRA_CONF_FILE};${AW_BT_FW_REV_CONF}")
+else()
+    set(EXTRA_CONF_FILE "${AW_BT_FW_REV_CONF}")
+endif()
+
+message(STATUS "AutoWatering DIS FW revision: ${AW_BT_FW_REV}")
+
 # Generate enhanced database files from CSV
 add_custom_command(
     OUTPUT 
@@ -139,6 +173,9 @@ target_sources(app PRIVATE
     
     # Plant/Pack storage on external flash
     src/pack_storage.c
+
+    # OTA upload guard - blocks writes to slot0 as safety net
+    src/ota_upload_guard.c
     
     # Generated enhanced database files - will be created automatically
     ${SRC_DIR}/plant_full_db.c
