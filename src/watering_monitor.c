@@ -1,7 +1,10 @@
 #include <zephyr/autoconf.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/logging/log.h>
 #include <stdio.h> /* ensure snprintf prototype visible on all build paths */
+
+LOG_MODULE_REGISTER(watering_monitor, LOG_LEVEL_INF);
 #include <string.h>
 #include <zephyr/fs/fs.h>
 #include "flow_sensor.h"
@@ -124,7 +127,16 @@ static struct {
 
 size_t flow_monitor_get_unused_stack(void)
 {
-    /* Stack diagnostics rely on CONFIG_THREAD_STACK_INFO; return 0 otherwise */
+#ifdef CONFIG_THREAD_STACK_INFO
+    size_t unused = 0;
+    int rc = k_thread_stack_space_get(&flow_monitor_data, &unused);
+    if (rc == 0) {
+        if (unused < 256) {
+            LOG_WRN("Flow monitor stack LOW: only %u bytes free", (unsigned)unused);
+        }
+        return unused;
+    }
+#endif
     return 0;
 }
 

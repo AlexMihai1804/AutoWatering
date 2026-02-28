@@ -2,6 +2,11 @@
 
 This document describes the firmware update (DFU) system for AutoWatering, supporting both BLE and USB update paths.
 
+> Note (UCP UART v1): the firmware now includes OTA orchestration commands on the custom UART protocol
+> (`ota.preflight`, `ota.post_check`, `ota.enter_recovery`). `ota.enter_recovery` performs app-side handoff
+> (bootmode retention request + reboot scheduling). MCUboot `uart0` recovery path is configured in sysbuild files and
+> a `--sysbuild` build validates, but full hardware flash/recovery testing should still be completed on the board.
+
 ## Overview
 
 The AutoWatering firmware uses **MCUboot** as its bootloader, providing:

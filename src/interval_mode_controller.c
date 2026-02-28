@@ -38,6 +38,7 @@ int interval_controller_init(interval_controller_t *controller,
     controller->is_volume_based = is_volume_based;
     controller->flow_rate_ml_sec = 0.0f;
     controller->last_error = WATERING_SUCCESS;
+    controller->max_cycles = INTERVAL_MAX_CYCLES_DEFAULT;
 
     LOG_DBG("Initialized interval controller for channel %u: target=%u, volume_based=%s",
             channel_id, total_target, is_volume_based ? "true" : "false");
@@ -395,8 +396,16 @@ int interval_controller_transition_state(interval_controller_t *controller,
             controller->phase_start_time = current_time;
             controller->current_cycle_volume = 0;
             if (old_state == INTERVAL_STATE_PAUSING) {
-                // Completed a cycle
                 controller->cycles_completed++;
+                /* T25: Abort if cycle count exceeds safety limit */
+                uint32_t limit = controller->max_cycles ? controller->max_cycles
+                                                       : INTERVAL_MAX_CYCLES_DEFAULT;
+                if (controller->cycles_completed >= limit) {
+                    LOG_WRN("Channel %u hit max cycle limit (%u) — aborting",
+                            controller->channel_id, limit);
+                    controller->state = INTERVAL_STATE_COMPLETED;
+                    return 0;
+                }
             }
             break;
             
@@ -514,6 +523,7 @@ int interval_controller_reset(interval_controller_t *controller)
     controller->total_elapsed = 0;
     controller->total_volume = 0;
     controller->cycles_completed = 0;
+    controller->max_cycles = INTERVAL_MAX_CYCLES_DEFAULT;
     controller->current_cycle_volume = 0;
     controller->flow_rate_ml_sec = 0.0f;
     controller->last_update_time = 0;

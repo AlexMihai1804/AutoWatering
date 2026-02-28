@@ -50,7 +50,7 @@ static void schedule_onboarding_notify(void) {
 
 /* Helper function to get current timestamp */
 static uint32_t get_current_timestamp(void) {
-    return k_uptime_get_32() / 1000; /* Convert to seconds */
+    return (uint32_t)(k_uptime_get() / 1000); /* T6 fix: 64-bit ms avoids 49-day wrap */
 }
 
 /* Helper function to count set bits in a value */

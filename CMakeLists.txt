@@ -176,6 +176,12 @@ target_sources(app PRIVATE
 
     # OTA upload guard - blocks writes to slot0 as safety net
     src/ota_upload_guard.c
+
+    # UCP UART v1 (UART protocol server for ESP32 / future UART peers)
+    src/ucp_uart.c
+    src/ucp_cobs.c
+    src/ucp_crc32c.c
+    src/ucp_tlv.c
     
     # Generated enhanced database files - will be created automatically
     ${SRC_DIR}/plant_full_db.c

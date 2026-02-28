@@ -56,6 +56,7 @@
 #include "nvs_config.h"
 #include "soil_moisture_config.h"
 #include "watering_history.h"
+#include "ucp_uart.h"
 
 #ifdef CONFIG_BOOTLOADER_MCUBOOT
 #include <zephyr/dfu/mcuboot.h>
@@ -102,12 +103,45 @@ static void wdt_feed_timer_handler(struct k_timer *timer)
 
 static K_TIMER_DEFINE(wdt_feed_timer, wdt_feed_timer_handler, NULL);
 
-// Memory diagnostic function
+/* T17: Real memory diagnostics — stack watermarks, heap, uptime */
+#if defined(CONFIG_THREAD_MONITOR) && defined(CONFIG_THREAD_STACK_INFO)
+static void thread_stats_cb(const struct k_thread *thread, void *user_data)
+{
+    ARG_UNUSED(user_data);
+    size_t unused = 0;
+    const char *tname = k_thread_name_get((k_tid_t)thread);
+    if (!tname || tname[0] == '\0') {
+        tname = "?";
+    }
+    int rc = k_thread_stack_space_get((k_tid_t)thread, &unused);
+    if (rc == 0) {
+        printk("  %-16s unused stack: %u B\n", tname, (unsigned)unused);
+    } else {
+        printk("  %-16s stack info unavailable (rc=%d)\n", tname, rc);
+    }
+}
+#endif
+
 static void print_memory_stats(void) {
-    // Basic memory reporting using uptime and free heap (if available)
     uint32_t uptime = k_uptime_get_32();
     printk("=== Memory Statistics ===\n");
-    printk("System uptime: %u ms\n", uptime);
+    printk("Uptime: %u ms (%.1f h)\n", uptime, (double)uptime / 3600000.0);
+
+#if defined(CONFIG_THREAD_MONITOR) && defined(CONFIG_THREAD_STACK_INFO)
+    printk("Thread stack watermarks:\n");
+    k_thread_foreach(thread_stats_cb, NULL);
+#endif
+
+#if defined(CONFIG_SYS_HEAP_RUNTIME_STATS) && defined(CONFIG_HEAP_MEM_POOL_SIZE)
+    struct sys_memory_stats heap_stats;
+    sys_heap_runtime_stats_get(&_system_heap.heap, &heap_stats);
+    printk("Heap: used=%u free=%u max_alloc=%u\n",
+           (unsigned)heap_stats.allocated_bytes,
+           (unsigned)heap_stats.free_bytes,
+           (unsigned)heap_stats.max_allocated_bytes);
+#else
+    printk("Heap runtime stats not enabled\n");
+#endif
     printk("========================\n");
 }
 
@@ -209,45 +243,7 @@ static int setup_usb_cdc_acm(void) {
     return 0;
 }
 
-__attribute__((unused))
-static void setup_usb(void) {
-    printk("Initializing USB with minimal CDC ACM...\n");
-    printk("USB disabled\n");
-    k_sleep(K_MSEC(500));
-    int ret = usb_enable(NULL);
-    if (ret != 0) {
-        printk("Failed to enable USB: %d\n", ret);
-        return;
-    }
-    printk("USB enabled successfully\n");
-    k_sleep(K_MSEC(1000));
-    const struct device *cdc_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(cdc_acm_uart0));
-    if (!cdc_dev) {
-        cdc_dev = device_get_binding("CDC_ACM_0");
-    }
-    if (!cdc_dev) {
-        cdc_dev = device_get_binding("CDC_ACM");
-    }
-    if (cdc_dev && device_is_ready(cdc_dev)) {
-        printk("CDC ACM device found\n"); {
-            uint32_t dtr = 0;
-            while (uart_line_ctrl_get(cdc_dev, UART_LINE_CTRL_DTR, &dtr) == 0 && !dtr) {
-                k_sleep(K_MSEC(10));
-            }
-        }
-        uart_line_ctrl_set(cdc_dev, UART_LINE_CTRL_DCD, 1);
-        uart_line_ctrl_set(cdc_dev, UART_LINE_CTRL_DSR, 1);
-        const char *test_str = "\r\nSystem booting...\r\n";
-        for (int i = 0; i < strlen(test_str); i++) {
-            uart_poll_out(cdc_dev, test_str[i]);
-        }
-        printk("CDC ACM initialized - COM port should be available\n");
-        usb_functional = true;
-    } else {
-        printk("CDC ACM device not found\n");
-        usb_functional = false;
-    }
-}
+/* T15: setup_usb() removed — dead code, duplicated by setup_usb_cdc_acm() */
 
 static void init_thread_entry(void *p1, void *p2, void *p3) {
     ARG_UNUSED(p1);
@@ -262,24 +258,7 @@ static void init_thread_entry(void *p1, void *p2, void *p3) {
     k_sem_give(&init_complete_sem);
 }
 
-__attribute__((unused))
-static watering_error_t initialize_hardware(void) {
-    printk("Performing hardware diagnostics before initialization...\n");
-    k_tid_t init_tid = k_thread_create(&init_thread_data,
-                                       init_thread_stack,
-                                       K_THREAD_STACK_SIZEOF(init_thread_stack),
-                                       init_thread_entry,
-                                       NULL, NULL, NULL,
-                                       K_PRIO_PREEMPT(8), 0, K_NO_WAIT);
-    k_thread_name_set(init_tid, "init_thread");
-    if (k_sem_take(&init_complete_sem, K_MSEC(INIT_TIMEOUT_MS)) != 0) {
-        printk("CRITICAL: Initialization thread timed out!\n");
-        k_thread_abort(init_tid);
-        return WATERING_ERROR_BUSY;
-    }
-
-    return init_success ? WATERING_SUCCESS : WATERING_ERROR_CONFIG;
-}
+/* T15: initialize_hardware() removed — dead code, never called */
 
 static int set_default_rtc_time(void) {
     if (!rtc_is_available()) {
@@ -443,6 +422,9 @@ static int nvs_init_wrapper(void) {
     return nvs_config_init();
 }
 
+/* forward declarations for crash-info code at bottom of file */
+void print_previous_crash(void);
+
 int main(void) {
     boot_start_ms = k_uptime_get_32();
     uint32_t resetreas = NRF_POWER->RESETREAS;
@@ -453,6 +435,7 @@ int main(void) {
     printk("==============================\n\n");
     printk("Reset reason bits: 0x%08lx\n", (unsigned long)resetreas);
     print_reset_reason(resetreas);
+    print_previous_crash();
     critical_section_active = true;
     printk("Starting USB init with port release safeguards...\n");
 
@@ -816,6 +799,12 @@ int main(void) {
         printk("Bootloader watchdog still being fed by early-init timer\n");
     }
 
+    /* UCP UART v1 (ESP32 / UART peer protocol server) */
+    ret = ucp_uart_init();
+    if (ret != 0) {
+        printk("Warning: UCP UART init failed: %d\n", ret);
+    }
+
     // Main loop with periodic memory monitoring and WDT feed (if bootloader started it)
     uint32_t loop_ticks = 0;
     while (1) {
@@ -832,20 +821,76 @@ int main(void) {
     return 0;
 }
 
-/* Global fatal handler to log fault cause and reboot instead of silent hang */
+/* ── Retained crash info ──────────────────────────────────────────────
+ * USB CDC disconnects on a fault, so printk output from the fatal
+ * handler is lost.  Save PC/LR/reason in a .noinit RAM struct that
+ * survives the soft-reset and print it on the NEXT boot.              */
+#define CRASH_MAGIC 0xDEADC0DEu
+static volatile struct crash_info_s {
+    uint32_t magic;
+    uint32_t reason;
+    uint32_t pc;
+    uint32_t lr;
+    uint32_t xpsr;
+    uint32_t thread_name[4]; /* first 16 chars of thread name */
+} saved_crash __attribute__((section(".noinit.crash_info")));
+
+/* Call from early main() AFTER console is available. */
+void print_previous_crash(void)
+{
+    if (saved_crash.magic != CRASH_MAGIC) {
+        return;
+    }
+    char name[17];
+    memcpy(name, (const void *)saved_crash.thread_name, 16);
+    name[16] = '\0';
+    printk("\n!!! PREVIOUS CRASH: reason=%u PC=0x%08lx LR=0x%08lx "
+           "xPSR=0x%08lx thread=\"%s\" !!!\n\n",
+           (unsigned)saved_crash.reason,
+           (unsigned long)saved_crash.pc,
+           (unsigned long)saved_crash.lr,
+           (unsigned long)saved_crash.xpsr,
+           name);
+    saved_crash.magic = 0;  /* clear so stale info is not re-printed */
+}
+
+/* Global fatal handler to log fault cause and reboot instead of silent hang.
+ * MUST NOT call k_sleep() — if the fault occurred in ISR context (e.g. UART IRQ)
+ * sleeping is illegal and triggers a double-fault → ARM LOCKUP → bootloop. */
 void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
 {
+    /* ── persist crash info in retained RAM ── */
+    saved_crash.reason = reason;
+    if (esf) {
+        saved_crash.pc   = esf->basic.pc;
+        saved_crash.lr   = esf->basic.lr;
+        saved_crash.xpsr = esf->basic.xpsr;
+    } else {
+        saved_crash.pc = saved_crash.lr = saved_crash.xpsr = 0xFFFFFFFFu;
+    }
+    {
+        const char *tname = k_thread_name_get(k_current_get());
+        memset((void *)saved_crash.thread_name, 0, sizeof(saved_crash.thread_name));
+        if (tname) {
+            size_t n = strlen(tname);
+            if (n > 16) n = 16;
+            memcpy((void *)saved_crash.thread_name, tname, n);
+        }
+    }
+    saved_crash.magic = CRASH_MAGIC;  /* write magic LAST */
+
     printk("FATAL: reason=%u\n", reason);
 #ifdef CONFIG_ARM
     if (esf) {
-        printk("  PC=0x%08lx LR=0x%08lx\n",
+        printk("  PC=0x%08lx LR=0x%08lx xPSR=0x%08lx\n",
                (unsigned long)esf->basic.pc,
-               (unsigned long)esf->basic.lr);
+               (unsigned long)esf->basic.lr,
+               (unsigned long)esf->basic.xpsr);
     } else {
         printk("  no ESF available\n");
     }
 #endif
-    /* Give UART time to flush before reboot */
-    k_sleep(K_MSEC(500));
+    /* Busy-wait to let UART flush (safe in any context, including ISR) */
+    k_busy_wait(500000);
     sys_reboot(SYS_REBOOT_COLD);
 }

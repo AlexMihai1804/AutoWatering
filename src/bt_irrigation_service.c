@@ -26,8 +26,7 @@ LOG_MODULE_REGISTER(bt_irrigation_service, LOG_LEVEL_DBG);
 
 // Forward declaration to help with logging
 struct bt_conn;
-#include <zephyr/bluetooth/uuid.h>
-#include <zephyr/bluetooth/gatt.h>
+/* T18: duplicate <bluetooth/uuid.h> and <bluetooth/gatt.h> removed */
 #include <zephyr/sys/printk.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/util.h>
@@ -47,9 +46,9 @@ struct bt_conn;
 #include "rtc.h"
 #include "timezone.h"           // Add timezone support
 #include "flow_sensor.h"        // For pulse count during calibration
-#include "flow_sensor.h"
+/* T18: duplicate flow_sensor.h removed */
 #include "nvs_config.h"         // Add NVS config support
-#include "watering_history.h"   // Add this include for history functionality
+/* T18: duplicate watering_history.h removed */
 #include "rain_sensor.h"        // Add rain sensor support
 #include "rain_history.h"       // Add rain history support
 #include "rain_integration.h"   // Add rain integration support
@@ -65,6 +64,14 @@ struct bt_conn;
 #include "bt_environmental_history_handlers.h" // Environmental history BLE handlers
 #include "pack_storage.h"           // Pack storage for unified plant_id access
 #include "bme280_driver.h"          // BME280 config API prototypes
+#include "ucp_uart.h"
+
+#define UCP_RESCAN_TOPIC(_topic) \
+    ucp_uart_request_notify_rescan((uint32_t)BIT((uint32_t)(_topic) - 1U))
+#define UCP_RESCAN_TOPICS2(_a, _b) \
+    ucp_uart_request_notify_rescan((uint32_t)(BIT((uint32_t)(_a) - 1U) | BIT((uint32_t)(_b) - 1U)))
+#define UCP_RESCAN_TOPICS3(_a, _b, _c) \
+    ucp_uart_request_notify_rescan((uint32_t)(BIT((uint32_t)(_a) - 1U) | BIT((uint32_t)(_b) - 1U) | BIT((uint32_t)(_c) - 1U)))
 
 /* Forward declaration for the service structure */
 extern const struct bt_gatt_service_static irrigation_svc;
@@ -124,8 +131,7 @@ typedef enum {
 #define MAX_NOTIFICATION_RETRIES 3
 #define BLE_MAX_NOTIFICATION_SIZE 250  /* Increased to support large structs (e.g. channel config 76B) */
 
-/* Enhanced BLE characteristic support flags */
-static bool enhanced_features_enabled __attribute__((unused)) = true;
+/* T15: enhanced_features_enabled removed — unused static */
 #define BUFFER_RECOVERY_TIME_MS 2000   /* Time to wait before retry after buffer exhaustion */
 
 /* Connection parameter targets tuned for better Windows compatibility (units: 1.25 ms) */
@@ -301,6 +307,36 @@ static uint16_t calculate_day_of_year(uint16_t year, uint8_t month, uint8_t day)
     return doy;
 }
 
+/* T16: Compile-time date fallbacks from __DATE__ (e.g. "Feb 17 2026")
+ * These replace hardcoded 2025/7/185 so the fallback is always fresh. */
+#define BUILD_YEAR_CH0 (__DATE__[ 7])
+#define BUILD_YEAR_CH1 (__DATE__[ 8])
+#define BUILD_YEAR_CH2 (__DATE__[ 9])
+#define BUILD_YEAR_CH3 (__DATE__[10])
+#define BUILD_YEAR  ((BUILD_YEAR_CH0 - '0') * 1000 + (BUILD_YEAR_CH1 - '0') * 100 + \
+                     (BUILD_YEAR_CH2 - '0') * 10   + (BUILD_YEAR_CH3 - '0'))
+
+#define BUILD_MONTH ( \
+    (__DATE__[0] == 'J' && __DATE__[1] == 'a') ?  1 : \
+    (__DATE__[0] == 'F')                        ?  2 : \
+    (__DATE__[0] == 'M' && __DATE__[2] == 'r') ?  3 : \
+    (__DATE__[0] == 'A' && __DATE__[1] == 'p') ?  4 : \
+    (__DATE__[0] == 'M' && __DATE__[2] == 'y') ?  5 : \
+    (__DATE__[0] == 'J' && __DATE__[2] == 'n') ?  6 : \
+    (__DATE__[0] == 'J' && __DATE__[2] == 'l') ?  7 : \
+    (__DATE__[0] == 'A' && __DATE__[1] == 'u') ?  8 : \
+    (__DATE__[0] == 'S')                        ?  9 : \
+    (__DATE__[0] == 'O')                        ? 10 : \
+    (__DATE__[0] == 'N')                        ? 11 : 12)
+
+#define BUILD_DAY ((__DATE__[4] == ' ' ? 0 : (__DATE__[4] - '0') * 10) + (__DATE__[5] - '0'))
+
+/* Approximate DOY from build month+day (ignoring leap; good enough for fallback) */
+static const uint16_t _build_month_doy_offset[] = {
+    0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
+};
+#define BUILD_DOY (_build_month_doy_offset[BUILD_MONTH] + BUILD_DAY)
+
 /* Helper functions for RTC date/time access */
 static uint16_t get_current_year(void) {
     rtc_datetime_t datetime;
@@ -314,7 +350,7 @@ static uint16_t get_current_year(void) {
         /* Fallback to UTC if timezone conversion fails */
         return datetime.year;
     }
-    return 2025; /* Fallback year */
+    return BUILD_YEAR; /* T16: Fallback from compile-time __DATE__ */
 }
 
 static uint8_t get_current_month(void) {
@@ -329,13 +365,13 @@ static uint8_t get_current_month(void) {
         /* Fallback to UTC if timezone conversion fails */
         return datetime.month;
     }
-    return 7; /* Fallback month (July) */
+    return BUILD_MONTH; /* T16: Fallback from compile-time __DATE__ */
 }
 
 static uint16_t get_current_day_of_year(void) {
     rtc_datetime_t datetime;
     if (rtc_datetime_get(&datetime) != 0) {
-        return 185; /* Fallback day of year */
+        return BUILD_DOY; /* T16: Fallback from compile-time __DATE__ */
     }
     
     /* TIMEZONE FIX: Convert to local time for user-facing calculations */
@@ -397,6 +433,39 @@ static uint16_t get_current_day_of_year(void) {
 /* THROUGHPUT: Bulk Sync Snapshot characteristic index (single READ replaces 10+ queries) */
 #define ATTR_IDX_BULK_SYNC_SNAPSHOT_VALUE 83
 #define ATTR_IDX_HYDRAULIC_STATUS_VALUE 85
+
+/* T14: Compile-time validation of ATTR_IDX constants.
+ * Standard BLE characteristics use 3-attribute stride (decl + value + CCC).
+ * Build will fail immediately if an index is edited inconsistently. */
+BUILD_ASSERT(ATTR_IDX_VALVE_VALUE       ==  2, "ATTR_IDX stride broken: VALVE");
+BUILD_ASSERT(ATTR_IDX_FLOW_VALUE        ==  5, "ATTR_IDX stride broken: FLOW");
+BUILD_ASSERT(ATTR_IDX_STATUS_VALUE      ==  8, "ATTR_IDX stride broken: STATUS");
+BUILD_ASSERT(ATTR_IDX_CHANNEL_CFG_VALUE == 11, "ATTR_IDX stride broken: CHANNEL_CFG");
+BUILD_ASSERT(ATTR_IDX_SCHEDULE_VALUE    == 14, "ATTR_IDX stride broken: SCHEDULE");
+BUILD_ASSERT(ATTR_IDX_SYSTEM_CFG_VALUE  == 17, "ATTR_IDX stride broken: SYSTEM_CFG");
+BUILD_ASSERT(ATTR_IDX_TASK_QUEUE_VALUE  == 20, "ATTR_IDX stride broken: TASK_QUEUE");
+BUILD_ASSERT(ATTR_IDX_STATISTICS_VALUE  == 23, "ATTR_IDX stride broken: STATISTICS");
+BUILD_ASSERT(ATTR_IDX_RTC_VALUE         == 26, "ATTR_IDX stride broken: RTC");
+BUILD_ASSERT(ATTR_IDX_ALARM_VALUE       == 29, "ATTR_IDX stride broken: ALARM");
+BUILD_ASSERT(ATTR_IDX_CALIB_VALUE       == 32, "ATTR_IDX stride broken: CALIB");
+BUILD_ASSERT(ATTR_IDX_HISTORY_VALUE     == 35, "ATTR_IDX stride broken: HISTORY");
+BUILD_ASSERT(ATTR_IDX_DIAGNOSTICS_VALUE == 38, "ATTR_IDX stride broken: DIAGNOSTICS");
+BUILD_ASSERT(ATTR_IDX_GROWING_ENV_VALUE == 41, "ATTR_IDX stride broken: GROWING_ENV");
+BUILD_ASSERT(ATTR_IDX_AUTO_CALC_STATUS_VALUE == 44, "ATTR_IDX stride broken: AUTO_CALC");
+BUILD_ASSERT(ATTR_IDX_CURRENT_TASK_VALUE     == 47, "ATTR_IDX stride broken: CURRENT_TASK");
+BUILD_ASSERT(ATTR_IDX_TIMEZONE_VALUE         == 50, "ATTR_IDX stride broken: TIMEZONE");
+BUILD_ASSERT(ATTR_IDX_RAIN_CONFIG_VALUE      == 53, "ATTR_IDX stride broken: RAIN_CONFIG");
+BUILD_ASSERT(ATTR_IDX_RAIN_DATA_VALUE        == 56, "ATTR_IDX stride broken: RAIN_DATA");
+BUILD_ASSERT(ATTR_IDX_RAIN_HISTORY_VALUE     == 59, "ATTR_IDX stride broken: RAIN_HISTORY");
+BUILD_ASSERT(ATTR_IDX_ENVIRONMENTAL_DATA_VALUE    == 62, "ATTR_IDX stride broken: ENV_DATA");
+BUILD_ASSERT(ATTR_IDX_ENVIRONMENTAL_HISTORY_VALUE == 65, "ATTR_IDX stride broken: ENV_HISTORY");
+BUILD_ASSERT(ATTR_IDX_COMPENSATION_STATUS_VALUE   == 68, "ATTR_IDX stride broken: COMP_STATUS");
+BUILD_ASSERT(ATTR_IDX_ONBOARDING_STATUS_VALUE     == 71, "ATTR_IDX stride broken: ONBOARDING");
+BUILD_ASSERT(ATTR_IDX_RESET_CONTROL_VALUE         == 74, "ATTR_IDX stride broken: RESET_CTRL");
+BUILD_ASSERT(ATTR_IDX_RAIN_INTEGRATION_STATUS_VALUE == 77, "ATTR_IDX stride broken: RAIN_INTEG");
+BUILD_ASSERT(ATTR_IDX_CHANNEL_COMP_CONFIG_VALUE    == 80, "ATTR_IDX stride broken: CHAN_COMP");
+BUILD_ASSERT(ATTR_IDX_BULK_SYNC_SNAPSHOT_VALUE     == 83, "ATTR_IDX stride broken: BULK_SYNC");
+BUILD_ASSERT(ATTR_IDX_HYDRAULIC_STATUS_VALUE       == 85, "ATTR_IDX stride broken: HYDRAULIC");
 
 /* Simple direct notification function - no queues, no work handlers */
 
@@ -1442,8 +1511,7 @@ static inline void invalidate_channel_cache(void) {
     channel_cache.valid = false;
 }
 
-/* Currently selected channel for growing environment operations */
-static uint8_t selected_channel_id __attribute__((unused)) = 0;
+/* T15: selected_channel_id removed — unreferenced static */
 
 /* Last selected channel for growing environment characteristic */
 static uint8_t growing_env_last_channel = 0;
@@ -1911,6 +1979,7 @@ static void environmental_history_ccc_changed(const struct bt_gatt_attr *attr, u
 
 /* Environmental data BLE notification functions */
 int bt_irrigation_environmental_data_notify(void) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_ENV_LIVE);
     if (!default_conn || !notification_state.environmental_data_notifications_enabled) {
         return 0; // No connection or notifications disabled
     }
@@ -4198,6 +4267,7 @@ static void statistics_ccc_cfg_changed(const struct bt_gatt_attr *attr, uint16_t
 }
 // Notificare BLE pentru statistici
 int bt_irrigation_statistics_notify(void) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_STATISTICS);
     if (!default_conn || !notification_state.statistics_notifications_enabled) {
         LOG_DBG("Statistics notification not enabled");
         return 0;
@@ -4265,6 +4335,7 @@ int bt_irrigation_update_statistics(uint8_t channel_id, uint32_t volume_ml, uint
 
 // Notificare BLE pentru diagnostics
 int bt_irrigation_diagnostics_notify(void) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_SYSTEM_STATUS);
     if (!notification_state.diagnostics_notifications_enabled) {
         LOG_DBG("Diagnostics notification not enabled");
         return 0;
@@ -5149,6 +5220,7 @@ static void diagnostics_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
 /* RTC notification functions */
 // Notificare BLE pentru RTC (sincronizare sau erori)
 int bt_irrigation_rtc_notify(void) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_RTC_TZ_CHANGED);
     if (!default_conn || !notification_state.rtc_notifications_enabled) {
         LOG_DBG("RTC notification not enabled");
         return 0;
@@ -5210,6 +5282,7 @@ int bt_irrigation_rtc_update_notify(rtc_datetime_t *datetime) {
         LOG_ERR("Failed to set RTC hardware: %d", ret);
         return ret;
     }
+    (void)ucp_uart_publish_rtc_changed(NULL, 0U, UCP_ORIGIN_LOCAL_FW);
     
     LOG_INF("RTC synchronized: %02u/%02u/%04u %02u:%02u:%02u (day %u)",
             datetime->day, datetime->month, datetime->year,
@@ -6439,6 +6512,7 @@ static ssize_t write_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         
         if (tz_changed) {
             if (timezone_set_config(&tz_config) == 0) {
+                (void)ucp_uart_publish_timezone_changed(NULL, 0U, UCP_ORIGIN_BLE);
                 LOG_INF("Timezone updated to UTC%+d:%02d (DST disabled for direct offset)", 
                         tz_config.utc_offset_minutes / 60,
                         abs(tz_config.utc_offset_minutes % 60));
@@ -6474,6 +6548,7 @@ static ssize_t write_rtc(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         LOG_ERR("RTC update failed: %d", ret);
         return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
     }
+    (void)ucp_uart_publish_rtc_changed(NULL, 0U, UCP_ORIGIN_BLE);
 
     LOG_INF("RTC updated successfully (stored as UTC)");
 
@@ -6580,6 +6655,7 @@ static ssize_t write_timezone(struct bt_conn *conn, const struct bt_gatt_attr *a
         LOG_ERR("Failed to set timezone config: %d", ret);
         return BT_GATT_ERR(BT_ATT_ERR_WRITE_NOT_PERMITTED);
     }
+    (void)ucp_uart_publish_timezone_changed(NULL, 0U, UCP_ORIGIN_BLE);
     
     /* Update onboarding flag - timezone is now configured */
     onboarding_update_system_flag(SYSTEM_FLAG_TIMEZONE_SET, true);
@@ -6896,12 +6972,7 @@ static void calibration_ccc_changed(const struct bt_gatt_attr *attr, uint16_t va
     }
 }
 
-/* Initialize BLE module work items */
-static int __attribute__((unused)) bt_ble_module_init(void)
-{
-    k_work_init_delayable(&calibration_progress_work, calibration_progress_work_handler);
-    return 0;
-}
+/* T15: bt_ble_module_init() removed — dead code, never called */
 
     /* Prepare request pointer early (len already validated) */
 /* History helper block removed to eliminate unused-function warnings (was under #if 0) */
@@ -6967,6 +7038,7 @@ static void rtc_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
 
 /* Growing environment functions */
 static void notify_growing_env(void) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_ENV_LIVE);
     if (!default_conn || !notification_state.growing_env_notifications_enabled) {
         return;
     }
@@ -8687,6 +8759,7 @@ static struct bt_conn_auth_info_cb auth_cb_info = {
 
 /* Notify onboarding status update */
 int bt_irrigation_onboarding_status_notify(void) {
+    UCP_RESCAN_TOPICS2(UCP_TOPIC_ONBOARDING_STATUS, UCP_TOPIC_CHANNEL_CFG_STATUS);
     if (!default_conn || !notification_state.onboarding_status_notifications_enabled) {
         LOG_DBG("Onboarding status notification not enabled");
         return 0;
@@ -8797,6 +8870,7 @@ int bt_irrigation_onboarding_status_notify(void) {
 
 /* Notify reset control status update */
 int bt_irrigation_reset_control_notify(void) {
+    UCP_RESCAN_TOPICS2(UCP_TOPIC_RESET_PROGRESS, UCP_TOPIC_ONBOARDING_STATUS);
     if (!default_conn || !notification_state.reset_control_notifications_enabled) {
         LOG_DBG("Reset control notification not enabled");
         return 0;
@@ -8964,14 +9038,16 @@ int bt_irrigation_resume_wipe_if_needed(void) {
 }
 
 int bt_irrigation_valve_status_update(uint8_t channel_id, bool is_open) {
-    /* Fast early return - combine all checks, but allow 0xFF for master valve */
-    if (!default_conn || !notification_state.valve_notifications_enabled) {
-        return 0;
-    }
-    
     /* Validate channel_id: normal channels (0-7) or master valve (0xFF) */
     if (channel_id >= WATERING_CHANNELS_COUNT && channel_id != 0xFF) {
         return -EINVAL;
+    }
+    
+    (void)ucp_uart_publish_valve_state(channel_id, is_open, channel_id == 0xFF, UCP_ORIGIN_LOCAL_FW);
+
+    /* Fast early return - combine all checks, but allow 0xFF for master valve */
+    if (!default_conn || !notification_state.valve_notifications_enabled) {
+        return 0;
     }
     
     /* Direct struct update - no intermediate variables */
@@ -9214,6 +9290,9 @@ int bt_irrigation_queue_status_update(uint8_t pending_count) {
 }
 
 int bt_irrigation_alarm_notify(uint8_t alarm_code, uint16_t alarm_data) {
+    (void)ucp_uart_publish_alarm(alarm_code, alarm_data, alarm_code == 0U, UCP_ORIGIN_LOCAL_FW);
+    UCP_RESCAN_TOPICS2(UCP_TOPIC_ALARM, UCP_TOPIC_SYSTEM_STATUS);
+
     if (!default_conn || !notification_state.alarm_notifications_enabled) {
         return 0;
     }
@@ -9247,6 +9326,7 @@ int bt_irrigation_alarm_notify(uint8_t alarm_code, uint16_t alarm_data) {
 
 // Notificare BLE pentru calibration
 int bt_irrigation_calibration_notify(void) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_FLOW_CALIBRATION);
     if (!default_conn || !notification_state.calibration_notifications_enabled) {
         return 0;
     }
@@ -9264,6 +9344,7 @@ int bt_irrigation_calibration_notify(void) {
             /* Removed stray RTC timezone updates from calibration path */
 // Notificare BLE pentru Current Task
 int bt_irrigation_current_task_notify(void) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_TASK_CURRENT);
     if (!default_conn || !notification_state.current_task_notifications_enabled) {
         LOG_DBG("Current Task notification not enabled");
         return 0;
@@ -9400,6 +9481,7 @@ int bt_irrigation_current_task_update(uint8_t channel_id, uint32_t start_time,
 
 int bt_irrigation_history_notify_event(uint8_t channel_id, uint8_t event_type, 
                                       uint32_t timestamp, uint32_t value) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_HISTORY_READY);
     if (!default_conn || !notification_state.history_notifications_enabled) {
         LOG_DBG("History notification not enabled");
         return 0; // No connection or notifications disabled
@@ -9459,6 +9541,7 @@ int bt_irrigation_rtc_update(rtc_datetime_t *datetime) {
 }
 
 int bt_irrigation_config_update(void) {
+    UCP_RESCAN_TOPICS3(UCP_TOPIC_SYSTEM_CONFIG, UCP_TOPIC_BULK_SNAPSHOT, UCP_TOPIC_ONBOARDING_STATUS);
     if (!default_conn || !notification_state.system_config_notifications_enabled) {
         return 0; // No connection or notifications disabled
     }
@@ -9503,6 +9586,7 @@ int bt_irrigation_config_update(void) {
 }
 
 int bt_irrigation_statistics_update(uint8_t channel_id) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_STATISTICS);
     if (!default_conn || !notification_state.statistics_notifications_enabled) {
         return 0; // No connection or notifications disabled
     }
@@ -9588,10 +9672,6 @@ int bt_irrigation_statistics_update(uint8_t channel_id) {
 }
 
 int bt_irrigation_start_flow_calibration(uint8_t start, uint32_t volume_ml) {
-    if (!default_conn || !notification_state.calibration_notifications_enabled) {
-        return 0; // No connection or notifications disabled
-    }
-    
     /* Per BLE API Documentation: Start or stop flow calibration procedure */
     /* Parameter start: 1=start calibration, 0=stop calibration */
     /* Parameter volume_ml: Expected volume in milliliters for calibration */
@@ -9673,6 +9753,28 @@ int bt_irrigation_start_flow_calibration(uint8_t start, uint32_t volume_ml) {
     
     /* Send calibration notification */
     return bt_irrigation_calibration_notify();
+}
+
+int bt_irrigation_flow_calibration_get_state(uint8_t *action, uint32_t *pulses,
+                                             uint32_t *volume_ml, uint32_t *pulses_per_liter) {
+    struct calibration_data *value = (struct calibration_data *)calibration_value;
+    if (!value) {
+        return -EINVAL;
+    }
+
+    if (calibration_active) {
+        uint32_t current_pulses = get_pulse_count();
+        value->pulses = current_pulses - calibration_start_pulses;
+        value->action = 2U; /* in progress */
+    } else {
+        value->pulses_per_liter = get_flow_calibration();
+    }
+
+    if (action) *action = value->action;
+    if (pulses) *pulses = value->pulses;
+    if (volume_ml) *volume_ml = value->volume_ml;
+    if (pulses_per_liter) *pulses_per_liter = value->pulses_per_liter;
+    return 0;
 }
 
 int bt_irrigation_history_update(uint8_t channel_id, uint8_t entry_index) {
@@ -10102,6 +10204,7 @@ int bt_irrigation_growing_env_update(uint8_t channel_id) {
 }
 
 int bt_irrigation_auto_calc_status_notify(void) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_AUTO_CALC_STATUS);
     if (!default_conn || !notification_state.auto_calc_status_notifications_enabled) {
         return 0; // No connection or notifications disabled
     }
@@ -10162,6 +10265,7 @@ int bt_irrigation_auto_calc_status_notify(void) {
 }
 
 int bt_irrigation_growing_env_notify(void) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_ENV_LIVE);
     if (!default_conn || !notification_state.growing_env_notifications_enabled) {
         return 0; // No connection or notifications disabled
     }
@@ -10402,6 +10506,7 @@ int bt_irrigation_update_history_aggregations(void) {
 
 
 int bt_irrigation_queue_status_notify(void) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_TASK_CURRENT);
     if (!default_conn || !notification_state.task_queue_notifications_enabled) {
         return 0; // No connection or notifications disabled
     }
@@ -10500,6 +10605,23 @@ int bt_irrigation_alarm_clear(uint8_t alarm_code) {
         return -1; // Invalid code
     }
     
+    return 0;
+}
+
+int bt_irrigation_alarm_get_state(uint8_t *alarm_code, uint16_t *alarm_data_out, uint32_t *timestamp) {
+    const struct alarm_data *alarm = (const struct alarm_data *)alarm_value;
+    if (!alarm) {
+        return -EINVAL;
+    }
+    if (alarm_code) {
+        *alarm_code = alarm->alarm_code;
+    }
+    if (alarm_data_out) {
+        *alarm_data_out = alarm->alarm_data;
+    }
+    if (timestamp) {
+        *timestamp = alarm->timestamp;
+    }
     return 0;
 }
 
@@ -11054,6 +11176,7 @@ static void rain_history_fragment_work_handler(struct k_work *work) {
  * @brief Send rain configuration notification
  */
 void bt_irrigation_rain_config_notify(void) {
+    UCP_RESCAN_TOPICS2(UCP_TOPIC_RAIN_LIVE, UCP_TOPIC_RAIN_INTEGRATION);
     if (!notification_state.rain_config_notifications_enabled) {
         return;
     }
@@ -11093,6 +11216,7 @@ void bt_irrigation_rain_config_notify(void) {
  * @brief Send rain data notification
  */
 void bt_irrigation_rain_data_notify(void) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_RAIN_LIVE);
     if (!notification_state.rain_data_notifications_enabled) {
         return;
     }
@@ -11140,6 +11264,7 @@ void bt_irrigation_rain_data_notify(void) {
  * @brief Send rain sensor pulse notification (called when rain is detected)
  */
 void bt_irrigation_rain_pulse_notify(uint32_t pulse_count, float current_rate_mm_h) {
+    UCP_RESCAN_TOPIC(UCP_TOPIC_RAIN_LIVE);
     if (!notification_state.rain_data_notifications_enabled) {
         return;
     }
@@ -11188,6 +11313,7 @@ void bt_irrigation_rain_pulse_notify(uint32_t pulse_count, float current_rate_mm
  * @brief Send rain integration status notification
  */
 void bt_irrigation_rain_integration_notify(uint8_t channel_id, float reduction_pct, bool skip_irrigation) {
+    UCP_RESCAN_TOPICS2(UCP_TOPIC_RAIN_INTEGRATION, UCP_TOPIC_COMP_STATUS);
     if (!default_conn || !notification_state.rain_integration_status_notifications_enabled) {
         return;
     }
@@ -11213,6 +11339,7 @@ void bt_irrigation_rain_integration_notify(uint8_t channel_id, float reduction_p
  * @brief Send full rain integration status notification
  */
 int bt_irrigation_rain_integration_status_notify(void) {
+    UCP_RESCAN_TOPICS2(UCP_TOPIC_RAIN_INTEGRATION, UCP_TOPIC_COMP_STATUS);
     if (!default_conn || !notification_state.rain_integration_status_notifications_enabled) {
         return 0;
     }

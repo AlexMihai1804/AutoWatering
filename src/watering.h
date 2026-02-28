@@ -1,6 +1,12 @@
 #ifndef WATERING_H
 #define WATERING_H
 
+/* Keep legacy fields until full migration to db-index/pack-storage is verified.
+ * To remove ~800 bytes RAM (100 B × 8 channels), undefine this after migration. */
+#ifndef LEGACY_COMPAT
+#define LEGACY_COMPAT 1
+#endif
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <zephyr/drivers/gpio.h>
@@ -777,12 +783,14 @@ typedef struct {
     bool auto_check_ran_today;         /**< Flag to track if AUTO check already ran today */
     
     /* Legacy fields for backward compatibility */
+#if LEGACY_COMPAT
     plant_info_t plant_info;          /**< Detailed plant type and specific variety (legacy) */
     plant_type_t plant_type;          /**< Main type of plant being grown (legacy) */
     soil_type_t soil_type;            /**< Type of soil in the growing area (legacy) */
     irrigation_method_t irrigation_method; /**< Method of irrigation used (legacy) */
     channel_coverage_t coverage_legacy; /**< Area or plant count information (legacy) */
     uint8_t sun_percentage;           /**< Percentage of direct sunlight (legacy) */
+#endif /* LEGACY_COMPAT */
     /* custom_plant removed - unified system uses pack storage (plant_id) */
     
     /* Extended fields for BLE service compatibility */

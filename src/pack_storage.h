@@ -253,6 +253,14 @@ pack_result_t pack_storage_get_builtin_pack(pack_pack_list_entry_t *pack);
 pack_result_t pack_storage_get_stats(pack_storage_stats_t *stats);
 
 /**
+ * @brief Get cached storage stats WITHOUT touching flash.
+ *
+ * Returns IO_ERROR when the cache has not been primed yet.
+ * Safe to call from any context (BLE, ISR).
+ */
+pack_result_t pack_storage_get_cached_stats(pack_storage_stats_t *stats);
+
+/**
  * @brief Validate a plant structure
  * 
  * @param plant Plant data to validate

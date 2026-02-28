@@ -2,9 +2,19 @@
 
 This document captures the current MCUboot + OTA status after the stabilization work completed in February 2026.
 
+## UCP UART v1 integration note (current increment)
+
+- A custom UART protocol server (`UCP`) is now present in application firmware on `uart0`.
+- UCP exposes OTA orchestration commands (`preflight`, `post_check`, `enter_recovery`).
+- `ota.enter_recovery` now performs app-side handoff (`ota.transition` event + scheduled reboot + bootmode retention request).
+- MCUboot sysbuild config/overlay were updated to target serial recovery on `uart0` with boot-mode retention entry.
+- `--sysbuild` build validation now passes in this environment (using a local `PYTHONPATH` workaround so the mcuboot sub-build interpreter can import `jsonschema`).
+- Hardware validation of the full handoff + serial recovery session is still pending.
+
 ## Current status
 
-- MCUboot is stable, with USB CDC recovery enabled.
+- MCUboot application flow is stable.
+- Recovery migration is in progress: application-side handoff is implemented and MCUboot sysbuild config is prepared for `uart0` serial recovery.
 - Internal partition layout is stabilized for Arduino Nano 33 BLE:
   - `boot_partition`: `0x00000000..0x00022000` (136 KB)
   - `slot0` (primary): `0x00022000..0x000D8000` (728 KB)

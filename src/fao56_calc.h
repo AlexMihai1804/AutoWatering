@@ -628,6 +628,16 @@ void fao56_cache_clear_all(void);
 void fao56_cache_clear_channel(uint8_t channel_id);
 
 /**
+ * @brief Reset all per-channel FAO-56 state (slew, moisture, wetting, plant cache)
+ *
+ * Call when a channel's plant or configuration changes to prevent stale
+ * state from corrupting calculations for the new configuration.
+ *
+ * @param channel_id Channel ID to reset (0-based)
+ */
+void fao56_reset_channel_state(uint8_t channel_id);
+
+/**
  * @brief Get cache performance statistics
  * 
  * @param hit_count Pointer to store cache hit count

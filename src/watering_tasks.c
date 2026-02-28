@@ -18,6 +18,7 @@
 #include "bme280_driver.h"          /* Direct BME reads for freeze lockout */
 #include "fao56_calc.h"             /* FAO-56 calculations for AUTO mode */
 #include "temperature_compensation_integration.h" /* Temperature compensation for TIME/VOLUME modes */
+#include "ucp_uart.h"
 
 LOG_MODULE_DECLARE(watering, CONFIG_LOG_DEFAULT_LEVEL);
 
@@ -96,6 +97,7 @@ static void raise_alarm(uint8_t alarm_code, uint16_t alarm_data, const char *log
     if (logmsg) {
         printk("%s\n", logmsg);
     }
+    (void)ucp_uart_publish_alarm(alarm_code, alarm_data, alarm_code == 0U, UCP_ORIGIN_SCHEDULER);
 #ifdef CONFIG_BT
     bt_irrigation_alarm_notify(alarm_code, alarm_data);
 #endif
@@ -105,6 +107,7 @@ static void raise_alarm(uint8_t alarm_code, uint16_t alarm_data, const char *log
 static void update_system_status(watering_status_t status)
 {
     system_status = status;
+    (void)ucp_uart_publish_system_status_changed(NULL, 0U, UCP_ORIGIN_SCHEDULER);
 #ifdef CONFIG_BT
     bt_irrigation_system_status_update(system_status);
 #endif
@@ -388,16 +391,22 @@ int watering_process_next_task(void) {
     }
     
     watering_task_t task;
-    if (k_msgq_get(&watering_tasks_queue, &task, K_NO_WAIT) != 0) {
+    /* T9 fix: Peek first to check hydraulic lock without removing from queue.
+     * Previously, get+put moved the task to the tail, losing priority order. */
+    if (k_msgq_peek(&watering_tasks_queue, &task) != 0) {
         return 0;  // No tasks in queue
     }
 
     if ((watering_hydraulic_is_global_locked() ||
          watering_hydraulic_is_channel_locked(task.channel - watering_channels)) &&
         task.trigger_type != WATERING_TRIGGER_MANUAL) {
-        /* Keep task queued until lock clears */
-        k_msgq_put(&watering_tasks_queue, &task, K_NO_WAIT);
+        /* Leave task at head of queue — preserves priority order */
         return 0;
+    }
+
+    /* Dequeue the task now that we know it can proceed */
+    if (k_msgq_get(&watering_tasks_queue, &task, K_NO_WAIT) != 0) {
+        return 0;  /* Queue emptied between peek and get (unlikely race) */
     }
 
     if (task.channel == NULL) {
@@ -446,6 +455,11 @@ watering_error_t watering_start_task(watering_task_t *task)
         return WATERING_ERROR_BUSY;
     }
     
+    /* T4 fix: Take a single snapshot of original state before any adjustments.
+     * Previously, rain and temperature compensation each called snapshot separately,
+     * causing the second snapshot to overwrite the original with already-adjusted values. */
+    watering_snapshot_event(channel_id);
+
     /* Apply rain-based adjustments to the task before starting */
     if (rain_integration_is_enabled()) {
         rain_irrigation_impact_t impact = rain_integration_calculate_impact(channel_id);
@@ -465,7 +479,6 @@ watering_error_t watering_start_task(watering_task_t *task)
         /* Apply reduction to task parameters */
         if (impact.irrigation_reduction_pct > 0.0f) {
             float reduction_factor = 1.0f - (impact.irrigation_reduction_pct / 100.0f);
-            watering_snapshot_event(channel_id);
             
             if (task->channel->watering_event.watering_mode == WATERING_BY_DURATION) {
                 uint32_t original_duration = task->channel->watering_event.watering.by_duration.duration_minutes;
@@ -535,8 +548,6 @@ watering_error_t watering_start_task(watering_task_t *task)
                 /* Ensure minimum duration of 1 minute */
                 if (adjusted_duration < 1) adjusted_duration = 1;
                 
-                /* Snapshot before modification */
-                watering_snapshot_event(channel_id);
                 task->channel->watering_event.watering.by_duration.duration_minutes = adjusted_duration;
                 task->channel->last_temp_compensation.adjusted_requirement = (float)adjusted_duration;
                 
@@ -551,8 +562,6 @@ watering_error_t watering_start_task(watering_task_t *task)
                 /* Ensure minimum volume of 1 liter */
                 if (adjusted_volume < 1) adjusted_volume = 1;
                 
-                /* Snapshot before modification */
-                watering_snapshot_event(channel_id);
                 task->by_volume.volume_liters = adjusted_volume;
                 task->channel->last_temp_compensation.adjusted_requirement = (float)adjusted_volume;
                 
