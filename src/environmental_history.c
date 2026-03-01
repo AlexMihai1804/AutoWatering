@@ -26,11 +26,9 @@ LOG_MODULE_REGISTER(environmental_history, LOG_LEVEL_DBG);
 static environmental_history_t g_env_history;
 static bool g_env_history_initialized = false;
 
-/* NVS keys for persistent storage (must be uint16_t IDs expected by nvs_config_* API) */
-#define NVS_KEY_ENV_HISTORY_HOURLY    0x6101
-#define NVS_KEY_ENV_HISTORY_DAILY     0x6102
-#define NVS_KEY_ENV_HISTORY_MONTHLY   0x6103
-#define NVS_KEY_ENV_HISTORY_META      0x6104
+/* NVS keys for persistent storage — T13: use centralised registry */
+#include "nvs_key_registry.h"
+/* NVS_KEY_ENV_HISTORY_* now defined in nvs_key_registry.h */
 
 /* Internal helper functions */
 static int env_history_add_to_ring_buffer(void *buffer, size_t entry_size, 

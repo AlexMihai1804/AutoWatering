@@ -34,7 +34,7 @@ The system exposes device information for identification:
 ```c
 CONFIG_BT_DIS=y                           // Enable Device Information Service
 CONFIG_BT_DIS_SERIAL_NUMBER=y             // Expose serial number
-CONFIG_BT_DIS_SERIAL_NUMBER_STR="000001"  // Default serial number
+CONFIG_BT_DIS_SERIAL_NUMBER_STR="000000"  // Sentinel default for common OTA images
 CONFIG_BT_DIS_FW_REV=y                    // Expose firmware revision
 CONFIG_BT_DIS_FW_REV_STR="1.0"           // Firmware version
 CONFIG_BT_DIS_HW_REV=y                    // Expose hardware revision

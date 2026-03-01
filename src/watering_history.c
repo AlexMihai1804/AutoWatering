@@ -24,15 +24,9 @@
 
 LOG_MODULE_REGISTER(watering_history, CONFIG_LOG_DEFAULT_LEVEL);
 
-// Storage keys pentru NVS
-#define NVS_KEY_DETAILED_BASE           2000
-#define NVS_KEY_DAILY_BASE              3000
-#define NVS_KEY_MONTHLY_BASE            4000
-#define NVS_KEY_ANNUAL_BASE             5000
-#define NVS_KEY_ROTATION_INFO           6000
-#define NVS_KEY_HISTORY_SETTINGS        6001
-#define NVS_KEY_INSIGHTS_CACHE          6002
-#define NVS_KEY_DETAILED_TS_BASE        7000
+// Storage keys pentru NVS — T13: use centralised registry
+#include "nvs_key_registry.h"
+/* NVS_KEY_DETAILED_BASE .. NVS_KEY_DETAILED_TS_BASE now in nvs_key_registry.h */
 
 // Ring-buffer pentru fiecare tip de date
 static history_event_t detailed_events[MAX_CHANNELS][DETAILED_EVENTS_PER_CHANNEL];
@@ -843,6 +837,31 @@ static uint32_t get_current_timestamp(void)
     return k_uptime_get_32() / 1000U;
 }
 
+/* T16: Compile-time date fallbacks from __DATE__ */
+#define WH_BUILD_YEAR_CH0 (__DATE__[ 7])
+#define WH_BUILD_YEAR_CH1 (__DATE__[ 8])
+#define WH_BUILD_YEAR_CH2 (__DATE__[ 9])
+#define WH_BUILD_YEAR_CH3 (__DATE__[10])
+#define WH_BUILD_YEAR  ((WH_BUILD_YEAR_CH0 - '0') * 1000 + (WH_BUILD_YEAR_CH1 - '0') * 100 + \
+                        (WH_BUILD_YEAR_CH2 - '0') * 10   + (WH_BUILD_YEAR_CH3 - '0'))
+#define WH_BUILD_MONTH ( \
+    (__DATE__[0] == 'J' && __DATE__[1] == 'a') ?  1 : \
+    (__DATE__[0] == 'F')                        ?  2 : \
+    (__DATE__[0] == 'M' && __DATE__[2] == 'r') ?  3 : \
+    (__DATE__[0] == 'A' && __DATE__[1] == 'p') ?  4 : \
+    (__DATE__[0] == 'M' && __DATE__[2] == 'y') ?  5 : \
+    (__DATE__[0] == 'J' && __DATE__[2] == 'n') ?  6 : \
+    (__DATE__[0] == 'J' && __DATE__[2] == 'l') ?  7 : \
+    (__DATE__[0] == 'A' && __DATE__[1] == 'u') ?  8 : \
+    (__DATE__[0] == 'S')                        ?  9 : \
+    (__DATE__[0] == 'O')                        ? 10 : \
+    (__DATE__[0] == 'N')                        ? 11 : 12)
+#define WH_BUILD_DAY ((__DATE__[4] == ' ' ? 0 : (__DATE__[4] - '0') * 10) + (__DATE__[5] - '0'))
+static const uint16_t _wh_month_doy_offset[] = {
+    0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334
+};
+#define WH_BUILD_DOY (_wh_month_doy_offset[WH_BUILD_MONTH] + WH_BUILD_DAY)
+
 static uint16_t get_current_year(void) {
     rtc_datetime_t datetime;
     if (rtc_datetime_get(&datetime) == 0) {
@@ -854,7 +873,7 @@ static uint16_t get_current_year(void) {
         }
         return datetime.year;
     }
-    return 2025; // Fallback if RTC unavailable
+    return WH_BUILD_YEAR; /* T16: Fallback from compile-time __DATE__ */
 }
 
 static uint8_t get_current_month(void) {
@@ -868,7 +887,7 @@ static uint8_t get_current_month(void) {
         }
         return datetime.month;
     }
-    return 7; // Fallback if RTC unavailable
+    return WH_BUILD_MONTH; /* T16: Fallback from compile-time __DATE__ */
 }
 
 static uint16_t get_current_day_of_year(void) {
@@ -898,7 +917,7 @@ static uint16_t get_current_day_of_year(void) {
         
         return day_of_year;
     }
-    return 186; // Fallback for July 5th if RTC unavailable
+    return WH_BUILD_DOY; /* T16: Fallback from compile-time __DATE__ */
 }
 
 /**

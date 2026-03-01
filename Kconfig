@@ -23,4 +23,18 @@ config HISTORY_EXTERNAL_FLASH
       - environmental_history: ~46KB RAM saved
       - rain_history: ~28KB RAM saved
 
+config AUTOWATERING_UCP_UART
+    bool "Enable UCP UART v1 protocol server (ESP32 / UART peer)"
+    default y
+    depends on SERIAL
+    help
+      Enables the custom UCP UART v1 protocol server on uart0.
+      Current implementation includes:
+      - framing (COBS + CRC32C)
+      - HELLO/PING handshake
+      - GET/SET/CMD/SUB/UNSUB dispatch
+      - async EVENT_CHANGE and EVENT_HEARTBEAT
+      - real resources: device.system_status, rtc_tz.timezone_config
+      - OTA command stubs (preflight/post_check, enter_recovery placeholder)
+
 endmenu

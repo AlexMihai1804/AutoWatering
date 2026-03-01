@@ -67,6 +67,19 @@ All module initializations log warnings on failure but keep the system running u
 
 ## Runtime Components
 
+### UART Control Protocol (UCP) v1 (nRF-side API)
+- `src/ucp_uart.c` adds a custom UART protocol server on `uart0` (COBS + CRC32C framing).
+- Supports `HELLO/PING`, `GET/SET/CMD`, `SUB/UNSUB`, `EVENT_CHANGE`, `EVENT_HEARTBEAT`, `EVENT_OVERFLOW`, and bidirectional `STREAM_*`.
+- Current implementation exposes full nRF-side API surfaces used by the firmware:
+  - `device/system`, `channel`, `schedule`, `task`
+  - `flow`, `rain`, `environment`, `history`
+  - `rtc_tz`, `compensation`, `onboarding_reset`
+  - `packs`, `ota` orchestration, `peer_power`, `diagnostics`, `schema_discovery`
+- Includes replay/overflow resync support, schema discovery, stream-based history/catalog exports, and OTA recovery-first handoff commands.
+- OTA orchestration commands are implemented (`preflight`, `post_check`, `enter_recovery` app-side handoff with bootmode+reboot).
+- MCUboot sysbuild config/overlay were updated for recovery on `uart0` via retention boot mode; end-to-end board validation is still pending.
+- This path is intended for ESP32 / future UART peers and is independent from BLE GATT transport.
+
 ### Watering Engine
 - `watering_tasks_queue` (depth 10) feeds `watering_start_task()`; only one task is active at a time.
 - Modes: duration, volume, automatic quality, automatic eco (70% reduction) with temperature compensation hooks.
@@ -100,7 +113,8 @@ All module initializations log warnings on failure but keep the system running u
 ### BLE Interface
 - `bt_irrigation_service.c` exposes 29 characteristics documented under `docs/ble-api/`.
 - `bt_custom_soil_handlers.c` exposes a separate Custom Configuration Service with 5 characteristics (custom soil, soil moisture, config reset, config status, interval mode).
-- **Total: 34 characteristics** across both BLE services.
+- `bt_pack_handlers.c` exposes a Pack Service with 4 characteristics (plant install/list/delete, stats, transfer, pack list).
+- **Total: 38 characteristics** across BLE services.
 - All characteristics require an encrypted link (`BT_GATT_PERM_READ_ENCRYPT` / `BT_GATT_PERM_WRITE_ENCRYPT`); the connection callback requests `BT_SECURITY_L2`.
 - Notification macros (`SMART_NOTIFY`, `CRITICAL_NOTIFY`, `CHANNEL_CONFIG_NOTIFY`) enforce throttling tiers.
 - Large payloads use custom fragmentation: 4-byte write headers for channel/growing-env updates and 8-byte headers for history streams.

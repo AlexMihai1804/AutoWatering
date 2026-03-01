@@ -1194,6 +1194,25 @@ pack_result_t pack_storage_get_stats(pack_storage_stats_t *stats)
     return PACK_RESULT_SUCCESS;
 }
 
+/* Cache-only variant – safe to call from any context (BLE RX thread, ISR etc.)
+ * because it never touches flash.  Returns PACK_RESULT_IO_ERROR when the
+ * cache has not been primed yet (caller should treat as "not ready").       */
+pack_result_t pack_storage_get_cached_stats(pack_storage_stats_t *stats)
+{
+    if (!stats) {
+        return PACK_RESULT_INVALID_DATA;
+    }
+    memset(stats, 0, sizeof(*stats));
+    k_mutex_lock(&stats_cache_mutex, K_FOREVER);
+    if (stats_cache_valid) {
+        *stats = stats_cache;
+        k_mutex_unlock(&stats_cache_mutex);
+        return PACK_RESULT_SUCCESS;
+    }
+    k_mutex_unlock(&stats_cache_mutex);
+    return PACK_RESULT_IO_ERROR;
+}
+
 pack_result_t pack_storage_validate_plant(const pack_plant_v1_t *plant)
 {
     if (!plant) {

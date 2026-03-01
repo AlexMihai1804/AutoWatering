@@ -10,10 +10,19 @@
 #include <string.h>   /* ΓåÉ NEW */
 #include <stdio.h>    /* for snprintf */
 #include <errno.h>    /* for EINVAL */
+#include <math.h>     /* for isnanf, isinff (T8 NaN validation) */
+
+#define DEVICE_IDENTITY_MAGIC   0x49445741u /* "AWDI" */
+#define DEVICE_IDENTITY_VERSION 1u
 
 /* ΓÇöΓÇöΓÇö instan┼ú─â NVS ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 static struct nvs_fs fs;
 static bool nvs_ready;
+
+/* Protect all NVS operations — Zephyr NVS is NOT thread-safe.
+ * BLE handlers, the scheduler, and the main loop may call
+ * nvs_config_read/write/delete concurrently.                */
+static K_MUTEX_DEFINE(nvs_mutex);
 
 /* ΓÇöΓÇöΓÇö ini┼úializare ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 int nvs_config_init(void)
@@ -48,44 +57,74 @@ bool nvs_config_is_ready(void)
 /* ΓÇöΓÇöΓÇö RAW read/write/delete ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
 int nvs_config_read(uint16_t id, void *data, size_t len)
 {
-    return nvs_ready ? nvs_read (&fs, id, data, len) : -ENODEV;
+    if (!nvs_ready) {
+        return -ENODEV;
+    }
+    k_mutex_lock(&nvs_mutex, K_FOREVER);
+    int rc = nvs_read(&fs, id, data, len);
+    k_mutex_unlock(&nvs_mutex);
+    return rc;
 }
 
 int nvs_config_write(uint16_t id, const void *data, size_t len)
 {
-    return nvs_ready ? nvs_write(&fs, id, data, len) : -ENODEV;
+    if (!nvs_ready) {
+        return -ENODEV;
+    }
+    k_mutex_lock(&nvs_mutex, K_FOREVER);
+    int rc = nvs_write(&fs, id, data, len);
+    k_mutex_unlock(&nvs_mutex);
+    return rc;
 }
 
 int nvs_config_delete(uint16_t id)
 {
-    return nvs_ready ? nvs_delete(&fs, id) : -ENODEV;
+    if (!nvs_ready) {
+        return -ENODEV;
+    }
+    k_mutex_lock(&nvs_mutex, K_FOREVER);
+    int rc = nvs_delete(&fs, id);
+    k_mutex_unlock(&nvs_mutex);
+    return rc;
 }
 
-/* ΓÇöΓÇöΓÇö IDs logice ΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇöΓÇö */
+/* --- IDs logice --- T13: use centralised registry ---------------------- */
+#include "nvs_key_registry.h"
+
 enum {
-    ID_WATERING_CFG     =  1,
-    ID_CHANNEL_CFG_BASE = 100,   /* +ch (0-7) */
-    ID_FLOW_CALIB       = 200,
-    ID_DAYS_SINCE_START = 201,
-    ID_CHANNEL_NAME_BASE= 300,   /* +ch (0-7)  ΓåÉ NEW */
-    ID_TIMEZONE_CONFIG  = 400,   /* timezone_config_t */
-    ID_ENHANCED_CHANNEL_CFG_BASE = 500, /* Enhanced channel config +ch (0-7) */
-    ID_WATER_BALANCE_BASE = 600, /* Water balance state +ch (0-7) */
-    ID_AUTOMATIC_CALC_STATE = 700, /* Automatic calculation state */
-    ID_SOIL_MOISTURE_GLOBAL = 710,  /* soil_moisture_global_config_t */
-    ID_SOIL_MOISTURE_CH_BASE = 720, /* soil_moisture_channel_override_t +ch (0-7) */
-    ID_RAIN_CONFIG = 800,        /* Rain sensor configuration */
-    ID_RAIN_STATE = 801,         /* Rain sensor state */
-    ID_RAIN_HOURLY_DATA = 802,   /* Rain hourly history data */
-    ID_RAIN_DAILY_DATA = 803,    /* Rain daily history data */
-    ID_ONBOARDING_STATE = 900,   /* Onboarding state */
-    ID_CHANNEL_FLAGS_BASE = 910, /* Channel flags +ch (0-7) */
-    ID_SYSTEM_FLAGS = 920,       /* System configuration flags */
-    ID_CONFIG_STATUS_BASE = 930, /* Configuration status +ch (0-7) */
-    ID_CONFIG_RESET_LOG_BASE = 940, /* Configuration reset logs +ch (0-7) */
-    ID_HYDRAULIC_GLOBAL_LOCK = 950, /* Global hydraulic lock state */
-    ID_WIPE_PROGRESS = 960,      /* Persistent wipe state machine progress */
+    ID_WATERING_CFG     = NVS_KEY_WATERING_CFG,
+    ID_CHANNEL_CFG_BASE = NVS_KEY_CHANNEL_CFG_BASE,
+    ID_FLOW_CALIB       = NVS_KEY_FLOW_CALIB,
+    ID_DAYS_SINCE_START = NVS_KEY_DAYS_SINCE_START,
+    ID_CHANNEL_NAME_BASE= NVS_KEY_CHANNEL_NAME_BASE,
+    ID_TIMEZONE_CONFIG  = NVS_KEY_TIMEZONE_CONFIG,
+    ID_ENHANCED_CHANNEL_CFG_BASE = NVS_KEY_ENHANCED_CHANNEL_CFG_BASE,
+    ID_WATER_BALANCE_BASE = NVS_KEY_WATER_BALANCE_BASE,
+    ID_AUTOMATIC_CALC_STATE = NVS_KEY_AUTOMATIC_CALC_STATE,
+    ID_SOIL_MOISTURE_GLOBAL = NVS_KEY_SOIL_MOISTURE_GLOBAL,
+    ID_SOIL_MOISTURE_CH_BASE = NVS_KEY_SOIL_MOISTURE_CH_BASE,
+    ID_RAIN_CONFIG = NVS_KEY_RAIN_CONFIG,
+    ID_RAIN_STATE = NVS_KEY_RAIN_STATE,
+    ID_RAIN_HOURLY_DATA = NVS_KEY_RAIN_HOURLY_DATA,
+    ID_RAIN_DAILY_DATA = NVS_KEY_RAIN_DAILY_DATA,
+    ID_ONBOARDING_STATE = NVS_KEY_ONBOARDING_STATE,
+    ID_CHANNEL_FLAGS_BASE = NVS_KEY_CHANNEL_FLAGS_BASE,
+    ID_SYSTEM_FLAGS = NVS_KEY_SYSTEM_FLAGS,
+    ID_CONFIG_STATUS_BASE = NVS_KEY_CONFIG_STATUS_BASE,
+    ID_CONFIG_RESET_LOG_BASE = NVS_KEY_CONFIG_RESET_LOG_BASE,
+    ID_HYDRAULIC_GLOBAL_LOCK = NVS_KEY_HYDRAULIC_GLOBAL_LOCK,
+    ID_WIPE_PROGRESS = NVS_KEY_WIPE_PROGRESS,
+    ID_DEVICE_IDENTITY = NVS_KEY_DEVICE_IDENTITY,
 };
+
+static bool device_identity_equal(const device_identity_nvs_t *a, const device_identity_nvs_t *b)
+{
+    return (strncmp(a->serial, b->serial, sizeof(a->serial)) == 0)
+        && (a->serial_seq == b->serial_seq)
+        && (strncmp(a->thing_name, b->thing_name, sizeof(a->thing_name)) == 0)
+        && (a->hw_id_word0 == b->hw_id_word0)
+        && (a->hw_id_word1 == b->hw_id_word1);
+}
 
 int nvs_save_soil_moisture_global_config(const soil_moisture_global_config_t *cfg)
 {
@@ -425,6 +464,20 @@ int nvs_load_water_balance_config(uint8_t ch, water_balance_config_t *balance)
         }
         ret = sizeof(*balance);
     }
+
+    /* T8 fix: Validate float fields against NaN/inf from flash corruption */
+    if (isnanf(balance->rwz_awc_mm) || isinff(balance->rwz_awc_mm) ||
+        isnanf(balance->wetting_awc_mm) || isinff(balance->wetting_awc_mm) ||
+        isnanf(balance->raw_mm) || isinff(balance->raw_mm) ||
+        isnanf(balance->current_deficit_mm) || isinff(balance->current_deficit_mm) ||
+        isnanf(balance->effective_rain_mm) || isinff(balance->effective_rain_mm)) {
+        printk("Water balance config ch%u has NaN/inf values, resetting to defaults\n", ch);
+        water_balance_config_t default_balance = DEFAULT_WATER_BALANCE_CONFIG;
+        *balance = default_balance;
+        nvs_save_water_balance_config(ch, balance);
+        ret = sizeof(*balance);
+    }
+
     return ret;
 }
 
@@ -1495,4 +1548,51 @@ int nvs_load_wipe_progress(wipe_progress_t *progress)
 int nvs_clear_wipe_progress(void)
 {
     return nvs_config_delete(ID_WIPE_PROGRESS);
+}
+
+int nvs_load_device_identity(device_identity_nvs_t *identity)
+{
+    if (!identity) {
+        return -EINVAL;
+    }
+
+    int ret = nvs_config_read(ID_DEVICE_IDENTITY, identity, sizeof(*identity));
+    if (ret < 0) {
+        return ret;
+    }
+    if (ret != sizeof(*identity)) {
+        return -EINVAL;
+    }
+    if (identity->magic != DEVICE_IDENTITY_MAGIC || identity->version != DEVICE_IDENTITY_VERSION) {
+        return -EINVAL;
+    }
+    if (identity->locked != 1) {
+        return -EINVAL;
+    }
+
+    return ret;
+}
+
+int nvs_save_device_identity_once(const device_identity_nvs_t *identity)
+{
+    if (!identity) {
+        return -EINVAL;
+    }
+
+    device_identity_nvs_t candidate = *identity;
+    candidate.magic = DEVICE_IDENTITY_MAGIC;
+    candidate.version = DEVICE_IDENTITY_VERSION;
+    candidate.locked = 1;
+
+    device_identity_nvs_t existing;
+    int load_ret = nvs_load_device_identity(&existing);
+    if (load_ret > 0) {
+        return device_identity_equal(&existing, &candidate) ? 0 : -EACCES;
+    }
+
+    int ret = nvs_config_write(ID_DEVICE_IDENTITY, &candidate, sizeof(candidate));
+    if (ret < 0) {
+        return ret;
+    }
+    return 0;
 }

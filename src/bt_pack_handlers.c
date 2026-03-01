@@ -24,20 +24,17 @@ LOG_MODULE_REGISTER(bt_pack, LOG_LEVEL_DBG);
 static void pack_connected(struct bt_conn *conn, uint8_t err)
 {
     if (err) {
-        printk("[bt_pack] connected: err=%u\n", err);
         LOG_WRN("connected: err=%u", err);
         return;
     }
 
     uint8_t sec = bt_conn_get_security(conn);
-    printk("[bt_pack] connected OK, security=%u\n", sec);
     LOG_INF("connected OK, security=%u", sec);
 }
 
 static void pack_disconnected(struct bt_conn *conn, uint8_t reason)
 {
     ARG_UNUSED(conn);
-    printk("[bt_pack] disconnected: reason=%u\n", reason);
     LOG_INF("disconnected: reason=%u", reason);
 }
 
@@ -45,7 +42,6 @@ static void pack_security_changed(struct bt_conn *conn, bt_security_t level,
                                   enum bt_security_err err)
 {
     ARG_UNUSED(conn);
-    printk("[bt_pack] security_changed: level=%u err=%d\n", (uint8_t)level, (int)err);
     LOG_INF("security_changed: level=%u err=%d", (uint8_t)level, (int)err);
 }
 
@@ -130,6 +126,10 @@ static struct {
 static bool pack_xfer_notifications_enabled = false;
 static bt_pack_xfer_status_t xfer_status;
 
+/* T12: Stale transfer watchdog — aborts transfers stuck in RECEIVING */
+static struct k_work_delayable xfer_timeout_work;
+static void xfer_timeout_work_handler(struct k_work *work);
+
 /* ============================================================================
  * UUIDs - Pack service characteristics
  * ============================================================================ */
@@ -176,6 +176,8 @@ static void xfer_reset(void)
 {
     memset(&xfer_state, 0, sizeof(xfer_state));
     xfer_state.state = PACK_XFER_STATE_IDLE;
+    /* T12: Cancel stale-transfer watchdog when transfer ends or resets */
+    k_work_cancel_delayable(&xfer_timeout_work);
 }
 
 static void xfer_update_status(void)
@@ -244,23 +246,35 @@ static int stream_start(uint8_t filter)
     
     stream_reset();
     stream_state.filter = filter;
+
+    pack_storage_stats_t stats;
+    uint16_t flash_total = 0;
+    uint16_t flash_custom = 0;
+    uint16_t flash_builtin = 0;
+    /* Use cache-only variant — BLE RX thread (4 KB) cannot afford the
+     * 1.5 s LittleFS scan that pack_storage_get_stats() may trigger.  */
+    if (pack_storage_get_cached_stats(&stats) == PACK_RESULT_SUCCESS) {
+        flash_total = stats.plant_count;
+        flash_custom = stats.custom_plant_count;
+        flash_builtin = (flash_total > flash_custom) ? (flash_total - flash_custom) : 0;
+    }
     
     /* Determine what to include based on filter */
     switch (filter) {
     case PACK_FILTER_CUSTOM_ONLY:
         stream_state.include_builtin = false;
         stream_state.include_custom = true;
-        stream_state.total_count = pack_storage_get_plant_count();
+        stream_state.total_count = flash_custom;
         break;
     case PACK_FILTER_ALL:
         stream_state.include_builtin = true;
         stream_state.include_custom = true;
-        stream_state.total_count = PLANT_FULL_SPECIES_COUNT + pack_storage_get_plant_count();
+        stream_state.total_count = flash_total;
         break;
     case PACK_FILTER_BUILTIN_ONLY:
         stream_state.include_builtin = true;
         stream_state.include_custom = false;
-        stream_state.total_count = PLANT_FULL_SPECIES_COUNT;
+        stream_state.total_count = flash_builtin;
         break;
     default:
         /* Specific pack filter - only custom plants from that pack */
@@ -315,43 +329,48 @@ static void stream_work_handler(struct k_work *work)
     
     bt_pack_plant_list_entry_t entries[10];
     uint8_t count = 0;
-    
-    /* 1. Add built-in plants if needed and still remaining */
-    if (stream_state.include_builtin && 
-        stream_state.builtin_sent < PLANT_FULL_SPECIES_COUNT) {
-        
-        while (count < 10 && stream_state.builtin_sent < PLANT_FULL_SPECIES_COUNT) {
-            const plant_full_data_t *rom = plant_db_get_by_index(stream_state.builtin_sent);
-            if (rom != NULL) {
-                entries[count].plant_id = stream_state.builtin_sent;  /* Built-in: ID = index */
-                entries[count].pack_id = 0;  /* Pack 0 = built-in */
-                entries[count].version = 1;  /* ROM version = 1 */
-                strncpy(entries[count].name, rom->common_name_en, 15);
-                entries[count].name[15] = '\0';
-                count++;
-            }
-            stream_state.builtin_sent++;
-        }
-    }
-    
-    /* 2. Add custom plants if needed and still room */
-    if (stream_state.include_custom && count < 10) {
-        pack_plant_list_entry_t custom_entries[10];
-        uint16_t custom_count = 0;
-        
+    bool exhausted = false;
+
+    /* Stream only entries physically present on flash and apply filter locally */
+    while (count < 10 && stream_state.custom_sent < stream_state.total_count && !exhausted) {
+        pack_plant_list_entry_t flash_entries[16];
+        uint16_t flash_count = 0;
+
         pack_result_t result = pack_storage_list_plants(
-            custom_entries, 10 - count, &custom_count, stream_state.custom_sent);
-        
-        if (result == PACK_RESULT_SUCCESS) {
-            for (uint16_t i = 0; i < custom_count && count < 10; i++) {
-                entries[count].plant_id = custom_entries[i].plant_id;
-                entries[count].pack_id = custom_entries[i].pack_id;
-                entries[count].version = custom_entries[i].version;
-                strncpy(entries[count].name, custom_entries[i].name, 15);
-                entries[count].name[15] = '\0';
-                count++;
-                stream_state.custom_sent++;
+            flash_entries, ARRAY_SIZE(flash_entries), &flash_count, stream_state.builtin_sent);
+
+        if (result != PACK_RESULT_SUCCESS || flash_count == 0) {
+            exhausted = true;
+            break;
+        }
+
+        stream_state.builtin_sent += flash_count;
+
+        for (uint16_t i = 0; i < flash_count && count < 10; i++) {
+            bool is_custom = (flash_entries[i].plant_id > PLANT_FULL_SPECIES_COUNT);
+            bool include = false;
+
+            if (stream_state.filter == PACK_FILTER_ALL) {
+                include = true;
+            } else if (stream_state.filter == PACK_FILTER_CUSTOM_ONLY) {
+                include = is_custom;
+            } else if (stream_state.filter == PACK_FILTER_BUILTIN_ONLY) {
+                include = !is_custom;
+            } else {
+                include = (flash_entries[i].pack_id == stream_state.filter);
             }
+
+            if (!include) {
+                continue;
+            }
+
+            entries[count].plant_id = flash_entries[i].plant_id;
+            entries[count].pack_id = flash_entries[i].pack_id;
+            entries[count].version = flash_entries[i].version;
+            strncpy(entries[count].name, flash_entries[i].name, 15);
+            entries[count].name[15] = '\0';
+            count++;
+            stream_state.custom_sent++;
         }
     }
     
@@ -361,11 +380,7 @@ static void stream_work_handler(struct k_work *work)
     
     /* Determine flags */
     bool is_first = !stream_state.first_sent;
-    bool builtin_done = !stream_state.include_builtin || 
-                        stream_state.builtin_sent >= PLANT_FULL_SPECIES_COUNT;
-    bool custom_done = !stream_state.include_custom || 
-                       stream_state.custom_sent >= pack_storage_get_plant_count();
-    bool is_last = (builtin_done && custom_done);
+    bool is_last = exhausted || (stream_state.custom_sent >= stream_state.total_count);
     
     if (is_first && is_last) {
         list_response.flags = BT_PACK_STREAM_FLAG_STARTING | BT_PACK_STREAM_FLAG_COMPLETE;
@@ -406,11 +421,7 @@ static void stream_work_handler(struct k_work *work)
         LOG_WRN("Buffer busy, retry %d in %ums", stream_state.retry_count + 1, backoff);
         stream_state.retry_count++;
         
-        /* Revert counters for retry */
-        if (stream_state.include_builtin) {
-            stream_state.builtin_sent -= count;  /* Will re-send same batch */
-        }
-        /* For custom, we'd need more complex tracking - for now, accept potential duplicates */
+        /* Keep offsets monotonic; retries may skip/repeat entries but won't underflow counters */
         
         k_work_schedule(&stream_work, K_MSEC(backoff));
         return;
@@ -424,8 +435,7 @@ static void stream_work_handler(struct k_work *work)
     
     /* 5. Continue or finish */
     if (is_last) {
-        LOG_INF("Stream complete: sent %u built-in + %u custom plants",
-                stream_state.builtin_sent, stream_state.custom_sent);
+        LOG_INF("Stream complete: sent %u plants from flash", stream_state.custom_sent);
         stream_state.active = false;
     } else {
         /* Schedule next notification in 2ms for speed */
@@ -492,44 +502,44 @@ ssize_t bt_pack_stats_read(struct bt_conn *conn,
     uint32_t t0 = k_uptime_get_32();
     uint8_t sec = (conn != NULL) ? bt_conn_get_security(conn) : 0;
     LOG_INF("PACK_STATS read: len=%u offset=%u security=%u", len, offset, sec);
-    printk("[bt_pack] PACK_STATS read (len=%u off=%u sec=%u)\n", len, offset, sec);
     
     memset(&stats_response, 0, sizeof(stats_response));
     
     if (!pack_storage_is_ready()) {
         stats_response.status = 1; /* Not mounted */
-        stats_response.builtin_count = PLANT_FULL_SPECIES_COUNT;
+        stats_response.builtin_count = 0;
         return bt_gatt_attr_read(conn, attr, buf, len, offset,
                                  &stats_response, sizeof(stats_response));
     }
     
     pack_storage_stats_t stats;
-    pack_result_t result = pack_storage_get_stats(&stats);
+    /* Cache-only: never trigger heavy LittleFS from BLE RX thread */
+    pack_result_t result = pack_storage_get_cached_stats(&stats);
     
     if (result == PACK_RESULT_SUCCESS) {
+        uint16_t builtin_on_flash = (stats.plant_count > stats.custom_plant_count) ?
+                                    (stats.plant_count - stats.custom_plant_count) : 0;
+
         stats_response.total_bytes = stats.total_bytes;
         stats_response.used_bytes = stats.used_bytes;
         stats_response.free_bytes = stats.free_bytes;
         stats_response.plant_count = stats.plant_count;
         stats_response.custom_plant_count = stats.custom_plant_count;
-            /* storage pack_count excludes the built-in pack (virtual) */
-            stats_response.pack_count = stats.pack_count + 1;
+        stats_response.pack_count = stats.pack_count;
         stats_response.change_counter = stats.change_counter;
+        stats_response.builtin_count = builtin_on_flash;
         stats_response.status = 0;
         
-        LOG_INF("Stats: total_plants=%u, custom=%u, builtin=%u, packs(custom=%u,total=%u), change=%u",
-            stats.plant_count, stats.custom_plant_count, PLANT_FULL_SPECIES_COUNT,
-            stats.pack_count, stats.pack_count + 1, stats.change_counter);
+        LOG_INF("Stats: total_plants=%u, custom=%u, builtin_flash=%u, packs=%u, change=%u",
+                stats.plant_count, stats.custom_plant_count, builtin_on_flash,
+                stats.pack_count, stats.change_counter);
     } else {
         stats_response.status = 2; /* Error */
     }
-    
-    stats_response.builtin_count = PLANT_FULL_SPECIES_COUNT;
 
     uint32_t dt = k_uptime_get_32() - t0;
     if (dt > 100) {
         LOG_WRN("PACK_STATS read took %u ms", dt);
-        printk("[bt_pack] PACK_STATS slow: %u ms\n", dt);
     }
     
     return bt_gatt_attr_read(conn, attr, buf, len, offset,
@@ -556,6 +566,13 @@ ssize_t bt_pack_list_read(struct bt_conn *conn,
             return bt_gatt_attr_read(conn, attr, buf, len, offset,
                                      &pack_content_response, sizeof(pack_content_response));
         }
+
+        if (pack_list_param == PACK_ID_BUILTIN) {
+            LOG_WRN("Pack 0 is virtual (FW) and disabled in flash-only mode");
+            pack_content_response.pack_id = pack_list_param;
+            return bt_gatt_attr_read(conn, attr, buf, len, offset,
+                                     &pack_content_response, sizeof(pack_content_response));
+        }
         
         /* Get pack info with plant IDs */
         pack_pack_v1_t pack_data;
@@ -564,19 +581,8 @@ ssize_t bt_pack_list_read(struct bt_conn *conn,
                                                       plant_ids, 64);
         
         if (result != PACK_RESULT_SUCCESS) {
-            /* Check if it's the builtin pack (pack_id=0) */
-            if (pack_list_param == 0) {
-                pack_content_response.pack_id = 0;
-                pack_content_response.version = 1;
-                pack_content_response.total_plants = PLANT_FULL_SPECIES_COUNT;
-                pack_content_response.returned_count = 0; /* Too many to list */
-                pack_content_response.offset = 0;
-                LOG_INF("Builtin pack has %u plants (not enumerated)", 
-                        PLANT_FULL_SPECIES_COUNT);
-            } else {
-                LOG_WRN("Pack %u not found: %d", pack_list_param, result);
-                pack_content_response.pack_id = pack_list_param;
-            }
+            LOG_WRN("Pack %u not found: %d", pack_list_param, result);
+            pack_content_response.pack_id = pack_list_param;
             return bt_gatt_attr_read(conn, attr, buf, len, offset,
                                      &pack_content_response, sizeof(pack_content_response));
         }
@@ -602,38 +608,24 @@ ssize_t bt_pack_list_read(struct bt_conn *conn,
     memset(&pack_list_response, 0, sizeof(pack_list_response));
     
     if (!pack_storage_is_ready()) {
-        /* Return just builtin pack */
-        pack_list_response.total_count = 1;
-        pack_list_response.returned_count = 1;
-        pack_list_response.include_builtin = 1;
-        pack_list_response.entries[0].pack_id = 0;
-        pack_list_response.entries[0].version = 1;
-        pack_list_response.entries[0].plant_count = PLANT_FULL_SPECIES_COUNT;
-        strncpy(pack_list_response.entries[0].name, "Built-in Plants", 23);
+        /* Flash-only mode: no virtual FW pack */
+        pack_list_response.total_count = 0;
+        pack_list_response.returned_count = 0;
+        pack_list_response.include_builtin = 0;
         return bt_gatt_attr_read(conn, attr, buf, len, offset,
-                                 &pack_list_response, 4 + sizeof(bt_pack_list_entry_t));
+                                 &pack_list_response, 4);
     }
     
-    /* Get custom packs */
+    /* Get packs from flash only */
     pack_pack_list_entry_t entries[4];
     uint16_t count = 0;
     uint16_t req_offset = pack_list_param;
-    
-    /* First entry is always builtin pack if offset is 0 */
+
     uint8_t entry_idx = 0;
-    if (req_offset == 0) {
-        pack_list_response.include_builtin = 1;
-        pack_list_response.entries[0].pack_id = 0;
-        pack_list_response.entries[0].version = 1;
-        pack_list_response.entries[0].plant_count = PLANT_FULL_SPECIES_COUNT;
-        strncpy(pack_list_response.entries[0].name, "Built-in Plants", 23);
-        entry_idx = 1;
-    }
-    
-    /* Get custom packs (max 3 if builtin included, 4 otherwise) */
-    uint16_t custom_offset = (req_offset > 0) ? (req_offset - 1) : 0;
-    pack_result_t result = pack_storage_list_packs(entries, 4 - entry_idx, 
-                                                    &count, custom_offset);
+    pack_list_response.include_builtin = 0;
+
+    pack_result_t result = pack_storage_list_packs(entries, ARRAY_SIZE(entries),
+                                                    &count, req_offset);
     
     if (result == PACK_RESULT_SUCCESS) {
         for (uint16_t i = 0; i < count && entry_idx < 4; i++, entry_idx++) {
@@ -645,7 +637,7 @@ ssize_t bt_pack_list_read(struct bt_conn *conn,
         }
     }
     
-    pack_list_response.total_count = 1 + pack_storage_get_pack_count(); /* +1 for builtin */
+    pack_list_response.total_count = pack_storage_get_pack_count();
     pack_list_response.returned_count = entry_idx;
     
     size_t resp_size = 4 + entry_idx * sizeof(bt_pack_list_entry_t);
@@ -873,6 +865,9 @@ static int handle_xfer_start(const bt_pack_xfer_start_t *req)
     
     LOG_INF("Pack transfer started: pack_id=%u v%u, plants=%u, size=%u, name=%s",
             req->pack_id, req->version, req->plant_count, req->total_size, req->name);
+    
+    /* T12: Arm stale-transfer watchdog */
+    k_work_reschedule(&xfer_timeout_work, K_SECONDS(PACK_TRANSFER_TIMEOUT_SEC));
     
     xfer_notify_status();
     return 0;
@@ -1158,13 +1153,36 @@ BT_GATT_SERVICE_DEFINE(pack_svc,
 #define PACK_ATTR_XFER_VALUE  10
 
 /* ============================================================================
+ * T12: Stale Transfer Watchdog
+ * ============================================================================ */
+
+static void xfer_timeout_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    if (xfer_state.state != PACK_XFER_STATE_RECEIVING) {
+        return; /* Nothing to time out */
+    }
+    uint32_t idle_ms = k_uptime_get_32() - xfer_state.last_activity_time;
+    if (idle_ms > PACK_TRANSFER_TIMEOUT_SEC * 1000U) {
+        LOG_ERR("Stale transfer detected (idle %u ms), aborting pack_id=%u",
+                idle_ms, xfer_state.pack_id);
+        xfer_state.state = PACK_XFER_STATE_ERROR;
+        xfer_state.last_error = PACK_RESULT_IO_ERROR;
+        xfer_notify_status();
+        xfer_reset();
+    } else {
+        /* Re-arm: check again in 30 s */
+        k_work_reschedule(&xfer_timeout_work, K_SECONDS(30));
+    }
+}
+
+/* ============================================================================
  * Initialization
  * ============================================================================ */
 
 int bt_pack_handlers_init(void)
 {
     LOG_INF("Initializing pack BLE handlers");
-    printk("[bt_pack] init\n");
     
     memset(&list_response, 0, sizeof(list_response));
     memset(&stats_response, 0, sizeof(stats_response));
@@ -1186,6 +1204,9 @@ int bt_pack_handlers_init(void)
     /* Initialize streaming work queue */
     k_work_init_delayable(&stream_work, stream_work_handler);
     stream_reset();
+
+    /* T12: Initialize stale-transfer watchdog */
+    k_work_init_delayable(&xfer_timeout_work, xfer_timeout_work_handler);
 
     /* Connection/security debug */
     bt_conn_cb_register(&pack_conn_cb);

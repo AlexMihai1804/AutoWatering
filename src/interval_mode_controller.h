@@ -4,6 +4,11 @@
 #include "watering_enhanced.h"
 #include "interval_timing.h"
 
+/** T25: Absolute cycle safety limit — abort if broken sensor causes infinite loop */
+#ifndef INTERVAL_MAX_CYCLES_DEFAULT
+#define INTERVAL_MAX_CYCLES_DEFAULT  200
+#endif
+
 /**
  * @file interval_mode_controller.h
  * @brief Interval mode state machine and controller for AutoWatering system
@@ -32,6 +37,7 @@ typedef struct {
     uint32_t total_elapsed;           // Total elapsed time
     uint32_t total_volume;            // Total volume dispensed
     uint32_t cycles_completed;        // Number of complete cycles
+    uint32_t max_cycles;              // T25: Safety limit — 0 = use INTERVAL_MAX_CYCLES_DEFAULT
     uint32_t current_cycle_volume;    // Volume in current cycle
     bool is_volume_based;             // True for volume-based, false for duration-based
     float flow_rate_ml_sec;           // Current flow rate (for volume calculations)

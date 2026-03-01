@@ -9,6 +9,10 @@ AutoWatering is an advanced smart irrigation system built on Zephyr RTOS for pre
 - **[Installation](INSTALLATION.md)** - Toolchain setup and flashing steps
 - **[Feature Overview](FEATURES.md)** - High-level capabilities and usage notes
 - **[Troubleshooting](TROUBLESHOOTING.md)** - Common issues & resolutions
+- **[Bootloader + OTA](bootloader+ota.md)** - MCUboot/factory flow status and operational notes
+- **[OTA BLE App Guide](ota-ble-app-guide.md)** - How to implement firmware update over BLE in the app
+- **[OTA Backend API Guide](ota-backend-api.md)** - Binary hosting, latest-version lookup, and download contract
+- **[GitHub Safe Publish](github-safe-publish.md)** - No-leak checklist before commit/push
 
 ### For Developers
 

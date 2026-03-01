@@ -93,16 +93,17 @@ static inline bool gpio_spec_ready(const struct gpio_dt_spec *spec)
     return (spec && spec->port && device_is_ready(spec->port));
 }
 
-/* honours GPIO_ACTIVE_LOW, returns -ENODEV if spec invalid -------------- */
+/* gpio_pin_set_dt() already honours the GPIO_ACTIVE_LOW flag that was
+ * supplied to gpio_pin_configure_dt(), so we just pass the *logical*
+ * level: 1 = active (valve open), 0 = inactive (valve closed).
+ * No manual inversion needed — the DT layer handles polarity.       */
 static inline int valve_set_state(const struct gpio_dt_spec *valve,
                                   bool active)
 {
     if (!valve || !valve->port) {
         return -ENODEV;
     }
-    const bool active_low = (valve->dt_flags & GPIO_ACTIVE_LOW);
-    int level = active ? !active_low : active_low;
-    return gpio_pin_set_dt(valve, level);
+    return gpio_pin_set_dt(valve, active ? 1 : 0);
 }
 
 /**
@@ -139,8 +140,8 @@ static watering_error_t master_valve_open(void)
         return WATERING_ERROR_HARDWARE;
     }
     
-    /* Master valve uses inverted logic: false = open (relay energized) */
-    int ret = valve_set_state(&master_config.valve, false);
+    /* Open valve using normal active logic (DT GPIO flags handle polarity) */
+    int ret = valve_set_state(&master_config.valve, true);
     if (ret != 0) {
         printk("Failed to activate master valve: %d\n", ret);
         return WATERING_ERROR_HARDWARE;
@@ -169,8 +170,8 @@ static watering_error_t master_valve_close(void)
         return WATERING_ERROR_HARDWARE;
     }
     
-    /* Master valve uses inverted logic: true = closed (relay de-energized) */
-    int ret = valve_set_state(&master_config.valve, true);
+    /* Close valve using normal inactive logic (DT GPIO flags handle polarity) */
+    int ret = valve_set_state(&master_config.valve, false);
     if (ret != 0) {
         printk("Failed to deactivate master valve: %d\n", ret);
         return WATERING_ERROR_HARDWARE;
@@ -215,8 +216,8 @@ watering_error_t valve_init(void) {
     if (gpio_spec_ready(&master_config.valve)) {
         int ret = gpio_pin_configure_dt(&master_config.valve, GPIO_OUTPUT_INACTIVE);
         if (ret == 0) {
-            /* Master valve uses inverted logic: true = closed (relay de-energized) */
-            valve_set_state(&master_config.valve, true);
+            /* Keep master valve closed at boot (inactive logical state) */
+            valve_set_state(&master_config.valve, false);
             master_config.is_active = false;
             printk("SUCCESS\n");
         } else {

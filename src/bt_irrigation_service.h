@@ -248,6 +248,19 @@ int bt_irrigation_alarm_notify(uint8_t alarm_code, uint16_t alarm_data);
 int bt_irrigation_alarm_clear(uint8_t alarm_code);
 
 /**
+ * @brief Read the current alarm state tracked by the BLE service buffers.
+ *
+ * Safe to call without an active BLE connection. Intended for internal protocol
+ * adapters (UART/UCP) that need read parity with BLE Alarm characteristic.
+ *
+ * @param alarm_code Output alarm code (can be NULL)
+ * @param alarm_data Output alarm data/context (can be NULL)
+ * @param timestamp Output UTC timestamp (can be NULL)
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_alarm_get_state(uint8_t *alarm_code, uint16_t *alarm_data, uint32_t *timestamp);
+
+/**
  * @brief Send calibration notification via Bluetooth
  * 
  * Reads current calibration status and sends notification to connected
@@ -278,6 +291,21 @@ int bt_irrigation_timezone_notify(void);
  * @return 0 on success, negative error code on failure
  */
 int bt_irrigation_start_flow_calibration(uint8_t start, uint32_t volume_ml);
+
+/**
+ * @brief Read current flow calibration workflow state (BLE calibration characteristic mirror).
+ *
+ * Safe to call without an active BLE connection. Returns the same semantic state
+ * as the BLE Calibration characteristic read path (including in-progress pulses).
+ *
+ * @param action Output action/state (0=idle/stop, 2=in progress, 3=completed)
+ * @param pulses Output pulse count for current/last calibration session
+ * @param volume_ml Output expected/measured volume field
+ * @param pulses_per_liter Output current/calculated pulses-per-liter
+ * @return 0 on success, negative error code on failure
+ */
+int bt_irrigation_flow_calibration_get_state(uint8_t *action, uint32_t *pulses,
+                                            uint32_t *volume_ml, uint32_t *pulses_per_liter);
 
 /**
  * @brief Update irrigation history

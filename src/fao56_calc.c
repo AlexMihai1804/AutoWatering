@@ -140,6 +140,13 @@ const plant_full_data_t *fao56_get_channel_plant(const watering_channel_t *chann
         return &s_plant_cache[channel_id];
     }
     
+    /* Plant changed — reset per-channel FAO-56 state to avoid stale slew/moisture data (T5 fix) */
+    if (s_plant_cache_id[channel_id] != 0) {
+        LOG_INF("Plant changed on channel %u: %u -> %u, resetting state",
+                channel_id, s_plant_cache_id[channel_id], channel->plant_id);
+        fao56_reset_channel_state(channel_id);
+    }
+
     /* Load from pack storage (all plants are there after provisioning) */
     pack_plant_v1_t pack_plant;
     pack_result_t res = pack_storage_get_plant(channel->plant_id, &pack_plant);
@@ -366,6 +373,12 @@ static float fao56_apply_et0_slew(uint8_t channel_id,
         return et0_mm_day;
     }
 
+    /* T5 fix: Guard against NaN/inf input — reject and return last valid value */
+    if (isnanf(et0_mm_day) || isinff(et0_mm_day)) {
+        LOG_WRN("ET0 slew: NaN/inf input for channel %u, returning last valid value", channel_id);
+        return s_et0_slew_valid[channel_id] ? s_et0_slew_last_mm_day[channel_id] : 0.0f;
+    }
+
     if (!s_et0_slew_valid[channel_id]) {
         s_et0_slew_valid[channel_id] = true;
         s_et0_slew_last_time_s[channel_id] = now_s;
@@ -407,6 +420,36 @@ static float fao56_apply_et0_slew(uint8_t channel_id,
     s_et0_slew_last_time_s[channel_id] = now_s;
 
     return et0_mm_day;
+}
+
+/**
+ * @brief Reset all per-channel FAO-56 state (slew, moisture, wetting, cache)
+ *
+ * Call this when a channel's plant or configuration changes to avoid stale
+ * state from the previous plant corrupting calculations for the new one.
+ *
+ * @param channel_id Channel ID to reset (0-based)
+ */
+void fao56_reset_channel_state(uint8_t channel_id)
+{
+    if (channel_id >= WATERING_CHANNELS_COUNT) {
+        return;
+    }
+
+    s_et0_slew_valid[channel_id] = false;
+    s_et0_slew_last_mm_day[channel_id] = 0.0f;
+    s_et0_slew_last_time_s[channel_id] = 0U;
+    s_antecedent_moisture_valid[channel_id] = false;
+    s_antecedent_moisture_ema[channel_id] = 0.0f;
+    s_antecedent_moisture_last_update_s[channel_id] = 0U;
+    s_wetting_fraction_last[channel_id] = 0.0f;
+    s_wetting_fraction_last_time_s[channel_id] = 0U;
+    s_rain_applied_raw_mm[channel_id] = 0.0f;
+    s_plant_cache_id[channel_id] = 0;
+    memset(&s_plant_cache[channel_id], 0, sizeof(s_plant_cache[channel_id]));
+    s_custom_soil_cache_valid[channel_id] = false;
+
+    LOG_INF("Reset FAO-56 channel %u state (plant/config changed)", channel_id);
 }
 
 static bool fao56_get_local_datetime_from_timestamp(uint32_t timestamp, rtc_datetime_t *datetime)

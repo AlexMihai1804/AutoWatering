@@ -5,24 +5,24 @@
  */
 
 / {
-    /* Flow sensor interrupt input (D2 / P1.03) */
+    /* Flow sensor interrupt input (P1.01) */
     water_flow_sensor: flow_sensor {
         compatible = "gpio-keys";
         status = "okay";
 
         flow_key {
-            gpios = <&gpio1 3 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+            gpios = <&gpio1 1 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
             label = "Water Flow Sensor";
         };
     };
 
-    /* Rain gauge interrupt input (D3 / P1.10) */
+    /* Rain gauge interrupt input (P1.08) */
     rain_sensor: rain_sensor {
         compatible = "gpio-keys";
         status = "okay";
 
         rain_key {
-            gpios = <&gpio1 10 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+            gpios = <&gpio1 8 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
             label = "Tipping Bucket Rain Sensor";
         };
     };
@@ -34,6 +34,17 @@
         debounce-ms      = <2>;
         rain-calibration = <200>;
         rain-debounce-ms = <50>;
+    };
+
+    /* ESP32 enable line driven by nRF for peer_power UCP service */
+    esp32_control {
+        compatible = "gpio-leds";
+        status = "okay";
+
+        esp32_en_ctrl: esp32_en {
+            gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+            label = "ESP32 EN";
+        };
     };
 
     /* Valve drivers mapped to the Nano 33 BLE digital header */
@@ -63,6 +74,7 @@
         rain-sensor        = &rain_sensor;
         spi-flash0         = &w25q128;
         database-partition = &database_partition;
+        esp32-en           = &esp32_en_ctrl;
 
         console            = &cdc_acm_uart0;
         shell-uart         = &cdc_acm_uart0;
@@ -72,8 +84,10 @@
         zephyr,code-partition        = &slot0_partition;
         zephyr,settings-partition    = &settings_partition;
         zephyr,bt-settings-partition = &settings_partition;
+        zephyr,boot-mode             = &boot_mode0;
         zephyr,console               = &cdc_acm_uart0;
         zephyr,shell-uart            = &cdc_acm_uart0;
+        zephyr,uart-mcumgr           = &cdc_acm_uart0;
     };
 
     /* Lightweight CPU power states to unlock Zephyr's PM policy */
@@ -110,7 +124,8 @@
             compatible = "maxim,ds3231-rtc";
             status = "okay";
             label = "DS3231";
-            isw-gpios = <&gpio0 13 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+            /* DS3231 INT/SQW moved to P1.02 to free P0.13 for ESP32 EN. */
+            isw-gpios = <&gpio1 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
         };
     };
 
@@ -119,6 +134,22 @@
         reg = <0x77>;
         status = "okay";
         label = "BME280";
+    };
+};
+
+&uart0 {
+    status = "okay";
+    current-speed = <460800>;
+    pinctrl-0 = <&uart0_host_default>;
+    pinctrl-1 = <&uart0_host_sleep>;
+    pinctrl-names = "default", "sleep";
+};
+
+&gpregret1 {
+    boot_mode0: boot_mode@0 {
+        compatible = "zephyr,retention";
+        status = "okay";
+        reg = <0x0 0x1>;
     };
 };
 
@@ -146,46 +177,66 @@
             #address-cells = <1>;
             #size-cells = <1>;
 
-            /* Slot 1 for MCUboot secondary image (1 MB - matches slot0) */
-            slot1_partition: partition@0 {
+            /*
+             * Slot 1 starts at 0x23000 so its offset exceeds
+             * CONFIG_FLASH_LOAD_OFFSET (0x22000).  This prevents the
+             * MCUmgr range-check macro from misidentifying slot1 as
+             * the running partition (external vs internal flash).
+             */
+            slot1_partition: partition@23000 {
                 label = "image-1";
-                reg = <0x00000000 0x00100000>;
+                reg = <0x00023000 0x000B6000>;
             };
 
             /* Scratch partition for MCUboot swap (128 KB) */
-            scratch_partition: partition@100000 {
+            scratch_partition: partition@D9000 {
                 label = "image-scratch";
-                reg = <0x00100000 0x00020000>;
+                reg = <0x000D9000 0x00020000>;
             };
 
             /* NVS storage partition (256 KB) */
-            nvs_storage: partition@120000 {
+            nvs_storage: partition@F9000 {
                 label = "nvs_storage";
-                reg = <0x00120000 0x00040000>;
+                reg = <0x000F9000 0x00040000>;
             };
 
             /* Settings partition for BT (8 KB) */
-            settings_partition: partition@160000 {
+            settings_partition: partition@139000 {
                 label = "settings";
-                reg = <0x00160000 0x00002000>;
+                reg = <0x00139000 0x00002000>;
             };
 
             /* Database partition for plant/soil/irrigation data (512 KB) */
-            database_partition: partition@162000 {
+            database_partition: partition@13B000 {
                 label = "database";
-                reg = <0x00162000 0x00080000>;
+                reg = <0x0013B000 0x00080000>;
             };
 
-            /* Remaining space for future use (approx 14.4 MB) */
-            ext_storage_partition: partition@1E2000 {
+            /* Remaining space for future use (approx 14.3 MB) */
+            ext_storage_partition: partition@1BB000 {
                 label = "ext_storage";
-                reg = <0x001E2000 0x00E1E000>;
+                reg = <0x001BB000 0x00E45000>;
             };
         };
     };
 };
 
 &pinctrl {
+    uart0_host_default: uart0_host_default {
+        group1 {
+            psels = <NRF_PSEL(UART_TX, 1, 3)>,
+                    <NRF_PSEL(UART_RX, 1, 10)>;
+        };
+    };
+
+    uart0_host_sleep: uart0_host_sleep {
+        group1 {
+            psels = <NRF_PSEL(UART_TX, 1, 3)>,
+                    <NRF_PSEL(UART_RX, 1, 10)>;
+            low-power-enable;
+        };
+    };
+
     i2c0_nano_default: i2c0_nano_default {
         group1 {
             /* Original working I2C pins for DS3231 and BME280 */
@@ -234,10 +285,16 @@
         #address-cells = <1>;
         #size-cells = <1>;
 
-        /* Slot 0: Primary application image (single stage, BOSSA untouched) */
-        slot0_partition: partition@10000 {
+        /* MCUboot bootloader (must match sysbuild/mcuboot.overlay) */
+        boot_partition: partition@0 {
+            label = "mcuboot";
+            reg = <0x00000000 0x00022000>;  /* 136 KB (Arduino BL 64K + MCUboot 72K) */
+        };
+
+        /* Slot 0: Primary application image (must match sysbuild/mcuboot.overlay) */
+        slot0_partition: partition@22000 {
             label = "image-0";
-            reg = <0x00010000 0x000e8000>;
+            reg = <0x00022000 0x000B6000>;  /* 728 KB */
         };
     };
 };

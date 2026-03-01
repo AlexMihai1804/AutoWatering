@@ -122,7 +122,7 @@ static void rain_sensor_gpio_callback(const struct device *dev,
     
     /* Increment pulse counter atomically */
     atomic_inc(&rain_sensor_state.total_pulses);
-    atomic_set(&rain_sensor_state.last_pulse_time, current_time / 1000);
+    atomic_set(&rain_sensor_state.last_pulse_time, (uint32_t)(k_uptime_get() / 1000));
     
     /* Update status to active */
     rain_sensor_state.status = RAIN_SENSOR_STATUS_ACTIVE;
@@ -142,7 +142,7 @@ static void rain_sensor_gpio_callback(const struct device *dev,
  */
 static void rain_sensor_update_status(void)
 {
-    uint32_t current_time = k_uptime_get_32() / 1000;
+    uint32_t current_time = (uint32_t)(k_uptime_get() / 1000);  /* T6 fix: 64-bit avoids 49-day wrap */
     uint32_t last_pulse = atomic_get(&rain_sensor_state.last_pulse_time);
     
     if (!rain_sensor_state.config.sensor_enabled) {
@@ -195,7 +195,7 @@ static void rain_sensor_update_status(void)
  */
 static void rain_sensor_calculate_rate(void)
 {
-    uint32_t current_time = k_uptime_get_32() / 1000;
+    uint32_t current_time = (uint32_t)(k_uptime_get() / 1000);  /* T6 fix: 64-bit avoids 49-day wrap */
     uint32_t current_pulses = atomic_get(&rain_sensor_state.total_pulses);
     
     k_mutex_lock(&rain_sensor_state.mutex, K_FOREVER);

@@ -296,6 +296,21 @@ typedef struct {
     uint8_t reserved[4];          /**< Reserved for future use */
 } __attribute__((packed)) rain_history_header_t;
 
+/* ——— Device Identity Persistence ——————————————————————————— */
+typedef struct {
+    uint32_t magic;               /**< Identity record magic */
+    uint16_t version;             /**< Record version */
+    uint16_t reserved0;
+    char serial[16];              /**< Business serial (e.g. 000123) */
+    uint32_t serial_seq;          /**< Monotonic sequence backing the serial */
+    char thing_name[48];          /**< Stable thing name (e.g. autowatering-000123) */
+    uint32_t hw_id_word0;         /**< nRF FICR DEVICEID[0] */
+    uint32_t hw_id_word1;         /**< nRF FICR DEVICEID[1] */
+    uint32_t provisioned_uptime_s;/**< Uptime seconds when first provisioned */
+    uint8_t locked;               /**< 1 = write-once lock active */
+    uint8_t reserved1[11];
+} __attribute__((packed)) device_identity_nvs_t;
+
 
 /* ——— API public ——————————————————————————————————————— */
 int  nvs_config_init(void);
@@ -394,5 +409,9 @@ int nvs_load_hydraulic_global_lock(hydraulic_lock_state_t *lock_state);
 int nvs_save_wipe_progress(const wipe_progress_t *progress);
 int nvs_load_wipe_progress(wipe_progress_t *progress);
 int nvs_clear_wipe_progress(void);
+
+/* ——— Device Identity NVS Functions ———————————————————————————— */
+int nvs_save_device_identity_once(const device_identity_nvs_t *identity);
+int nvs_load_device_identity(device_identity_nvs_t *identity);
 
 #endif /* NVS_CONFIG_H */

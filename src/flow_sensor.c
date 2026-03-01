@@ -19,8 +19,9 @@ LOG_MODULE_REGISTER(flow_sensor, CONFIG_LOG_DEFAULT_LEVEL);
  * counting pulses to measure water flow in real-time.
  */
 
-/* NVS key for flow calibration */
-#define NVS_KEY_FLOW_CALIBRATION  1000
+/* Flow calibration is persisted via nvs_save/load_flow_calibration() in
+ * nvs_config.c (key ID_FLOW_CALIB = 200).  Do NOT define a separate key here.
+ */
 
 /** Devicetree node label for water flow sensor */
 #define FLOW_SENSOR_NODE        DT_NODELABEL(water_flow_sensor)
@@ -183,25 +184,25 @@ static void flow_sensor_callback(const struct device *dev,
         last_interrupt_time = now;
         atomic_inc(&pulse_count);
 
-    /* Submit work on small batches to keep BLE updates responsive */
-    uint32_t current_count = atomic_get(&pulse_count);
-    static uint32_t last_work_submit_time = 0;
-    if ((current_count - pulse_count_at_last_work) >= 5 || (now - last_work_submit_time) >= 3000) {  /* Every 5 pulses or 3s */
-        if (!k_work_is_pending(&flow_update_work)) {
-            pulse_count_at_last_work = current_count;
-            last_work_submit_time = now;
-            k_work_submit(&flow_update_work);
+        /* Submit work on small batches to keep BLE updates responsive */
+        uint32_t current_count = atomic_get(&pulse_count);
+        static uint32_t last_work_submit_time = 0;
+        if ((current_count - pulse_count_at_last_work) >= 5 || (now - last_work_submit_time) >= 3000) {  /* Every 5 pulses or 3s */
+            if (!k_work_is_pending(&flow_update_work)) {
+                pulse_count_at_last_work = current_count;
+                last_work_submit_time = now;
+                k_work_submit(&flow_update_work);
+                /* Only log every 100th pulse to avoid spam */
+                if (current_count % 100 == 0) {
+                    LOG_DBG("Flow pulse: %u (submitted work)", current_count);
+                }
+            }
+        } else {
             /* Only log every 100th pulse to avoid spam */
             if (current_count % 100 == 0) {
-                LOG_DBG("Flow pulse: %u (submitted work)", current_count);
+                LOG_DBG("Flow pulse: %u", current_count);
             }
         }
-    } else {
-        /* Only log every 100th pulse to avoid spam */
-        if (current_count % 100 == 0) {
-            LOG_DBG("Flow pulse: %u", current_count);
-        }
-    }
     }
 }
 
@@ -255,9 +256,10 @@ int flow_sensor_init(void) {
     k_timer_start(&periodic_ble_timer, K_SECONDS(5), K_SECONDS(5));
     LOG_INF("Flow sensor: periodic timer enabled (5s heartbeat)");
     
-    /* Load flow calibration from persistent storage */
+    /* Load flow calibration from persistent storage (uses ID_FLOW_CALIB = 200
+     * in nvs_config.c — the same key written by nvs_save_flow_calibration). */
     uint32_t saved_calibration;
-    int nvs_ret = nvs_config_read(NVS_KEY_FLOW_CALIBRATION, &saved_calibration, sizeof(saved_calibration));
+    int nvs_ret = nvs_load_flow_calibration(&saved_calibration);
     if (nvs_ret == sizeof(saved_calibration)) {
         /* Validate loaded calibration */
         if (saved_calibration >= 100 && saved_calibration <= 10000) {

@@ -13,6 +13,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/sys/atomic.h>
 #include <string.h>
 
 LOG_MODULE_REGISTER(bt_custom_soil, LOG_LEVEL_DBG);
@@ -25,12 +26,12 @@ static struct enhanced_channel_config_data enhanced_config_response;
 static struct soil_moisture_config_data soil_moisture_response;
 static struct interval_mode_config_data interval_mode_response;
 
-/* Notification state tracking */
-static bool custom_soil_notifications_enabled = false;
-static bool config_reset_notifications_enabled = false;
-static bool config_status_notifications_enabled = false;
-static bool soil_moisture_notifications_enabled = false;
-static bool interval_mode_notifications_enabled = false;
+/* Notification state tracking — T11: use atomics for thread-safe access */
+static atomic_t custom_soil_notifications_enabled = ATOMIC_INIT(0);
+static atomic_t config_reset_notifications_enabled = ATOMIC_INIT(0);
+static atomic_t config_status_notifications_enabled = ATOMIC_INIT(0);
+static atomic_t soil_moisture_notifications_enabled = ATOMIC_INIT(0);
+static atomic_t interval_mode_notifications_enabled = ATOMIC_INIT(0);
 
 /* Interval mode channel selection for reads (mirrors Growing Environment pattern) */
 static uint8_t interval_mode_last_channel = 0;
@@ -135,7 +136,7 @@ int bt_custom_soil_handlers_init(void)
     memset(&soil_moisture_response, 0, sizeof(soil_moisture_response));
     memset(&interval_mode_response, 0, sizeof(interval_mode_response));
 
-    interval_mode_notifications_enabled = false;
+    atomic_set(&interval_mode_notifications_enabled, 0);
     interval_mode_last_channel = 0;
     
     LOG_INF("Custom soil BLE handlers initialized");
@@ -145,11 +146,11 @@ int bt_custom_soil_handlers_init(void)
 static void custom_interval_mode_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
     ARG_UNUSED(attr);
-    interval_mode_notifications_enabled = (value == BT_GATT_CCC_NOTIFY);
+    atomic_set(&interval_mode_notifications_enabled, (value == BT_GATT_CCC_NOTIFY));
     LOG_INF("Interval mode config notifications %s",
-            interval_mode_notifications_enabled ? "enabled" : "disabled");
+            atomic_get(&interval_mode_notifications_enabled) ? "enabled" : "disabled");
 
-    if (interval_mode_notifications_enabled) {
+    if (atomic_get(&interval_mode_notifications_enabled)) {
         (void)bt_gatt_notify(NULL,
                              &custom_config_svc.attrs[CUSTOM_CFG_ATTR_INTERVAL_VALUE],
                              &interval_mode_response,
@@ -228,7 +229,7 @@ static ssize_t bt_interval_mode_config_write(struct bt_conn *conn,
     interval_mode_last_channel = req->channel_id;
     (void)bt_interval_mode_get_config(req->channel_id, &interval_mode_response);
 
-    if (interval_mode_notifications_enabled) {
+    if (atomic_get(&interval_mode_notifications_enabled)) {
         (void)bt_gatt_notify(NULL,
                              &custom_config_svc.attrs[CUSTOM_CFG_ATTR_INTERVAL_VALUE],
                              &interval_mode_response,
@@ -244,11 +245,11 @@ static ssize_t bt_interval_mode_config_write(struct bt_conn *conn,
 
 static void custom_soil_moisture_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
-    soil_moisture_notifications_enabled = (value == BT_GATT_CCC_NOTIFY);
+    atomic_set(&soil_moisture_notifications_enabled, (value == BT_GATT_CCC_NOTIFY));
     LOG_INF("Soil moisture config notifications %s",
-            soil_moisture_notifications_enabled ? "enabled" : "disabled");
+            atomic_get(&soil_moisture_notifications_enabled) ? "enabled" : "disabled");
 
-    if (soil_moisture_notifications_enabled) {
+    if (atomic_get(&soil_moisture_notifications_enabled)) {
         (void)bt_gatt_notify(NULL,
                              &custom_config_svc.attrs[CUSTOM_CFG_ATTR_MOISTURE_VALUE],
                              &soil_moisture_response,
@@ -258,11 +259,11 @@ static void custom_soil_moisture_ccc_changed(const struct bt_gatt_attr *attr, ui
 
 static void custom_soil_config_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
-    custom_soil_notifications_enabled = (value == BT_GATT_CCC_NOTIFY);
+    atomic_set(&custom_soil_notifications_enabled, (value == BT_GATT_CCC_NOTIFY));
     LOG_INF("Custom soil config notifications %s",
-            custom_soil_notifications_enabled ? "enabled" : "disabled");
+            atomic_get(&custom_soil_notifications_enabled) ? "enabled" : "disabled");
 
-    if (custom_soil_notifications_enabled) {
+    if (atomic_get(&custom_soil_notifications_enabled)) {
         (void)bt_gatt_notify(NULL,
                              &custom_config_svc.attrs[CUSTOM_CFG_ATTR_SOIL_VALUE],
                              &custom_soil_response,
@@ -272,11 +273,11 @@ static void custom_soil_config_ccc_changed(const struct bt_gatt_attr *attr, uint
 
 static void custom_config_reset_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
-    config_reset_notifications_enabled = (value == BT_GATT_CCC_NOTIFY);
+    atomic_set(&config_reset_notifications_enabled, (value == BT_GATT_CCC_NOTIFY));
     LOG_INF("Config reset notifications %s",
-            config_reset_notifications_enabled ? "enabled" : "disabled");
+            atomic_get(&config_reset_notifications_enabled) ? "enabled" : "disabled");
 
-    if (config_reset_notifications_enabled) {
+    if (atomic_get(&config_reset_notifications_enabled)) {
         (void)bt_gatt_notify(NULL,
                              &custom_config_svc.attrs[CUSTOM_CFG_ATTR_RESET_VALUE],
                              &reset_response,
@@ -286,11 +287,11 @@ static void custom_config_reset_ccc_changed(const struct bt_gatt_attr *attr, uin
 
 static void custom_config_status_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
-    config_status_notifications_enabled = (value == BT_GATT_CCC_NOTIFY);
+    atomic_set(&config_status_notifications_enabled, (value == BT_GATT_CCC_NOTIFY));
     LOG_INF("Config status notifications %s",
-            config_status_notifications_enabled ? "enabled" : "disabled");
+            atomic_get(&config_status_notifications_enabled) ? "enabled" : "disabled");
 
-    if (config_status_notifications_enabled) {
+    if (atomic_get(&config_status_notifications_enabled)) {
         (void)bt_gatt_notify(NULL,
                              &custom_config_svc.attrs[CUSTOM_CFG_ATTR_STATUS_VALUE],
                              &status_response,
@@ -406,7 +407,7 @@ ssize_t bt_soil_moisture_config_write(struct bt_conn *conn,
         return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
     }
 
-    if (soil_moisture_notifications_enabled) {
+    if (atomic_get(&soil_moisture_notifications_enabled)) {
         (void)bt_gatt_notify(NULL,
                              &custom_config_svc.attrs[CUSTOM_CFG_ATTR_MOISTURE_VALUE],
                              &soil_moisture_response,
@@ -462,7 +463,7 @@ ssize_t bt_custom_soil_config_write(struct bt_conn *conn,
     custom_soil_response.status = (uint8_t)result;
     
     /* Send notification if enabled */
-    if (custom_soil_notifications_enabled) {
+    if (atomic_get(&custom_soil_notifications_enabled)) {
         bt_custom_soil_config_notify(soil_config->channel_id, 
                                     soil_config->operation, result);
     }
@@ -556,7 +557,7 @@ ssize_t bt_config_reset_write(struct bt_conn *conn,
     }
     
     /* Send notification if enabled */
-    if (config_reset_notifications_enabled) {
+    if (atomic_get(&config_reset_notifications_enabled)) {
         bt_config_reset_notify(reset_request->channel_id, 
                               (config_group_t)reset_request->group, result);
     }
@@ -654,7 +655,7 @@ ssize_t bt_config_status_write(struct bt_conn *conn,
     }
     
     /* Send notification if enabled */
-    if (config_status_notifications_enabled) {
+    if (atomic_get(&config_status_notifications_enabled)) {
         bt_config_status_notify(query_channel);
     }
     
@@ -752,7 +753,7 @@ watering_error_t bt_get_custom_soil_for_ble(uint8_t channel_id,
 
 int bt_custom_soil_config_notify(uint8_t channel_id, uint8_t operation, watering_error_t result)
 {
-    if (!custom_soil_notifications_enabled) {
+    if (!atomic_get(&custom_soil_notifications_enabled)) {
         return 0; /* Notifications not enabled */
     }
 
@@ -778,7 +779,7 @@ int bt_custom_soil_config_notify(uint8_t channel_id, uint8_t operation, watering
 
 int bt_config_reset_notify(uint8_t channel_id, config_group_t group, watering_error_t result)
 {
-    if (!config_reset_notifications_enabled) {
+    if (!atomic_get(&config_reset_notifications_enabled)) {
         return 0; /* Notifications not enabled */
     }
     
@@ -799,7 +800,7 @@ int bt_config_reset_notify(uint8_t channel_id, config_group_t group, watering_er
 
 int bt_config_status_notify(uint8_t channel_id)
 {
-    if (!config_status_notifications_enabled) {
+    if (!atomic_get(&config_status_notifications_enabled)) {
         return 0; /* Notifications not enabled */
     }
     

@@ -1,6 +1,7 @@
 # BLE Implementation Status (Audit 2026-01-04)
 
 This file summarizes the current state (code vs documentation) of the GATT characteristics defined in `bt_irrigation_service.c` and `bt_custom_soil_handlers.c`.
+It does **not** include the Pack Service (`bt_pack_handlers.c`) in the tables below.
 
 Legend: R=Read, W=Write, N=Notify, F=Custom fragmentation (4B header), H=Unified history 8B header, LW=Long Write (offset accumulation), S=Single full write (if negotiated MTU >= struct size)
 
@@ -48,7 +49,9 @@ Legend: R=Read, W=Write, N=Notify, F=Custom fragmentation (4B header), H=Unified
 | 33 | Config Status | status_response | R/W/N | Var. | Configuration completeness |
 | 34 | Interval Mode Configuration | interval_mode_config_data | R/W/N | 17 B | Cycle & Soak config |
 
-## Total: 34 characteristics (29 Irrigation Service + 5 Custom Configuration Service)
+## Total in this document: 34 characteristics (29 Irrigation Service + 5 Custom Configuration Service)
+
+Full firmware BLE total (including Pack Service): **38 characteristics**.
 
 ## Key Updates Since Last Audit
 
